@@ -233,9 +233,13 @@ code change and matching operational measurement.
 by the operator so the app can resolve Talkies and AIGate by their service
 names. The container drops all Linux capabilities, runs read-only apart from a
 temporary filesystem, defaults to an eight-CPU, 1 GiB, 128-process cgroup
-budget, and mounts the host PipeWire runtime directory read-only. Override
-`RUNTIME_CPUS`, `RUNTIME_MEMORY`, or `RUNTIME_PIDS` only after measuring the
-selected Talkies model with both streams active.
+budget, and mounts the host PipeWire runtime directory read-only.
+
+That budget is a ceiling, not a measured requirement. No transcription runs in
+this container: it starts two `pw-cat` captures, normalizes the PCM, and writes
+it to a WebSocket, so `RUNTIME_CPUS`, `RUNTIME_MEMORY`, and `RUNTIME_PIDS` have
+no bearing on ASR latency. The transcription cost belongs to Talkies, in its own
+container, and is where `make benchmark` measurements apply.
 
 For a fully-qualified AIGate or Talkies hostname that resolves on the host but
 not inside Docker, such as a tailnet-only name, `make live` and `make benchmark`
