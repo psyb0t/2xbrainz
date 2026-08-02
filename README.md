@@ -91,8 +91,8 @@ TWOXBRAINZ_TALKIES_WS_URL=ws://localhost:4000/talkies/v1/audio/transcriptions/st
 TWOXBRAINZ_TALKIES_MODEL=nemotron-3.5-asr-0.6b
 ```
 
-**2. Find your audio nodes.** You need two: the mic, and whatever your speakers
-are monitoring. Same flags as the real thing, so if this works, step 3 works:
+**2. Find your audio nodes.** Same flags as the real thing, so if this works,
+step 3 works:
 
 ```bash
 docker run --rm --init --network host --read-only \
@@ -101,8 +101,34 @@ docker run --rm --init --network host --read-only \
   --cap-drop ALL --security-opt no-new-privileges:true \
   -e XDG_RUNTIME_DIR=/pipewire-runtime \
   -v "$XDG_RUNTIME_DIR:/pipewire-runtime:ro" \
-  psyb0t/2xbrainz devices
+  psyb0t/2xbrainz devices | jq -r '.[] | "\(.media_class)\t\(.name)"' | sort
 ```
+
+The `jq` is only to make it readable — drop it and you get the same data as one
+line of JSON, `{"id","name","media_class"}` per node. Two of them are yours:
+
+```
+Audio/Sink      alsa_output.pci-0000_00_1f.3.analog-stereo     <- --system-node
+Audio/Source    alsa_input.pci-0000_00_1f.3.analog-stereo      <- --mic-node
+Audio/Sink      bluez_output.AC_12_2F_00_11_22.1
+Stream/Output/Audio   Firefox
+```
+
+The rule:
+
+- **`--mic-node`** → the **`Audio/Source`** that is your actual microphone. Ignore
+  anything ending in `.monitor`; those are sinks in disguise.
+- **`--system-node`** → the **`Audio/Sink`** you're currently listening through.
+  You point at the *sink*, not its monitor — `pw-record --target <sink>` captures
+  what that sink is playing, which is the other side of the conversation.
+
+Pick the sink that's actually in use. If you're on headphones it's the
+`bluez_output.*` or a USB one, not the built-in analog. `Stream/*` entries are
+individual apps, not devices — don't use those.
+
+Either the `name` or the numeric `id` works, so
+`--system-node 51` is as valid as the full `alsa_output.…` string. Names survive
+reboots; ids don't.
 
 **3. Go.**
 
