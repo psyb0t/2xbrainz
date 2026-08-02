@@ -251,13 +251,37 @@ For a fully-qualified AIGate or Talkies hostname that resolves on the host but
 not inside Docker, such as a tailnet-only name, `make live` and `make benchmark`
 resolve its IPv4 address on the host and pass one validated Docker host mapping.
 That helper derives the mapping from the endpoint hostname only; it never reads
-token settings or emits URL paths, and does not use host-network mode. If the
-hostname cannot be resolved by the host, attach the CLI to an explicit bridge
-network with the required DNS instead.
+token settings or emits URL paths. If the hostname cannot be resolved by the
+host, attach the CLI to an explicit bridge network with the required DNS
+instead.
+
+Under the default `LIVE_NETWORK=host` this mapping is redundant — the container
+shares the host's resolver, so tailnet and other host-only names already
+resolve. It stays in place because it costs nothing there (a `--add-host` entry
+is still accepted under host networking) and is what makes a named Docker
+network work when one is chosen instead.
 
 The mounted PipeWire socket is only usable when the container runs with the
-same UID as the host desktop session. `make live` does that automatically. Use
-`make devices` before choosing `MIC_NODE` and `SYSTEM_NODE`.
+same UID as the host desktop session. `make live` does that automatically.
+
+## Choosing MIC_NODE and SYSTEM_NODE
+
+`make devices` prints every PipeWire node as JSON — one `id`, `name`, and
+`media_class` per entry. Two of them matter:
+
+- `MIC_NODE` — the `Audio/Source` that is the actual microphone. Names ending in
+  `.monitor` are sink monitors, not inputs; skip them.
+- `SYSTEM_NODE` — the `Audio/Sink` currently being listened through, named
+  directly rather than by its monitor. Capture runs
+  `pw-record --target <node>`, which for a sink records what that sink is
+  playing.
+
+Pick the sink actually in use: a `bluez_output.*` or USB device while on
+headphones, not the built-in analog one. `Stream/*` entries are individual
+applications rather than devices and are not valid targets.
+
+Both fields accept either the node `name` or its numeric `id`
+(`^[A-Za-z0-9_.:-]{1,128}$`). Names survive a reboot; ids do not.
 
 ## Live-session controls
 

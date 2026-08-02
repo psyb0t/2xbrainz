@@ -138,7 +138,9 @@ capture process.
   not a model-quality claim.
 - [`docker_hosts.py`](../src/two_x_brainz/docker_hosts.py) allows the Docker
   launch targets to map a host-resolved fully-qualified provider hostname to a
-  validated IPv4 address without using host networking or reading credentials.
+  validated IPv4 address without reading credentials. It matters when a named
+  Docker network is selected; under the default `LIVE_NETWORK=host` the
+  container already shares the host's resolver and the mapping is redundant.
 - [`transcript.py`](../src/two_x_brainz/transcript.py) performs revision-safe
   transcript reconciliation and retains a bounded recent window after a
   newer rolling summary is accepted.
