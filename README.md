@@ -5,257 +5,251 @@
 [![license](https://raw.githubusercontent.com/psyb0t/2xbrainz/badges/license.svg)](LICENSE)
 [![Docker Pulls](https://img.shields.io/docker/pulls/psyb0t/2xbrainz?style=flat-square)](https://hub.docker.com/r/psyb0t/2xbrainz)
 
-Docker-first, local-first conversation copilot: it captures separate microphone
-and system-audio streams, transcribes them through Talkies, detects remote turn
-ends, and produces a human-gated reply draft through AIGate.
+A second brain for conversations you're already having. It listens to your mic
+and your speakers as two separate streams, transcribes both live, works out when
+the other side actually stopped talking, and hands you a reply draft before you've
+finished panicking about what to say.
+
+Nothing is sent for you. Nothing is spoken for you. It drafts, you decide.
 
 ## Contents
 
+- [What this fucker does](#what-this-fucker-does)
+- [Requirements](#requirements)
+- [Try it with zero setup](#try-it-with-zero-setup)
 - [Quick start](#quick-start)
-- [Live Linux/PipeWire use](#live-linuxpipewire-use)
+- [Driving it while it runs](#driving-it-while-it-runs)
+- [Deployment shapes](#deployment-shapes)
 - [Architecture](#architecture)
-- [Development workflow](#development-workflow)
-- [Project layout](#project-layout)
 - [Data handling](#data-handling)
+- [Development](#development)
+- [Project layout](#project-layout)
 - [License](#license)
 - [Changelog](#changelog)
 
-**Status:** alpha. The replay workflow and Docker runtime are implemented. Live
-capture currently targets Linux PipeWire and requires running Talkies and
-AIGate services on a Docker network selected by the operator.
+> [!WARNING]
+> This thing listens to both sides of a conversation. Recording people has rules
+> and they are not the same everywhere. Getting consent is your job, not the
+> software's. It also ships as alpha — live capture is Linux/PipeWire only.
+
+## What this fucker does
+
+- **Two streams, not one blob** — your mic and your system audio go to the ASR
+  separately, so it always knows who said what without guessing from a mixdown.
+- **Knows when they shut up** — revisioned partial/endpoint/final events get
+  reconciled into actual turns, so a draft fires on a finished thought instead
+  of mid-sentence.
+- **Drafts a reply, keeps its mouth shut** — no auto-send, no auto-speak, no
+  injecting text into your chat window. A JSON line appears; what you do with it
+  is your business.
+- **Won't talk over you** — a remote turn landing while you're still speaking is
+  recorded but does not trigger a draft.
+- **Runs against your own gear** — [AIGate](https://github.com/psyb0t/aigate)
+  with [Talkies](https://github.com/psyb0t/docker-talkies) is the default, one
+  host and one token. Standalone Talkies plus any OpenAI-compatible endpoint
+  works too.
+- **Audio never leaves the box** — the text provider gets transcript text, never
+  PCM. And it needs an explicit opt-in before even that goes anywhere remote.
+
+## Requirements
+
+- Docker
+- Linux with PipeWire, for live capture (the replay path needs neither)
+- An ASR service — [Talkies](https://github.com/psyb0t/docker-talkies)
+- An OpenAI-compatible endpoint for the drafts — [AIGate](https://github.com/psyb0t/aigate),
+  or OpenAI/Groq/whatever
+
+## Try it with zero setup
+
+No microphone, no services, no `.env`. This replays a bundled synthetic
+conversation through the real image and prints the timeline, the draft, and the
+summary it would have produced:
+
+```bash
+git clone https://github.com/psyb0t/2xbrainz.git
+
+docker run --rm --init --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=512m \
+  --cap-drop ALL --security-opt no-new-privileges:true \
+  -v "$PWD/2xbrainz/examples:/examples:ro" \
+  psyb0t/2xbrainz replay --events /examples/conversation.jsonl
+```
+
+If that prints JSON lines, the image works and you can go wire up the real thing.
 
 ## Quick start
 
-The replay path is self-contained and proves the CLI image, transcript state,
-turn detection, priority scheduling, and JSON-line rendering without audio
-hardware or external models. It emits `timeline`, `draft`, and `summary`
-records for the synthetic remote turn.
+**1. Write a `.env`.** Grab [`.env.example`](.env.example) for the full list. The
+AIGate shape is one host and one token, because AIGate keeps Talkies on a private
+network and publishes it at `/talkies/`:
 
 ```bash
-make pkg-lock
-make replay
+TWOXBRAINZ_AIGATE_URL=http://aigate:4000/v1
+TWOXBRAINZ_AIGATE_MODEL=your-configured-model
+TWOXBRAINZ_AIGATE_TOKEN=your-gateway-token
+TWOXBRAINZ_TALKIES_WS_URL=ws://aigate:4000/talkies/v1/audio/transcriptions/stream
+TWOXBRAINZ_TALKIES_MODEL=nemotron-3.5-asr-0.6b
 ```
 
-Run the complete validation suite in containers:
+**2. Check it can see everything** — this prints your config with the secrets
+masked, so it's safe to paste when something's broken:
 
 ```bash
-make lint
-make test
-make build
-make run
+docker run --rm --init --env-file .env psyb0t/2xbrainz doctor
 ```
 
-`make test` is deterministic and offline: its providers and audio boundaries
-are mocked or local protocol fixtures. It never loads `.env` or calls AIGate
-or Talkies.
-
-## Live Linux/PipeWire use
-
-First list the PipeWire nodes available through the host runtime socket:
+**3. Find your audio nodes.** You need two: the mic, and whatever your speakers
+are monitoring.
 
 ```bash
-make devices
+docker run --rm --init --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=512m \
+  --user "$(id -u):$(id -g)" \
+  --cap-drop ALL --security-opt no-new-privileges:true \
+  -e XDG_RUNTIME_DIR=/pipewire-runtime \
+  -v "$XDG_RUNTIME_DIR:/pipewire-runtime:ro" \
+  psyb0t/2xbrainz devices
 ```
 
-Create a gitignored `.env` based on [`.env.example`](.env.example), then
-set the Talkies and AIGate service URLs, configured model slugs, and only the
-tokens those services require. Start the two-stream session by naming the
-Docker network where those services are reachable:
+**4. Go.** `--network` is whatever Docker network your Talkies and AIGate are
+reachable on:
 
 ```bash
-make live MIC_NODE=<microphone-node> SYSTEM_NODE=<system-node> LIVE_NETWORK=<network>
+docker run --rm --init -i \
+  --memory=1g --cpus=8.0 --pids-limit=128 \
+  --read-only --tmpfs /tmp:rw,noexec,nosuid,size=512m \
+  --user "$(id -u):$(id -g)" \
+  --cap-drop ALL --security-opt no-new-privileges:true \
+  --network aigate_aigate-internal \
+  --env-file .env \
+  -e XDG_RUNTIME_DIR=/pipewire-runtime \
+  -v "$XDG_RUNTIME_DIR:/pipewire-runtime:ro" \
+  psyb0t/2xbrainz live \
+    --mic-node <your-mic-node> \
+    --system-node <your-system-node>
 ```
 
-The live runtime defaults to eight CPUs, 1 GiB memory, and 128 processes so
-two CPU-ASR streams are not artificially pinned to one core. Tune only after
-benchmarking the selected Talkies model on the target host:
+Eight CPUs and a gig sounds like a lot; it isn't. Two concurrent CPU-ASR streams
+will happily pin themselves to one core and start dropping audio if you squeeze
+them. Measure before you shrink it.
+
+## Driving it while it runs
+
+It reads commands on stdin — that's what the `-i` is for. Type and hit enter:
+
+| Command | What happens |
+|---|---|
+| `pause` / `resume` | Stop and restart capture |
+| `stop` | Shut down cleanly |
+| `accept` | Mark the current draft accepted — emits a JSON line, sends nothing |
+| `dismiss` | Bin it |
+| `regenerate` | Ask for a different draft |
+| `edit <text>` | Replace the draft text |
+
+Draft actions only apply while their transcript revision is still current. If the
+conversation moved on, the action is rejected instead of acting on stale text.
+
+## Deployment shapes
+
+**AIGate with Talkies** (the default) — one host, one token. Both URLs point at
+the gateway, and since they share a host and port the gateway token is reused for
+Talkies automatically. You never set `TWOXBRAINZ_TALKIES_TOKEN`.
+
+**Standalone Talkies, drafts from anywhere else** — point each at its own thing:
 
 ```bash
-make live MIC_NODE=<microphone-node> SYSTEM_NODE=<system-node> \
-  RUNTIME_CPUS=<measured-cpu-budget> RUNTIME_MEMORY=<measured-memory-budget>
+TWOXBRAINZ_AIGATE_URL=https://api.openai.com/v1     # or https://api.groq.com/openai/v1
+TWOXBRAINZ_AIGATE_TOKEN=your-provider-key
+TWOXBRAINZ_TALKIES_WS_URL=ws://talkies:8000/v1/audio/transcriptions/stream
+TWOXBRAINZ_TALKIES_TOKEN=your-talkies-token
 ```
 
-Before selecting a streaming model, exercise the configured Talkies service
-with the bundled CC0 speech fixture through two concurrent native streams and
-both file routes:
-
-```bash
-make benchmark LIVE_NETWORK=<network>
-```
-
-To exercise the full `live` orchestration without a physical microphone, host
-PipeWire socket, or audio hardware, generate two temporary known-speech WAVs
-through the configured direct Talkies TTS route and present them as bounded
-fixture capture devices. The default fixture deliberately overlaps the streams:
-
-```bash
-make live-fixture LIVE_NETWORK=<network>
-```
-
-For a token-only `.env`, pass the same-authority AIGate and native Talkies URLs
-as target variables; see [configuration](docs/configuration.md#talkies-tts-fixture-capture).
-
-This is an explicit real Talkies TTS/ASR check, not part of `make test`. It
-asserts two final timelines, capture timing comparison, commentary, and the
-absence of a reply draft while the remote turn overlaps active local speech.
-The AIGate boundary is mocked for this target. It requires
-`TWOXBRAINZ_TALKIES_WS_URL`, `TWOXBRAINZ_TALKIES_MODEL`, and the shared
-`TWOXBRAINZ_AIGATE_TOKEN` in the gitignored environment file. It defaults to
-the fast `kokoro-82m-nvidia` TTS model; set `FIXTURE_TTS_MODEL` or
-`FIXTURE_TTS_VOICE` to choose another configured Talkies TTS model or voice.
-The harness never persists generated audio or credentials. Each real fixture
-does retain one redacted reconstruction trace below
-`.testing/fixture-traces/`; it contains fixed synthetic fixture text and the
-resulting CLI/model records, structured runtime logs, and its terminal
-assertion outcome. It never contains PCM bytes, host device names, or tokens.
-
-To test the configured PIBOX GLM model without requiring Talkies, run the
-synthetic-text prompt and interview-story check. It calls AIGate model
-inventory, reply, commentary, and summary routes, verifies that a multi-turn
-running summary retains a commitment, risk, and interviewer question, then
-proves the next reply request receives that summary:
-
-```bash
-make test-real LIVE_NETWORK=<network>
-```
-
-`test-real` defaults to `pibox-zai-glm-5-turbo`; override
-`FIXTURE_AIGATE_MODEL=<configured-model>` when comparing a different model.
-Its JSON result prints the container-side trace path; the corresponding host
-file is below `.testing/fixture-traces/`.
-To exercise full story reconstruction with deterministic local AIGate, run the
-four-turn interview fixture. It alternates local commitment, interviewer
-question, local mitigation, and final verification question:
-
-```bash
-make live-interview-fixture LIVE_NETWORK=<network>
-```
-
-To prove that same flow against real Talkies TTS/ASR and real AIGate generation,
-run:
-
-```bash
-make live-product-fixture LIVE_NETWORK=<network>
-```
-
-Both interview targets retain a redacted JSONL trace with synthesized inputs,
-playback releases, CLI records, runtime diagnostics, provider results, and
-final assertions. A provider deadline is a failed fixture result, not a silent
-pass. When a native ASR backend finalizes only after `end`, the runtime keeps
-capture open and rotates only that ASR segment after detected speech is followed
-by bounded silence. The next segment opens only on the next audible frame, so
-the configured Nemotron backend is not left with an idle socket while the LLM
-processes a prior turn. This supports the multi-turn fixture without recreating
-either capture process.
-
-To compare the built-in native candidates sequentially, first configure the
-Talkies service with all six model slugs enabled, then run:
-
-```bash
-make benchmark-candidates LIVE_NETWORK=<network>
-```
-
-To include a concurrent AIGate draft-path check, configure
-`TWOXBRAINZ_AIGATE_MODEL` and run either `make benchmark-with-draft` or
-`make benchmark-candidates-with-draft` with the same `LIVE_NETWORK`. The extra
-request has fixed synthetic text; no fixture audio or transcription text reaches
-AIGate.
-
-The command emits timing and contract metadata only—never audio bytes or
-transcript text. See [ASR evaluation](docs/asr-evaluation.md) for the fixture
-license and the larger target-machine benchmark still required for model choice.
-Set `BENCHMARK_REFERENCE_FILE=<path-to-utf8-text>` to add aggregate local word
-error rates without emitting transcript or reference text.
-
-The command runs the application as the invoking host user, mounts only the
-host PipeWire runtime directory read-only, sends both streams to Talkies using
-the same configured streaming model, and sends only transcript text to AIGate.
-While it runs, enter `pause`, `resume`, `stop`, `accept`, `dismiss`,
-`regenerate`, or `edit <replacement text>` on standard input. Draft actions
-only apply while their transcript revision is current; the CLI emits a
-fixed-shape action JSON line and never sends or speaks an accepted draft.
-
-`TWOXBRAINZ_AIGATE_MODE` defaults to `local`. To allow a remote text provider,
-set it to `remote` and explicitly set `TWOXBRAINZ_REMOTE_TEXT_ENABLED=true`.
-Without that second value, startup fails before any transcript leaves the
+Different hosts, so nothing is shared — your provider key never gets sent to
+Talkies and the Talkies token never gets sent to your provider. Shipping
+transcript text to a hosted provider also needs
+`TWOXBRAINZ_AIGATE_MODE=remote` **and** `TWOXBRAINZ_REMOTE_TEXT_ENABLED=true`.
+Set only one and it refuses to start, on purpose, before a single word leaves the
 machine.
+
+The URL is an OpenAI-compatible API root and includes the version prefix — `/v1`
+for AIGate, OpenAI and Groq alike.
+
+Full reference: [configuration](docs/configuration.md).
 
 ## Architecture
 
 ```text
-PipeWire microphone ─┐                         ┌─ AIGate text draft
-                     ├─ Talkies native WS ────┤
+PipeWire microphone ─┐                         ┌─ text draft
+                     ├─ Talkies native WS ─────┤
 PipeWire system ─────┘     (same ASR model)    └─ CLI JSON lines
 ```
 
-- `Talkies` is the continuous ASR boundary. Its native WebSocket delivers
-  revisioned partial, endpoint, and final events.
-- The coordinator owns reconciliation, turn state, cancellation, and stale
-  result rejection. It writes one finalized-turn timeline entry, prioritizes a
-  remote reply draft, and runs commentary or a rolling summary only when
-  higher-priority work is no longer active. Provider work has a fixed 15-second
-  deadline, so an unavailable model cannot hold the session open. A remote
-  final received during active local speech is retained in the timeline but
-  does not start a reply draft.
-- `AIGate` is text-only: it receives the minimized speaker-tagged transcript,
-  never PCM audio.
-- The CLI is intentionally line-oriented and terminal-first; it does not
-  auto-speak, send, inject a draft into another application, or provide a UI.
-  Its JSON records are schema-versioned and use opaque turn/generation IDs for
-  local correlation only.
+- **Talkies** is the ASR boundary. Its native WebSocket streams revisioned
+  partial, endpoint, and final events.
+- **The coordinator** owns reconciliation, turn state, cancellation, and throwing
+  away stale results. It writes one timeline entry per finalized turn, puts the
+  reply draft first, and only runs commentary or the rolling summary when nothing
+  more important is pending. Every provider call has a hard 15-second deadline, so
+  a wedged model can't hold the session hostage.
+- **The text provider** only ever sees a minimized speaker-tagged transcript.
+- **The CLI** is line-oriented and terminal-first by design. Records are
+  schema-versioned with opaque turn/generation IDs that mean nothing outside your
+  own session.
 
-See [docs/architecture.md](docs/architecture.md) and
-[docs/configuration.md](docs/configuration.md) for the full operating model.
-See [docs/asr-evaluation.md](docs/asr-evaluation.md) for fixture provenance and
-the model-selection measurement gate.
-The selected MVP platform, compute, and retention boundaries are recorded in
+More detail in [docs/architecture.md](docs/architecture.md). The MVP platform and
+retention boundaries are recorded in
 [ADR-0001](docs/decisions/0001-mvp-launch-profile.md).
 
-## Development workflow
+## Data handling
 
-All supported development commands run inside the development container.
-That image pins CPython 3.14.6.
+Raw audio is never written to disk. Logs are structured JSON and redact fields
+whose names look like credentials — and the config object drops its tokens from
+its own `repr`, so dumping it whole can't leak them either.
+
+The one thing that does get written is a redacted trace from the real-service test
+fixtures, under the gitignored `.testing/fixture-traces/`. It holds fixed
+synthetic text and the resulting records — never PCM, never host device names,
+never tokens.
+
+## Development
+
+Everything runs in containers; you don't need Python on your host.
 
 ```bash
-make help
-make format
-make lint-fix
-make test-unit
-make test-integration
-make test-real LIVE_NETWORK=<network>
+make help          # every target
+make lint          # ruff + pyright + shellcheck
+make test          # unit + integration, offline and deterministic
+make build         # production image
+make replay        # the bundled fixture
 ```
 
-`make version` prints the Docker release tag derived from `pyproject.toml`.
-`make build` applies that tag, `latest`, and the local development tag to the
-same image.
+`make test` never loads `.env` and never calls Talkies or AIGate — the providers
+and audio boundaries are mocked or local protocol fixtures. The targets that do
+hit real services (`make live-fixture`, `make test-real`,
+`make live-product-fixture`, `make benchmark`) are deliberately separate, need a
+real `.env`, and are not part of `make test` or CI.
 
-`make pkg-add`, `make pkg-update`, `make pkg-remove`, and `make pkg-upgrade`
-are the only supported dependency-mutation paths. They refresh the fixed
-supply-chain age gate before changing the lockfile.
+Picking an ASR model? [docs/asr-evaluation.md](docs/asr-evaluation.md) covers the
+benchmark targets and the fixture's provenance.
+
+`make pkg-add`, `make pkg-update`, `make pkg-remove` and `make pkg-upgrade` are
+the only supported ways to touch dependencies — they refresh the supply-chain age
+gate before the lockfile moves.
 
 ## Project layout
 
 ```text
-src/two_x_brainz/  — typed application modules and CLI
-tests/             — unit and WebSocket integration tests
+src/two_x_brainz/  — application modules and CLI
+tests/             — unit and integration tests
 examples/          — synthetic replay fixtures
-docs/              — architecture and configuration guides
-scripts/           — safe development tooling
+docs/              — architecture, configuration, ASR evaluation
+scripts/           — development tooling
 ```
-
-## Data handling
-
-Raw audio is not persisted by this implementation. Logs are structured and
-redact values whose field names look like credentials. Real fixture traces are
-an intentional exception for fixed synthetic test transcripts and outputs only;
-they are written below the gitignored `.testing/fixture-traces/` directory.
-Remote draft mode sends only text to the configured AIGate endpoint. Operators
-remain responsible for obtaining every participant's required recording consent.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+WTFPL. See [LICENSE](LICENSE). Do what the fuck you want to.
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for release notes.
+See [CHANGELOG.md](CHANGELOG.md).
