@@ -1,0 +1,3 @@
+{"speaker_role":"remote","type":"partial","revision":1,"text":"Could we review the next step?","audio_seconds":1.2,"confidence":0.9,"language":"en","words":[{"word":"Could","start":0.1,"end":1.2,"confidence":0.95}]}
+{"speaker_role":"remote","type":"endpoint","revision":2,"text":"Could we review the next step?","audio_seconds":1.4}
+{"speaker_role":"remote","type":"final","revision":3,"text":"Could we review the next step?","audio_seconds":1.4}

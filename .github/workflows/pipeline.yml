@@ -1,0 +1,60 @@
+name: pipeline
+
+on: [push]
+
+permissions:
+  contents: read
+
+jobs:
+  # make-checks rather than python-package-workflow: the latter always runs the
+  # build command and then uploads dist/ with if-no-files-found: error, and on
+  # tags it publishes to PyPI. Here `make build` produces a Docker image, there
+  # is no dist/ anywhere, and this project is not on PyPI.
+  #
+  # No dep_command: `make lint` and `make test` each build and run the dev image
+  # themselves, and the dependency env lives in that container's tmpfs, so a
+  # separate host step has nothing to hand forward. No coverage_file either --
+  # see the badges job.
+  #
+  # Runs on every push, including feature branches. The build below does not.
+  checks:
+    permissions:
+      contents: read
+    uses: psyb0t/reusable-github-workflows/.github/workflows/make-checks.yml@master
+
+  docker:
+    needs: [checks]
+    if: github.ref_name == github.event.repository.default_branch || startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write # GitHub Release
+      security-events: write # upload the Grype SARIF to the Security tab
+    uses: psyb0t/reusable-github-workflows/.github/workflows/docker-image-workflow.yml@master
+    with:
+      repository_name: psyb0t/2xbrainz
+      target_platforms: "linux/amd64,linux/arm64"
+      # The scan runs AFTER the image push and the GitHub Release, so a finding
+      # can never un-publish either one -- fail_build would only paint the run
+      # red after the fact. Findings land in the Security tab regardless, which
+      # is where they are meant to be read. `high` is the threshold that would
+      # apply if this is ever flipped to true.
+      scan_severity: "high"
+      scan_fail_build: false
+      # scan_only_fixed is deliberately left at its default (false): with
+      # fail_build off nothing is blocked by an unfixable CVE anyway, so hiding
+      # the no-fix-available findings would only remove signal from the
+      # Security tab. scan_vex_file is unset -- there is no OpenVEX doc in this
+      # repo, and an unreviewed suppression is worse than a noisy tab.
+    secrets:
+      dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+      dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  badges:
+    needs: [checks, docker]
+    if: github.ref_name == github.event.repository.default_branch || startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write # commit the SVGs to the badges branch
+    uses: psyb0t/reusable-github-workflows/.github/workflows/create-badges.yml@master
+    # No `coverage: true` -- `make test-coverage` installs no coverage tooling
+    # and produces no percentage file, and the badges job FAILS when coverage
+    # is enabled and the file is missing. Version + license only, matching the
+    # badge block in the README.

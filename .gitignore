@@ -1,0 +1,49 @@
+# Codex / agent scratch — never commit
+AGENTS.md
+CODEX.local.md
+.research_files/
+.agent_notes/
+.agent_knowledge/
+.plan-and-delegate/
+.testing/
+PLAN.md
+plan.md
+implplan.md
+NOTES.md
+TODO.md
+WIP.md
+git-update.sh
+
+# Secrets
+.env
+.env.local
+.env.*
+!.env.example
+ceva.md
+
+# Test / profile artifacts
+coverage.txt
+coverage.out
+profile.out
+.cover/
+htmlcov/
+
+# Python tooling and runtime diagnostics
+.venv/
+__pycache__/
+*.pyc
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+*.log
+
+# Editor / IDE
+.vscode/
+.idea/
+.editorconfig
+.envrc
+.tool-versions
+.python-version
+.nvmrc
+pyrightconfig.json
+.telemetry/

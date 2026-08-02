@@ -1,0 +1,27 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=512m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: ${RUNTIME_MEMORY:-1G}
+          cpus: "${RUNTIME_CPUS:-8.0}"
+          pids: ${RUNTIME_PIDS:-128}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    environment:
+      TWOXBRAINZ_LOG_FILE: /tmp/2xbrainz.log
+    command: ["doctor"]
