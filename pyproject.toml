@@ -23,7 +23,7 @@ packages = ["src/two_x_brainz"]
 [dependency-groups]
 dev = [
   "pyright==1.1.403",
-  "pytest==8.3.5",
+  "pytest==9.0.3",
   "ruff==0.11.13",
 ]
 
