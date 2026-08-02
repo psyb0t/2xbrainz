@@ -23,12 +23,12 @@ packages = ["src/two_x_brainz"]
 [dependency-groups]
 dev = [
   "pyright==1.1.403",
-  "pytest==8.3.5",
+  "pytest==9.0.3",
   "ruff==0.11.13",
 ]
 
 [tool.uv]
-exclude-newer = "2026-07-25T00:00:00Z"
+exclude-newer = "2026-07-26T00:00:00Z"
 
 [tool.ruff]
 line-length = 88
