@@ -129,9 +129,13 @@ docker run --rm --init -i \
     --system-node <your-system-node>
 ```
 
-Eight CPUs and a gig sounds like a lot; it isn't. Two concurrent CPU-ASR streams
-will happily pin themselves to one core and start dropping audio if you squeeze
-them. Measure before you shrink it.
+Those limits are a ceiling, not a requirement. This container doesn't transcribe
+anything — it runs two `pw-cat` captures, normalizes the PCM, and pushes it down
+a WebSocket. The transcription cost lives in Talkies, in its own container, where
+these flags have exactly zero effect.
+
+So if the ASR is lagging, give **Talkies** more (or use its CUDA variant). Making
+this number bigger will not help.
 
 ## Driving it while it runs
 
