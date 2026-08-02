@@ -8,7 +8,10 @@ TAG := v$(VERSION)
 PROJECT_ROOT := $(CURDIR)
 ENV_FILE ?= .env
 FIXTURE_TRACE_DIRECTORY := $(PROJECT_ROOT)/.testing/fixture-traces
-LIVE_NETWORK ?= bridge
+# host, so the app reaches AIGate and Talkies on the ports they already publish
+# without the caller having to know which Docker network they sit on. Override
+# with LIVE_NETWORK=<name> to join a specific network instead.
+LIVE_NETWORK ?= host
 BENCHMARK_AUDIO ?= tests/fixtures/commons-audio-cc0.wav
 BENCHMARK_REFERENCE_FILE ?=
 TALKIES_MODEL ?=

@@ -69,13 +69,16 @@ ENV_AIGATE_MODE = f"{ENV_PREFIX}AIGATE_MODE"
 ENV_REMOTE_TEXT_ENABLED = f"{ENV_PREFIX}REMOTE_TEXT_ENABLED"
 ENV_LOG_LEVEL = f"{ENV_PREFIX}LOG_LEVEL"
 ENV_LOG_FILE = f"{ENV_PREFIX}LOG_FILE"
-# Defaults describe the AIGate deployment, where Talkies has no host port
-# binding and is reachable only through the gateway at /talkies/. A standalone
-# Talkies box is still supported -- point TALKIES_WS_URL at it directly and give
-# it its own token, since it will no longer share the gateway's authority.
-DEFAULT_TALKIES_WS_URL = f"ws://aigate:4000/talkies{TALKIES_STREAM_PATH}"
+# Defaults describe the AIGate deployment reached over the host network, which
+# is what `make live` uses: AIGate publishes one port, Talkies has no host port
+# binding of its own and is served through the gateway at /talkies/. Joining a
+# specific Docker network instead means swapping localhost for the service name.
+# A standalone Talkies box is still supported -- point TALKIES_WS_URL at it
+# directly and give it its own token, since it no longer shares the gateway's
+# authority.
+DEFAULT_TALKIES_WS_URL = f"ws://localhost:4000/talkies{TALKIES_STREAM_PATH}"
 DEFAULT_TALKIES_MODEL = "nemotron-3.5-asr-0.6b"
-DEFAULT_AIGATE_URL = "http://aigate:4000/v1"
+DEFAULT_AIGATE_URL = "http://localhost:4000/v1"
 DEFAULT_AIGATE_MODE = "local"
 REMOTE_TEXT_ENABLED_VALUE = "true"
 DEFAULT_LOG_LEVEL = "INFO"

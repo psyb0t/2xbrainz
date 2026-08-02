@@ -79,30 +79,23 @@ If that prints JSON lines, the image works and you can go wire up the real thing
 
 ## Quick start
 
-**1. Write a `.env`.** Grab [`.env.example`](.env.example) for the full list. The
-AIGate shape is one host and one token, because AIGate keeps Talkies on a private
-network and publishes it at `/talkies/`:
+**1. Write a `.env`.** Grab [`.env.example`](.env.example) for the full list. One
+host, one token — AIGate keeps Talkies on a private network and serves it at
+`/talkies/`, so both URLs point at the gateway's published port:
 
 ```bash
-TWOXBRAINZ_AIGATE_URL=http://aigate:4000/v1
+TWOXBRAINZ_AIGATE_URL=http://localhost:4000/v1
 TWOXBRAINZ_AIGATE_MODEL=your-configured-model
 TWOXBRAINZ_AIGATE_TOKEN=your-gateway-token
-TWOXBRAINZ_TALKIES_WS_URL=ws://aigate:4000/talkies/v1/audio/transcriptions/stream
+TWOXBRAINZ_TALKIES_WS_URL=ws://localhost:4000/talkies/v1/audio/transcriptions/stream
 TWOXBRAINZ_TALKIES_MODEL=nemotron-3.5-asr-0.6b
 ```
 
-**2. Check it can see everything** — this prints your config with the secrets
-masked, so it's safe to paste when something's broken:
+**2. Find your audio nodes.** You need two: the mic, and whatever your speakers
+are monitoring. Same flags as the real thing, so if this works, step 3 works:
 
 ```bash
-docker run --rm --init --env-file .env psyb0t/2xbrainz doctor
-```
-
-**3. Find your audio nodes.** You need two: the mic, and whatever your speakers
-are monitoring.
-
-```bash
-docker run --rm --init --read-only \
+docker run --rm --init --network host --read-only \
   --tmpfs /tmp:rw,noexec,nosuid,size=512m \
   --user "$(id -u):$(id -g)" \
   --cap-drop ALL --security-opt no-new-privileges:true \
@@ -111,16 +104,14 @@ docker run --rm --init --read-only \
   psyb0t/2xbrainz devices
 ```
 
-**4. Go.** `--network` is whatever Docker network your Talkies and AIGate are
-reachable on:
+**3. Go.**
 
 ```bash
-docker run --rm --init -i \
+docker run --rm --init -i --network host \
   --memory=1g --cpus=8.0 --pids-limit=128 \
   --read-only --tmpfs /tmp:rw,noexec,nosuid,size=512m \
   --user "$(id -u):$(id -g)" \
   --cap-drop ALL --security-opt no-new-privileges:true \
-  --network aigate_aigate-internal \
   --env-file .env \
   -e XDG_RUNTIME_DIR=/pipewire-runtime \
   -v "$XDG_RUNTIME_DIR:/pipewire-runtime:ro" \
@@ -129,13 +120,21 @@ docker run --rm --init -i \
     --system-node <your-system-node>
 ```
 
-Those limits are a ceiling, not a requirement. This container doesn't transcribe
-anything — it runs two `pw-cat` captures, normalizes the PCM, and pushes it down
-a WebSocket. The transcription cost lives in Talkies, in its own container, where
-these flags have exactly zero effect.
+`--network host` is the default because it just works: it reaches AIGate on the
+port it already publishes, and resolves tailnet names the same way your shell
+does. No hunting for which Docker network the gateway is on. If you'd rather join
+one explicitly, drop `--network host`, add `--network <name>`, and swap
+`localhost` for the gateway's service name in `.env`.
 
-So if the ASR is lagging, give **Talkies** more (or use its CUDA variant). Making
-this number bigger will not help.
+Swap `live` for `doctor` if something's wrong — same command, and it prints your
+resolved config with the secrets masked, so it's safe to paste.
+
+Those resource limits are a ceiling, not a requirement. This container doesn't
+transcribe anything — it runs two `pw-cat` captures, normalizes the PCM, and
+pushes it down a WebSocket. The transcription cost lives in Talkies, in its own
+container, where these flags have exactly zero effect. If the ASR is lagging,
+give **Talkies** more (or use its CUDA variant); raising this number will not
+help.
 
 ## Driving it while it runs
 

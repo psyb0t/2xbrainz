@@ -47,13 +47,19 @@ both URLs point at the gateway and `talkies:8000` is not reachable from outside
 the compose stack:
 
 ```
-TWOXBRAINZ_AIGATE_URL=http://aigate:4000/v1
-TWOXBRAINZ_TALKIES_WS_URL=ws://aigate:4000/talkies/v1/audio/transcriptions/stream
+TWOXBRAINZ_AIGATE_URL=http://localhost:4000/v1
+TWOXBRAINZ_TALKIES_WS_URL=ws://localhost:4000/talkies/v1/audio/transcriptions/stream
 TWOXBRAINZ_AIGATE_TOKEN=<gateway token>
 ```
 
 Both carry the same host and effective port, so the gateway token is reused for
 Talkies and `TWOXBRAINZ_TALKIES_TOKEN` can stay unset.
+
+`localhost` here assumes the default `LIVE_NETWORK=host`, which reaches the
+gateway on the port it already publishes and resolves tailnet names exactly as
+the host shell does. Set `LIVE_NETWORK=<name>` to join a specific Docker network
+instead, and replace `localhost` with the gateway's service name on that
+network.
 
 **Standalone Talkies with text generation elsewhere** — point each at its own
 provider. Any OpenAI-compatible endpoint works for drafts:
