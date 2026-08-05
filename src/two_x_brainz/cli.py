@@ -110,16 +110,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="optional visible system-output node override",
     )
     live.add_argument(
-        "--output",
-        choices=("tui", "web"),
-        default="tui",
-        help="operator presentation mode (default: tui)",
-    )
-    live.add_argument(
         "--web-port",
         type=_web_port,
         default=DEFAULT_WEB_CONSOLE_PORT,
-        help="loopback port for --output web",
+        help="loopback port for the web console",
     )
     benchmark = subcommands.add_parser(
         "benchmark",
@@ -160,7 +154,6 @@ async def _run(arguments: argparse.Namespace, settings: Settings) -> int:
         await run_live(
             settings,
             audio_setup,
-            output=arguments.output,
             web_port=arguments.web_port,
         )
         return _EXIT_SUCCESS

@@ -1,4 +1,4 @@
-"""Interactive Textual operator console for a live conversation session."""
+"""Bounded presentation state for the web operator console."""
 
 from __future__ import annotations
 
@@ -10,15 +10,9 @@ import time
 from collections import deque
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
-from typing import ClassVar, TextIO
+from typing import TextIO
 
 from rich.text import Text
-from textual.app import App, ComposeResult
-from textual.binding import Binding, BindingType
-from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.css.query import NoMatches
-from textual.timer import Timer
-from textual.widgets import Footer, Input, OptionList, Static
 
 from two_x_brainz.audio_selection import (
     AudioDevice,
@@ -40,6 +34,7 @@ _CONTROL_ERROR_KIND = "control_error"
 _SESSION_ERROR_KIND = "session_error"
 _COMMENTARY_KIND = "commentary"
 _SUMMARY_KIND = "summary"
+_AUDIO_CHANNEL_KIND = "audio_channel"
 _COMPLETED_STATUS = "completed"
 _RUNNING_STATUS = "running"
 _FAILED_STATUS = "failed"
@@ -116,13 +111,18 @@ class LiveTerminal:
         default_factory=lambda: {_USER_ROLE: 0, _REMOTE_ROLE: 0},
         init=False,
     )
+    _audio_channel_states: dict[str, str] = field(
+        default_factory=lambda: {
+            _USER_ROLE: "idle",
+            _REMOTE_ROLE: "idle",
+        },
+        init=False,
+    )
     _notice: str = field(default="Preparing audio and models", init=False)
     _operation: str = field(default="Preparing audio and models", init=False)
     _operation_started_at: float | None = field(default=None, init=False)
     _session_started_at: float = field(default_factory=time.monotonic, init=False)
     _active: bool = field(default=False, init=False)
-    _app: OperatorConsole | None = field(default=None, init=False)
-    _app_task: asyncio.Task[object] | None = field(default=None, init=False)
     _controls: asyncio.Queue[str | object] = field(
         default_factory=lambda: asyncio.Queue[str | object](),
         init=False,
@@ -160,13 +160,18 @@ class LiveTerminal:
 
     @property
     def interactive(self) -> bool:
-        """Whether this session owns an interactive Textual console."""
+        """Whether a live web presentation currently owns this state."""
         return self._active
 
     @property
     def requires_audio_setup(self) -> bool:
         """Whether this live session needs an operator-selected capture pair."""
-        return self.audio_setup is not None and self.audio_setup.selection is None
+        return self.audio_setup is not None and not self.audio_setup.selection_available
+
+    @property
+    def session_state(self) -> str:
+        """Return the machine-readable session state for the web snapshot."""
+        return self._state
 
     @property
     def current_audio_selection(self) -> AudioSelection | None:
@@ -181,31 +186,10 @@ class LiveTerminal:
         return self._audio_selection_cancelled
 
     async def open(self) -> AudioSelection | None:
-        """Open setup/dashboard and return the capture pair chosen for startup."""
+        """Activate state storage without opening a terminal user interface."""
         if self.audio_setup is not None and self.audio_setup.selection is not None:
             self.apply_audio_selection(self.audio_setup.selection)
-        if not self.stream.isatty():
-            return self.current_audio_selection
-        self._app = OperatorConsole(self)
-        self._app_task = asyncio.create_task(
-            self._app.run_async(), name="operator-console"
-        )
-        try:
-            await self._app.ready.wait()
-        except (OSError, RuntimeError):
-            self._app_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._app_task
-            self._app = None
-            self._app_task = None
-            logger.warning(
-                "terminal output is unavailable",
-                extra={"reason": _TERMINAL_OUTPUT_UNAVAILABLE_REASON},
-            )
-            return self.current_audio_selection
         self.activate_presentation()
-        if self.requires_audio_setup:
-            return await self.wait_for_audio_selection()
         return self.current_audio_selection
 
     def activate_presentation(self) -> None:
@@ -220,32 +204,10 @@ class LiveTerminal:
         return self.current_audio_selection
 
     async def close(self) -> None:
-        """Restore the calling terminal and stop waiting for console controls."""
+        """Stop preview probes and release control waiters."""
         self._active = False
         await self.stop_setup_audio_preview()
         self._controls.put_nowait(_STOP_CONTROL)
-        app = self._app
-        task = self._app_task
-        self._app = None
-        self._app_task = None
-        if app is None or task is None:
-            return
-        app.exit()
-        try:
-            await asyncio.wait_for(task, timeout=_TERMINAL_CLOSE_TIMEOUT_SECONDS)
-        except TimeoutError:
-            logger.warning(
-                "terminal shutdown exceeded deadline",
-                extra={"reason": "terminal_shutdown_deadline_exceeded"},
-            )
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, OSError, TimeoutError):
-                await asyncio.wait_for(
-                    task,
-                    timeout=_TERMINAL_CLOSE_TIMEOUT_SECONDS,
-                )
-        except (asyncio.CancelledError, OSError):
-            return
 
     def consume(self, record: Mapping[str, object]) -> None:
         """Apply one safe runtime event to the visible console state."""
@@ -268,12 +230,18 @@ class LiveTerminal:
             self._state = "degraded"
             self._notice = _OPERATION_CAPTURE_DEGRADED
             self._set_operation(_OPERATION_CAPTURE_DEGRADED)
+        elif kind == _AUDIO_CHANNEL_KIND:
+            role = _text(record.get("speaker_role"))
+            state = _text(record.get("state"))
+            if role in _SPEAKER_LABELS:
+                self._audio_channel_states[role] = state
+                self._notice = f"{_SPEAKER_LABELS[role]} audio: {state}"
 
         if not self._active:
             self._write_plain_update(kind)
 
     async def control_lines(self) -> AsyncIterator[str]:
-        """Yield bounded Textual control commands for the runtime parser."""
+        """Yield bounded web control commands for the runtime parser."""
         while True:
             control = await self._controls.get()
             if control is _STOP_CONTROL:
@@ -294,6 +262,10 @@ class LiveTerminal:
     def audio_level(self, speaker_role: str) -> int:
         """Return one active capture level for a structured presentation."""
         return self._audio_levels.get(speaker_role, 0)
+
+    def audio_channel_state(self, speaker_role: str) -> str:
+        """Return one channel's independent capture/reconnect state."""
+        return self._audio_channel_states.get(speaker_role, "idle")
 
     def set_setup_audio_level(
         self,
@@ -381,7 +353,7 @@ class LiveTerminal:
         microphone_index: int,
         system_monitor_index: int,
     ) -> AudioSelection | None:
-        """Persist a setup-screen selection without replacing active capture."""
+        """Persist a setup-screen selection for immediate capture replacement."""
         if self.audio_setup is None:
             return None
         self.cancel_setup_audio_preview()
@@ -398,7 +370,8 @@ class LiveTerminal:
             self.apply_audio_selection(selection)
             self._audio_selection_ready.set()
             return selection
-        self._notice = _SETUP_SAVED_MESSAGE
+        self.apply_audio_selection(selection)
+        self._notice = "Audio sources saved and applied."
         return selection
 
     def cancel_audio_setup(self) -> None:
@@ -661,293 +634,6 @@ class LiveTerminal:
         task.add_done_callback(self._setup_preview_cleanup_tasks.discard)
 
 
-class OperatorConsole(App[None]):
-    """Textual app that keeps conversation scroll state separate from guidance."""
-
-    CSS = """
-    Screen { layout: vertical; }
-    #status { height: 1; padding: 0 1; background: $surface; }
-    #sources { height: 2; padding: 0 1; background: $panel; }
-    #main { height: 1fr; }
-    #conversation { width: 2fr; height: 1fr; border: round $primary; padding: 0 1; }
-    #guidance { width: 1fr; height: 1fr; border: round $success; padding: 0 1; }
-    #main.focus-conversation #guidance { display: none; }
-    #main.focus-guidance #conversation { display: none; }
-    #main.focus-conversation #conversation { width: 1fr; }
-    #main.focus-guidance #guidance { width: 1fr; }
-    #command { height: 3; }
-    #audio-setup { height: 1fr; padding: 1 2; }
-    #audio-setup-title { height: 2; text-style: bold; }
-    #setup-microphone, #setup-system { height: 1fr; min-height: 5; }
-    #setup-message { height: 2; color: $text-muted; }
-    """
-    BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("ctrl+p", "command('pause')", "Pause"),
-        Binding("ctrl+r", "command('resume')", "Resume"),
-        Binding("ctrl+x", "command('stop')", "Stop"),
-        Binding("ctrl+q", "command('stop')", "Quit", priority=True),
-        Binding("ctrl+c", "command('stop')", "Quit", priority=True),
-        Binding("f2", "cycle_view", "View"),
-        Binding("f3", "open_audio_setup", "Setup"),
-        Binding("colon", "focus_command", "Command"),
-    ]
-
-    def __init__(self, terminal: LiveTerminal) -> None:
-        super().__init__()
-        self._terminal = terminal
-        self.ready = asyncio.Event()
-        self._following_conversation = True
-        self._following_guidance = True
-        self._view_mode = _VIEW_SPLIT
-        self._refresh_timer: Timer | None = None
-        self._setup_open = False
-        self._setup_microphone_index: int | None = None
-        self._setup_labels: dict[str, tuple[str, ...]] = {}
-
-    @property
-    def view_mode(self) -> str:
-        """Return the active operator-selected pane arrangement."""
-        return self._view_mode
-
-    def compose(self) -> ComposeResult:
-        yield Static(id=_STATUS_ID, markup=False)
-        yield Static(id=_SOURCES_ID, markup=False)
-        with Horizontal(id="main"):
-            with VerticalScroll(id=_CONVERSATION_ID):
-                yield Static(id=_CONVERSATION_CONTENT_ID, markup=False)
-            with VerticalScroll(id=_GUIDANCE_ID):
-                yield Static(id="guidance-content", markup=False)
-        with Vertical(id=_SETUP_ID):
-            yield Static("Audio setup", id="audio-setup-title", markup=False)
-            yield Static("Microphone input", markup=False)
-            yield OptionList(
-                *self._setup_device_labels("microphones"),
-                id=_SETUP_MICROPHONE_ID,
-                markup=False,
-            )
-            yield Static("System audio source", markup=False)
-            yield OptionList(
-                *self._setup_device_labels("system_monitors"),
-                id=_SETUP_SYSTEM_ID,
-                markup=False,
-            )
-            yield Static(_SETUP_INITIAL_MESSAGE, id=_SETUP_MESSAGE_ID, markup=False)
-        yield Input(placeholder=_CONTROL_PROMPT, id=_COMMAND_ID)
-        yield Footer()
-
-    def on_mount(self) -> None:
-        if self._terminal.requires_audio_setup:
-            self._show_audio_setup()
-        else:
-            self._show_dashboard()
-        self._refresh()
-        self._refresh_timer = self.set_interval(
-            _UPDATE_INTERVAL_SECONDS,
-            self._refresh,
-        )
-        self.ready.set()
-
-    def on_unmount(self) -> None:
-        if self._refresh_timer is not None:
-            self._refresh_timer.stop()
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        command = event.value.strip()
-        event.input.value = ""
-        if command:
-            self._terminal.submit_control(command)
-        self.query_one(f"#{_CONVERSATION_ID}", VerticalScroll).focus()
-
-    def on_option_list_option_selected(
-        self,
-        event: OptionList.OptionSelected,
-    ) -> None:
-        """Use only setup-list indexes already validated by audio selection."""
-        if not self._setup_open:
-            return
-        if event.option_list.id == _SETUP_MICROPHONE_ID:
-            self._setup_microphone_index = event.option_index
-            self.query_one(f"#{_SETUP_SYSTEM_ID}", OptionList).focus()
-            return
-        if event.option_list.id != _SETUP_SYSTEM_ID:
-            return
-        if self._setup_microphone_index is None:
-            self._set_setup_message(_SETUP_MICROPHONE_REQUIRED_MESSAGE)
-            self.query_one(f"#{_SETUP_MICROPHONE_ID}", OptionList).focus()
-            return
-        selection = self._terminal.select_audio_setup(
-            self._setup_microphone_index,
-            event.option_index,
-        )
-        if selection is None:
-            self._set_setup_message(_SETUP_SAVE_FAILED_MESSAGE)
-            return
-        if self._terminal.requires_audio_setup:
-            self._set_setup_message(_SETUP_INITIAL_MESSAGE)
-            return
-        self._show_dashboard()
-
-    def action_command(self, command: str) -> None:
-        if self._setup_open and command == "stop":
-            self._terminal.cancel_audio_setup()
-            self.exit()
-            return
-        self._terminal.submit_control(command)
-
-    def action_focus_command(self) -> None:
-        self.query_one(f"#{_COMMAND_ID}", Input).focus()
-
-    def action_open_audio_setup(self) -> None:
-        self._show_audio_setup()
-
-    def action_cycle_view(self) -> None:
-        """Cycle split, conversation, and guidance views without changing content."""
-        next_index = (_VIEW_MODES.index(self._view_mode) + 1) % len(_VIEW_MODES)
-        self._view_mode = _VIEW_MODES[next_index]
-        main = self.query_one("#main", Horizontal)
-        main.set_class(
-            self._view_mode == _VIEW_CONVERSATION,
-            _CONVERSATION_VIEW_CLASS,
-        )
-        main.set_class(
-            self._view_mode == _VIEW_GUIDANCE,
-            _GUIDANCE_VIEW_CLASS,
-        )
-        if self._view_mode == _VIEW_GUIDANCE:
-            self.query_one(f"#{_GUIDANCE_ID}", VerticalScroll).focus()
-            return
-        self.query_one(f"#{_CONVERSATION_ID}", VerticalScroll).focus()
-
-    def _refresh(self) -> None:
-        try:
-            conversation = self.query_one(
-                f"#{_CONVERSATION_ID}",
-                VerticalScroll,
-            )
-            guidance = self.query_one(f"#{_GUIDANCE_ID}", VerticalScroll)
-            status = self.query_one(f"#{_STATUS_ID}", Static)
-            sources = self.query_one(f"#{_SOURCES_ID}", Static)
-            conversation_content = self.query_one(
-                f"#{_CONVERSATION_CONTENT_ID}",
-                Static,
-            )
-            guidance_content = self.query_one("#guidance-content", Static)
-        except NoMatches:
-            return
-        was_at_bottom = conversation.scroll_y >= conversation.max_scroll_y
-        self._following_conversation = was_at_bottom
-        self._following_guidance = guidance.scroll_y >= guidance.max_scroll_y
-        status.update(
-            self._terminal.status_text(),
-            layout=False,
-        )
-        sources.update(
-            self._terminal.sources_text(),
-            layout=False,
-        )
-        conversation_content.update(
-            self._terminal.conversation_text(),
-        )
-        guidance_content.update(
-            self._terminal.guidance_text(),
-        )
-        if self._setup_open:
-            self._refresh_setup_device_labels()
-        if self._following_conversation:
-            conversation.scroll_end(animate=False)
-        if self._following_guidance:
-            guidance.scroll_end(animate=False)
-
-    def _show_audio_setup(self) -> None:
-        self._setup_open = True
-        self.query_one(f"#{_STATUS_ID}", Static).display = False
-        self.query_one(f"#{_SOURCES_ID}", Static).display = False
-        self.query_one("#main", Horizontal).display = False
-        self.query_one(f"#{_COMMAND_ID}", Input).display = False
-        setup = self.query_one(f"#{_SETUP_ID}", Vertical)
-        setup.display = True
-        selection = self._terminal.current_audio_selection
-        self._setup_microphone_index = _audio_device_index(
-            self._setup_microphones(),
-            None if selection is None else selection.mic_node,
-        )
-        microphone_list = self.query_one(f"#{_SETUP_MICROPHONE_ID}", OptionList)
-        system_list = self.query_one(f"#{_SETUP_SYSTEM_ID}", OptionList)
-        microphone_list.highlighted = (
-            0 if self._setup_microphone_index is None else self._setup_microphone_index
-        )
-        system_index = _audio_device_index(
-            self._setup_system_monitors(),
-            None if selection is None else selection.system_node,
-        )
-        system_list.highlighted = 0 if system_index is None else system_index
-        self._terminal.start_setup_audio_metering(
-            self._setup_microphones(),
-            self._setup_system_monitors(),
-        )
-        self._refresh_setup_device_labels()
-        self._set_setup_message(_SETUP_INITIAL_MESSAGE)
-        microphone_list.focus()
-
-    def _show_dashboard(self) -> None:
-        self._setup_open = False
-        self._terminal.cancel_setup_audio_preview()
-        self.query_one(f"#{_SETUP_ID}", Vertical).display = False
-        self.query_one(f"#{_STATUS_ID}", Static).display = True
-        self.query_one(f"#{_SOURCES_ID}", Static).display = True
-        self.query_one("#main", Horizontal).display = True
-        self.query_one(f"#{_COMMAND_ID}", Input).display = True
-        self.query_one(f"#{_CONVERSATION_ID}", VerticalScroll).focus()
-
-    def _set_setup_message(self, message: str) -> None:
-        self.query_one(f"#{_SETUP_MESSAGE_ID}", Static).update(message)
-
-    def _setup_device_labels(self, attribute: str) -> tuple[str, ...]:
-        setup = self._terminal.audio_setup
-        if setup is None:
-            return ()
-        devices = (
-            setup.microphones if attribute == "microphones" else setup.system_monitors
-        )
-        speaker_role = _USER_ROLE if attribute == "microphones" else _REMOTE_ROLE
-        return tuple(
-            self._terminal.setup_audio_device_label(speaker_role, device)
-            for device in devices
-        )
-
-    def _setup_microphones(self) -> tuple[AudioDevice, ...]:
-        setup = self._terminal.audio_setup
-        return () if setup is None else setup.microphones
-
-    def _setup_system_monitors(self) -> tuple[AudioDevice, ...]:
-        setup = self._terminal.audio_setup
-        return () if setup is None else setup.system_monitors
-
-    def _refresh_setup_device_labels(self) -> None:
-        self._replace_setup_option_labels(
-            _SETUP_MICROPHONE_ID,
-            self._setup_device_labels("microphones"),
-        )
-        self._replace_setup_option_labels(
-            _SETUP_SYSTEM_ID,
-            self._setup_device_labels("system_monitors"),
-        )
-
-    def _replace_setup_option_labels(
-        self,
-        list_id: str,
-        labels: tuple[str, ...],
-    ) -> None:
-        if self._setup_labels.get(list_id) == labels:
-            return
-        option_list = self.query_one(f"#{list_id}", OptionList)
-        if option_list.option_count != len(labels):
-            return
-        for index, label in enumerate(labels):
-            option_list.replace_option_prompt_at_index(index, label)
-        self._setup_labels[list_id] = labels
-
-
 def _operation_for_state(state: str) -> str:
     if state == "running":
         return _OPERATION_WAITING
@@ -983,18 +669,6 @@ def _visible_text(value: object) -> str:
 
 def _device_label(label: str | None, fallback: str) -> str:
     return _visible_text(label) or _visible_text(fallback) or _EMPTY_TEXT
-
-
-def _audio_device_index(
-    devices: tuple[AudioDevice, ...],
-    selected_identifier: str | None,
-) -> int | None:
-    if selected_identifier is None:
-        return None
-    for index, device in enumerate(devices):
-        if selected_identifier in {device.node_id, device.name}:
-            return index
-    return None
 
 
 def _setup_meter_key(speaker_role: str, node_name: str) -> str:

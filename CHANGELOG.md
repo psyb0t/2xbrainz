@@ -3,6 +3,29 @@
 All notable changes per release. Versions follow
 [semantic versioning](https://semver.org).
 
+## v1.0.0 — 2026-08-05
+
+Make the loopback Svelte console the sole live operator surface and keep live
+sessions usable across audio-device failures.
+
+- **Breaking.** Remove the Textual interface and the `live --output tui|web`
+  selector. `make run` now starts the web console; direct callers use
+  `live --web-port <port>`.
+- Open live sessions idle and require **Start listening** before either PipeWire
+  source produces frames. **Stop listening** pauses capture without terminating
+  the browser or losing the conversation state.
+- Add runtime AIGate model and reasoning-effort selection plus a bounded activity
+  trail for request and allowlisted tool phases. The trail excludes prompts,
+  tool payloads and results, credentials, and private hidden reasoning.
+- Supervise microphone and system audio independently so a disconnected channel
+  retries or switches routes without cancelling its peer, the web server, or the
+  accumulated transcript and story.
+- Add in-app PipeWire redetection and apply persisted source changes immediately
+  to the affected channel.
+- Remove Textual and its transitive runtime dependencies, synchronize the
+  third-party inventory, and expand frontend, WebSocket, routing, configuration,
+  and failure-recovery tests.
+
 ## v0.2.0 — 2026-08-05
 
 - Add responsive Textual and loopback Svelte operator consoles with independent,

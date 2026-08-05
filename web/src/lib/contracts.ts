@@ -15,6 +15,7 @@ export interface ActiveAudioSource {
   label: string;
   nodeName: string;
   level: number;
+  state: string;
 }
 
 export interface WebSnapshot {
@@ -26,6 +27,13 @@ export interface WebSnapshot {
   coach: string;
   story: string;
   requiresAudioSetup: boolean;
+  sessionState: string;
+  provider: {
+    models: string[];
+    activeModel: string;
+    reasoningEffort: string;
+    activity: ProviderActivity[];
+  };
   activeAudio: {
     microphone: ActiveAudioSource;
     system: ActiveAudioSource;
@@ -34,6 +42,14 @@ export interface WebSnapshot {
     microphones: AudioMeter[];
     systemMonitors: AudioMeter[];
   };
+}
+
+export interface ProviderActivity {
+  phase: string;
+  output_kind?: string;
+  model?: string;
+  reasoning_effort?: string;
+  tool?: string;
 }
 
 export const EMPTY_SNAPSHOT: WebSnapshot = {
@@ -45,9 +61,16 @@ export const EMPTY_SNAPSHOT: WebSnapshot = {
   coach: 'PRIVATE COACH\n—',
   story: 'STORY SO FAR\n—',
   requiresAudioSetup: false,
+  sessionState: 'starting',
+  provider: {
+    models: [],
+    activeModel: '',
+    reasoningEffort: 'none',
+    activity: []
+  },
   activeAudio: {
-    microphone: { label: 'Not selected', nodeName: '', level: 0 },
-    system: { label: 'Not selected', nodeName: '', level: 0 }
+    microphone: { label: 'Not selected', nodeName: '', level: 0, state: 'idle' },
+    system: { label: 'Not selected', nodeName: '', level: 0, state: 'idle' }
   },
   audioSetup: { microphones: [], systemMonitors: [] }
 };
@@ -62,6 +85,14 @@ export function isWebSnapshot(value: unknown): value is WebSnapshot {
     typeof value.coach === 'string' &&
     typeof value.story === 'string' &&
     typeof value.requiresAudioSetup === 'boolean' &&
+    typeof value.sessionState === 'string' &&
+    isRecord(value.provider) &&
+    Array.isArray(value.provider.models) &&
+    value.provider.models.every((model) => typeof model === 'string') &&
+    typeof value.provider.activeModel === 'string' &&
+    typeof value.provider.reasoningEffort === 'string' &&
+    Array.isArray(value.provider.activity) &&
+    value.provider.activity.every(isProviderActivity) &&
     isRecord(value.activeAudio) &&
     isActiveAudioSource(value.activeAudio.microphone) &&
     isActiveAudioSource(value.activeAudio.system) &&
@@ -73,12 +104,17 @@ export function isWebSnapshot(value: unknown): value is WebSnapshot {
   );
 }
 
+function isProviderActivity(value: unknown): value is ProviderActivity {
+  return isRecord(value) && typeof value.phase === 'string';
+}
+
 function isActiveAudioSource(value: unknown): value is ActiveAudioSource {
   return (
     isRecord(value) &&
     typeof value.label === 'string' &&
     typeof value.nodeName === 'string' &&
-    isPercent(value.level)
+    isPercent(value.level) &&
+    typeof value.state === 'string'
   );
 }
 

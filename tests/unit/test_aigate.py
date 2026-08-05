@@ -155,6 +155,39 @@ class AIGateClientTests(unittest.TestCase):
         self.assertIn("clearly phrased as a proposal", draft_prompt)
         self.assertIn("Never present a proposed mechanism", draft_prompt)
 
+    def test_runtime_reasoning_effort_is_snapshotted_into_request(self) -> None:
+        payloads: list[dict[str, object]] = []
+        activities: list[dict[str, object]] = []
+
+        def post(client: AIGateClient, payload: dict[str, object]) -> object:
+            del client
+            payloads.append(payload)
+            return _completion("short reply")
+
+        client = _client()
+        client.activity_sink = lambda event: activities.append(dict(event))
+        client.configure("test-model", "high")
+        with patch.object(AIGateClient, "_post", new=post):
+            asyncio.run(client.draft(_draft_request()))
+
+        self.assertEqual(payloads[0]["reasoning_effort"], "high")
+        self.assertEqual(activities[0]["phase"], "request_started")
+        self.assertEqual(activities[-1]["phase"], "request_completed")
+        self.assertNotIn("messages", activities[0])
+
+    def test_runtime_provider_settings_reject_invalid_reasoning(self) -> None:
+        with self.assertRaisesRegex(ConfigurationError, "reasoning effort"):
+            _client().configure("test-model", "unbounded")
+
+    def test_model_inventory_is_sorted_for_selector(self) -> None:
+        response = _HTTPResponse(
+            b'{"object":"list","data":[{"id":"z-model"},{"id":"a-model"}]}'
+        )
+        with patch("two_x_brainz.aigate.urlopen", return_value=response):
+            models = asyncio.run(_client().list_models())
+
+        self.assertEqual(models, ("a-model", "z-model"))
+
     def test_session_brief_frames_all_generation_prompts(self) -> None:
         payloads: list[dict[str, object]] = []
 

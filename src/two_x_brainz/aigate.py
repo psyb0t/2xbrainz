@@ -8,6 +8,7 @@ import json
 import logging
 import math
 import re
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Protocol
 from urllib.error import HTTPError, URLError
@@ -211,6 +212,10 @@ _PRIVATE_SEARCH_QUERY_PATTERNS = (
     re.compile(r"(?:\d[\s().+-]*){7,}"),
 )
 _SESSION_BRIEF_PREFIX = "\n\nOperator-provided session brief:\n"
+_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high"})
+_REASONING_EFFORT_FIELD = "reasoning_effort"
+
+ProviderActivitySink = Callable[[Mapping[str, object]], None]
 
 logger = logging.getLogger(__name__)
 
@@ -265,7 +270,7 @@ class InsightProvider(Protocol):
         ...
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class AIGateClient:
     """Minimal AIGate client; audio never reaches this boundary."""
 
@@ -274,6 +279,8 @@ class AIGateClient:
     token: str | None
     web_research_enabled: bool = False
     session_brief: str | None = None
+    reasoning_effort: str = "none"
+    activity_sink: ProviderActivitySink | None = None
 
     def _endpoint(self, path: str) -> str:
         """Join the configured base with a relative path.
@@ -299,6 +306,19 @@ class AIGateClient:
             raise RemoteServiceError(
                 "configured AIGate model is not available from the current inventory"
             )
+
+    async def list_models(self) -> tuple[str, ...]:
+        """Return the validated AIGate inventory for the runtime selector."""
+        return tuple(sorted(await asyncio.to_thread(self._get_model_ids)))
+
+    def configure(self, model: str, reasoning_effort: str) -> None:
+        """Apply validated settings to future requests, not an in-flight payload."""
+        if not model or len(model) > 200:
+            raise ConfigurationError("AIGate model selection is invalid")
+        if reasoning_effort not in _REASONING_EFFORTS:
+            raise ConfigurationError("AIGate reasoning effort is invalid")
+        self.model = model
+        self.reasoning_effort = reasoning_effort
 
     async def draft(self, request: DraftRequest) -> DraftResult:
         """Call AIGate's OpenAI-compatible chat-completions route."""
@@ -350,55 +370,117 @@ class AIGateClient:
     ) -> str:
         self.require_model()
         assert self.model is not None
+        model = self.model
+        reasoning_effort = self.reasoning_effort
+        self._activity(
+            phase="request_started",
+            output_kind=output_kind,
+            model=model,
+            reasoning_effort=reasoning_effort,
+        )
         messages: list[dict[str, object]] = [
             {"role": _SYSTEM_ROLE, "content": prompt},
             {"role": _USER_ROLE, "content": _render_transcript(transcript)},
         ]
         payload: dict[str, object] = {
-            "model": self.model,
+            "model": model,
             "messages": messages,
             "stream": False,
             "max_tokens": limits.max_tokens,
         }
+        if reasoning_effort != "none":
+            payload[_REASONING_EFFORT_FIELD] = reasoning_effort
         if allow_web_research:
             payload["tools"] = [_SEARCH_TOOL_SCHEMA, _CODE_TOOL_SCHEMA]
-        response = await asyncio.to_thread(self._post, payload)
+        try:
+            response = await asyncio.to_thread(self._post, payload)
+        except BaseException:
+            self._activity(
+                phase="request_failed",
+                output_kind=output_kind,
+                model=model,
+            )
+            raise
         if not allow_web_research:
-            return await self._extract_content_with_empty_retry(
+            content = await self._extract_content_with_empty_retry(
                 payload,
                 response,
                 limits,
                 output_kind,
             )
+            self._activity(
+                phase="request_completed",
+                output_kind=output_kind,
+                model=model,
+            )
+            return content
         tool_calls = _extract_tool_calls(response)
         if not tool_calls:
-            return await self._extract_content_with_empty_retry(
+            content = await self._extract_content_with_empty_retry(
                 payload,
                 response,
                 limits,
                 output_kind,
+            )
+            self._activity(
+                phase="request_completed",
+                output_kind=output_kind,
+                model=model,
+            )
+            return content
+        for call in tool_calls:
+            self._activity(
+                phase="tool_started",
+                output_kind=output_kind,
+                model=model,
+                tool=call.name,
             )
         tool_results = await asyncio.gather(
             *(self._run_tool_call(call) for call in tool_calls),
         )
+        for call in tool_calls:
+            self._activity(
+                phase="tool_completed",
+                output_kind=output_kind,
+                model=model,
+                tool=call.name,
+            )
         messages.append(_assistant_tool_message(tool_calls))
         messages.extend(
             _tool_result_message(call.identifier, result)
             for call, result in zip(tool_calls, tool_results, strict=True)
         )
         final_payload: dict[str, object] = {
-            "model": self.model,
+            "model": model,
             "messages": messages,
             "stream": False,
             "max_tokens": limits.max_tokens,
         }
+        if reasoning_effort != "none":
+            final_payload[_REASONING_EFFORT_FIELD] = reasoning_effort
+        self._activity(
+            phase="followup_started",
+            output_kind=output_kind,
+            model=model,
+        )
         response = await asyncio.to_thread(self._post, final_payload)
-        return await self._extract_content_with_empty_retry(
+        content = await self._extract_content_with_empty_retry(
             final_payload,
             response,
             limits,
             output_kind,
         )
+        self._activity(
+            phase="request_completed",
+            output_kind=output_kind,
+            model=model,
+        )
+        return content
+
+    def _activity(self, *, phase: str, **fields: object) -> None:
+        sink = self.activity_sink
+        if sink is not None:
+            sink({"phase": phase, **fields})
 
     async def _extract_content_with_empty_retry(
         self,

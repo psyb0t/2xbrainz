@@ -45,9 +45,19 @@ Remote: Verify the release gates.`,
   reply: 'Run the final checks before shipping.',
   coach: 'Keep the answer concrete.',
   story: 'The team is preparing a release.',
+  sessionState: 'running',
+  provider: {
+    models: ['model-a', 'model-b'],
+    activeModel: 'model-a',
+    reasoningEffort: 'none',
+    activity: [
+      { phase: 'request_started', output_kind: 'draft', model: 'model-a' },
+      { phase: 'tool_completed', output_kind: 'draft', model: 'model-a', tool: 'search_web' }
+    ]
+  },
   activeAudio: {
-    microphone: { label: 'Desk microphone', nodeName: 'desk-mic', level: 41 },
-    system: { label: 'Headphones', nodeName: 'headphones.monitor', level: 72 }
+    microphone: { label: 'Desk microphone', nodeName: 'desk-mic', level: 41, state: 'ready' },
+    system: { label: 'Headphones', nodeName: 'headphones.monitor', level: 72, state: 'ready' }
   },
   audioSetup: {
     microphones: [
@@ -108,7 +118,7 @@ async function publish(socket: MockWebSocket, snapshot: WebSnapshot): Promise<vo
 }
 
 describe('operator console', () => {
-  it('renders live state and sends pause and resume controls', async () => {
+  it('renders live state and sends stop and start controls', async () => {
     render(App);
     const socket = await connectedSocket();
     await publish(socket, SNAPSHOT);
@@ -117,8 +127,10 @@ describe('operator console', () => {
     expect(screen.getByText('Run the final checks before shipping.')).toBeTruthy();
     expect(screen.getByText('The team is preparing a release.')).toBeTruthy();
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
+    expect(screen.getByText('request started · draft')).toBeTruthy();
+    await fireEvent.click(screen.getByRole('button', { name: 'Stop listening' }));
+    await publish(socket, { ...SNAPSHOT, sessionState: 'paused' });
+    await fireEvent.click(screen.getByRole('button', { name: 'Start listening' }));
 
     expect(socket.sent.map((value) => JSON.parse(value))).toContainEqual({
       type: 'control',
@@ -130,6 +142,25 @@ describe('operator console', () => {
     });
   });
 
+  it('changes model and reasoning effort for future generations', async () => {
+    render(App);
+    const socket = await connectedSocket();
+    await publish(socket, SNAPSHOT);
+
+    await fireEvent.change(screen.getByRole('combobox', { name: 'Model' }), {
+      target: { value: 'model-b' }
+    });
+    await fireEvent.change(screen.getByRole('combobox', { name: 'Reasoning' }), {
+      target: { value: 'high' }
+    });
+
+    expect(socket.sent.map((value) => JSON.parse(value))).toContainEqual({
+      type: 'provider_settings',
+      model: 'model-b',
+      reasoning_effort: 'high'
+    });
+  });
+
   it('meters every setup candidate and submits the selected pair', async () => {
     render(App);
     const socket = await connectedSocket();
@@ -138,7 +169,9 @@ describe('operator console', () => {
     expect(screen.getByRole('dialog').hasAttribute('open')).toBe(true);
     expect(screen.getByText('desk-mic · node 11')).toBeTruthy();
     expect(screen.getByText('headphones.monitor · node 22')).toBeTruthy();
-    expect(screen.getAllByText('Default')).toHaveLength(2);
+    expect(document.querySelectorAll('.default-badge')).toHaveLength(2);
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Redetect devices' }));
 
     await fireEvent.click(screen.getByRole('button', { name: 'Save sources' }));
     const messages = socket.sent.map((value) => JSON.parse(value));
@@ -149,6 +182,7 @@ describe('operator console', () => {
       system_index: 0
     });
     expect(messages).toContainEqual({ type: 'audio_metering', enabled: false });
+    expect(messages).toContainEqual({ type: 'audio_rescan' });
   });
 
   it('persists collapsed layout state across mounts', async () => {

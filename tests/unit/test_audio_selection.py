@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import stat
 import tempfile
@@ -154,7 +155,7 @@ class AudioSelectionTests(unittest.TestCase):
 
         self.assertIsNone(self._store.load())
 
-    def test_no_compatible_system_output_is_rejected(self) -> None:
+    def test_no_compatible_system_output_opens_recoverable_setup(self) -> None:
         nodes = tuple(
             node
             for node in _NODES
@@ -162,13 +163,56 @@ class AudioSelectionTests(unittest.TestCase):
             and not node["name"].endswith(".monitor")
         )
 
-        with self.assertRaisesRegex(CaptureError, "system-audio source"):
-            prepare_audio_selection_setup(
-                nodes=nodes,
-                store=self._store,
-                mic_node=None,
-                system_node=None,
+        setup = prepare_audio_selection_setup(
+            nodes=nodes,
+            store=self._store,
+            mic_node=None,
+            system_node=None,
+        )
+
+        self.assertEqual(setup.system_monitors, ())
+        self.assertFalse(setup.selection_available)
+
+    def test_refresh_marks_a_disconnected_selection_unavailable_then_recovers(
+        self,
+    ) -> None:
+        setup = self._setup()
+        selection = setup.select(0, 0)
+
+        setup.refresh([])
+        self.assertEqual(setup.selection, selection)
+        self.assertFalse(setup.selection_available)
+
+        setup.refresh(_NODES)
+        self.assertTrue(setup.selection_available)
+
+    def test_replacement_selection_wakes_capture_workers(self) -> None:
+        async def exercise() -> None:
+            setup = self._setup()
+            setup.select(0, 0)
+            revision = setup.revision
+            changed = asyncio.create_task(setup.wait_for_change(revision))
+            setup.refresh(
+                (
+                    *_NODES,
+                    {
+                        "id": "50",
+                        "name": "backup-mic",
+                        "media_class": "Audio/Source",
+                    },
+                    {
+                        "id": "51",
+                        "name": "backup-output.monitor",
+                        "media_class": "Audio/Source",
+                    },
+                )
             )
+
+            setup.select(1, 1)
+
+            self.assertEqual(await changed, revision + 1)
+
+        asyncio.run(exercise())
 
     def _setup(
         self,

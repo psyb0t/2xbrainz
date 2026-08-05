@@ -13,7 +13,7 @@ fixture. `TWOXBRAINZ_AIGATE_MODEL` is additionally required by the optional
 ## Contents
 
 - [Audio device selection](#audio-device-selection)
-- [Live terminal and persistent log](#live-terminal-and-persistent-log)
+- [Web console and persistent log](#web-console-and-persistent-log)
 - [AIGate-only deployment](#aigate-only-deployment)
 - [Talkies TTS fixture capture](#talkies-tts-fixture-capture)
 - [Real provider test tiers](#real-provider-test-tiers)
@@ -38,6 +38,7 @@ captured stream begins; no captured audio is used for the warm-up.
 | `TWOXBRAINZ_TALKIES_MODEL` | yes | One Talkies streaming model slug shared by both streams. |
 | `TWOXBRAINZ_AIGATE_URL` | yes | AIGate API root using `http` or `https` and ending in `/v1`. 2xbrainz derives the Talkies WebSocket proxy route from it. |
 | `TWOXBRAINZ_AIGATE_MODEL` | yes | Model name configured by the AIGate gateway. |
+| `TWOXBRAINZ_AIGATE_REASONING_EFFORT` | no | Initial reasoning effort: `none`, `minimal`, `low`, `medium`, or `high`. It can be changed in the browser for future requests. |
 | `TWOXBRAINZ_AIGATE_TOKEN` | if AIGate requires it | The single bearer token used for AIGate chat, Talkies proxy, model inventory, and the two allowlisted MCP tools. |
 | `TWOXBRAINZ_SESSION_BRIEF` | no | Trusted local context, up to 4000 characters, appended to every generation prompt to frame the call. It is neither transcript data nor status/log output. |
 | `TWOXBRAINZ_WEB_RESEARCH_ENABLED` | no | Exactly `true` enables reply-draft web search and bounded arithmetic through AIGate MCP. It requires AIGate SearXNG; calculation additionally requires Piston. |
@@ -52,9 +53,8 @@ credential.
 
 ## Audio device selection
 
-`make run` mounts the desktop PipeWire runtime directory read-only and opens
-the Textual Audio Setup view when there is no usable saved pair. `make run-web`
-starts the equivalent Svelte view at `http://127.0.0.1:7860`. Both views offer
+`make run` mounts the desktop PipeWire runtime directory read-only and serves
+the Svelte Sources view at `http://127.0.0.1:7860`. It offers
 non-monitor `Audio/Source` microphone nodes and a system-audio source: either
 an `Audio/Source` monitor node (`*.monitor`) or a directly capturable
 `Audio/Sink`; application-stream nodes are excluded. Audio Setup shows a
@@ -71,21 +71,24 @@ saves stable node names—not ephemeral numeric IDs—to the host's
 `~/.config/2xbrainz/audio-selection.json`) with mode `0600`.
 
 The stored pair is checked against the currently visible PipeWire nodes before
-each session. A missing, malformed, or stale file, or a device that disappeared,
-opens Audio Setup. `F3` opens Audio Setup from the running dashboard; the web
-console has the equivalent **Audio setup** panel. A pair saved there applies to
-the next live session, so active capture is never replaced mid-utterance.
+each session. A missing or malformed file opens Sources. A temporarily absent
+device leaves only its channel waiting and retrying while the other channel
+continues. **Redetect devices** refreshes discovery after Bluetooth or USB
+changes. Saving a new pair switches each changed channel independently and
+immediately without restarting the web session.
 The selection file contains only the two node names; it has no audio, transcript,
 endpoint, or credential data.
 
-## Live terminal and persistent log
+## Web console and persistent log
 
-`make run` allocates a Textual operator console instead of printing JSON events.
-`make run-web` serves the compiled Svelte console through FastAPI/Uvicorn at
-`127.0.0.1` only. Its same-origin `/ws` connection carries bounded snapshots
-and strict pause, resume, audio-metering, and audio-selection commands. Web mode
-is stopped from its owning terminal with `Ctrl+C`; it intentionally has no Stop
-button that could terminate its own server and strand the open page.
+`make run` serves the compiled Svelte console through FastAPI/Uvicorn at
+`127.0.0.1` only; `make run-web` is a compatibility alias. Its same-origin
+`/ws` connection carries bounded snapshots and strict start, pause,
+audio-metering, audio-redetection, audio-selection, model, and reasoning-effort
+commands. The app opens idle and does not start either PipeWire capture until
+**Start listening** is pressed. **Stop listening** pauses capture while keeping
+the page and session state alive; process shutdown remains `Ctrl+C` in the
+owning terminal.
 It does not enable sharing, monitoring, MCP, public APIs, or arbitrary file
 paths.
 Its fixed status bar shows capture/session state, the active operation, and both
@@ -97,14 +100,12 @@ browser, Conversation, Reply suggestion, Private coach, and Story so far are
 separate scrollable, collapsible, and resizable panels. Their presentation
 preferences are validated and stored in browser-local storage. Source settings
 use a modal with a live meter for every candidate; selected source identity is
-kept in the application audio-selection file. Terminal conversation and guidance panes scroll
-independently and auto-follow only when already at their own bottom.
-Mouse-wheel and keyboard scrolling work in the focused pane; `F2` cycles split,
-full-conversation, and full-guidance views. Level updates are never written to
-the reconstruction log and retain no PCM. `F3` opens Audio Setup. `Ctrl+C`
-follows the same clean stop path as the terminal quit command while the UI owns
-the terminal. The console restores the calling terminal when the session stops
-or fails.
+kept in the application audio-selection file. Panels scroll independently and
+auto-follow only when already at their own bottom. Level updates are never
+written to the reconstruction log and retain no PCM. The model selector and
+reasoning selector affect future requests only. The bounded provider activity
+trail reports request and allowlisted-tool phases without prompts, tool payloads,
+results, credentials, or private hidden reasoning.
 
 Each `make run` session writes runtime events to a separate file below
 `./logs/`, named `<UTC timestamp>_2xbrainz.log`. The session file rolls at 5 MB
@@ -141,7 +142,7 @@ access, and any further privacy boundary are AIGate configuration, not a second
 
 `localhost` here assumes the default `LIVE_NETWORK=host`, which reaches the
 gateway on the port it already publishes and resolves tailnet names exactly as
-the host shell does. Set `LIVE_NETWORK=<name>` for TUI, benchmark, or fixture
+the host shell does. Set `LIVE_NETWORK=<name>` for benchmark or fixture
 targets to join a specific Docker network, and replace `localhost` with the
 gateway's service name on that network. This optional mode uses a host-side
 `python3` helper from the repository to validate a hostname mapping. `make
@@ -285,11 +286,11 @@ the upstream model provider and transcript egress policy in AIGate itself.
 
 Reply drafts, commentary, and summaries use fixed application-owned token and
 text-length budgets. AIGate content that exceeds the matching budget is
-rejected before the CLI can render it; the budgets are not provider-controlled
+rejected before the web console can render it; the budgets are not provider-controlled
 configuration. The reply budget is 1,024 completion tokens so reasoning-capable
 models have room to return visible spoken text. Commentary and summary also
 receive 1,024 completion tokens so hidden reasoning does not consume their whole
-budget; separate character limits still bound what the CLI accepts.
+budget; separate character limits still bound what the application accepts.
 
 Reply-draft content is also a strict display boundary: it must be one line of
 plain spoken prose. The provider boundary parses CommonMark without rendering
@@ -348,17 +349,15 @@ same UID as the host desktop session. `make run` does that automatically.
 
 ## Live-session controls
 
-`make run` exposes exact, case-insensitive lifecycle lines through its Textual
-command input and fixed keyboard shortcuts:
+`make run` exposes lifecycle controls through the browser:
 
-- `pause` — blocks future audio frames before the Talkies boundary and cancels
+- **Stop listening** — blocks future audio frames before the Talkies boundary and cancels
   active drafting, commentary, and summary work.
-- `resume` — resumes forwarding frames to the existing Talkies streams.
-- `stop` — cancels generation, ends both capture streams, and exits the CLI.
+- **Start listening** — starts or resumes the two independently supervised
+  capture channels.
 
-Use `Ctrl+P`, `Ctrl+R`, or `Ctrl+X` for pause, resume, or stop; `Ctrl+Q` is an
-equivalent clean quit. Press `:` to focus the command input. The same strict
-parser validates typed commands and shortcuts.
+The page cannot terminate its own server. Use `Ctrl+C` in the owning shell to
+end the process.
 
 Each lifecycle change updates the dashboard and writes a structured `session`
 record with `state`, `action`, and `changed` to the rotating log. Guidance is

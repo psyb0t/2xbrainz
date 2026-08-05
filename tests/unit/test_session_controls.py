@@ -12,6 +12,18 @@ from two_x_brainz.session_controls import (
 
 
 class SessionControllerTests(unittest.TestCase):
+    def test_can_start_paused_without_opening_the_capture_gate(self) -> None:
+        async def exercise() -> None:
+            controller = SessionController(start_paused=True)
+            waiter = asyncio.create_task(controller.wait_for_forwarding())
+            await asyncio.sleep(0)
+            self.assertFalse(waiter.done())
+            self.assertEqual(controller.state, SessionState.PAUSED)
+            self.assertTrue(controller.resume())
+            self.assertTrue(await waiter)
+
+        asyncio.run(exercise())
+
     def test_new_session_allows_capture_forwarding(self) -> None:
         asyncio.run(self._assert_new_session_allows_forwarding())
 

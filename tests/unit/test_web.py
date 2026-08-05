@@ -114,6 +114,21 @@ class WebConsoleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await anext(console.control_lines()), "pause")
         self.assertEqual(await anext(console.control_lines()), "resume")
 
+    async def test_provider_activity_history_is_bounded(self) -> None:
+        console = WebConsole(
+            LiveTerminal(log_file="/tmp/2xbrainz-web.log", stream=io.StringIO())
+        )
+
+        for index in range(100):
+            console.record_provider_activity(
+                {"phase": "request_completed", "model": f"model-{index}"}
+            )
+
+        activity = console.snapshot().provider_activity
+        self.assertEqual(len(activity), 80)
+        self.assertEqual(activity[0]["model"], "model-20")
+        self.assertEqual(activity[-1]["model"], "model-99")
+
     async def test_invalid_port_is_rejected_before_static_asset_check(self) -> None:
         console = WebConsole(
             LiveTerminal(log_file="/tmp/2xbrainz-web.log", stream=io.StringIO()),

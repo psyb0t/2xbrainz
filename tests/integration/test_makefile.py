@@ -13,13 +13,15 @@ class MakefileIntegrationTests(unittest.TestCase):
 
         self.assertIn('-v "' + str(_PROJECT_ROOT) + '/logs:/logs:rw"', result.stdout)
         self.assertIn('TWOXBRAINZ_LOG_DIRECTORY="/logs"', result.stdout)
-        self.assertIn("live --output tui", result.stdout)
+        self.assertIn("live --web-port 7860", result.stdout)
+        self.assertNotIn("--output", result.stdout)
 
-    def test_run_web_selects_the_loopback_gradio_presentation(self) -> None:
+    def test_run_web_is_a_loopback_compatibility_alias(self) -> None:
         result = _dry_run("run-web", "WEB_PORT=9000")
 
-        self.assertIn("live --output web --web-port 9000", result.stdout)
-        self.assertIn("run-web requires LIVE_NETWORK=host", result.stdout)
+        self.assertIn("live --web-port 9000", result.stdout)
+        self.assertNotIn("--output", result.stdout)
+        self.assertIn("run requires LIVE_NETWORK=host", result.stdout)
 
     def test_default_host_network_does_not_require_host_python(self) -> None:
         for target in ("run", "run-web", "benchmark", "test-real", "live-fixture"):
@@ -35,7 +37,7 @@ class MakefileIntegrationTests(unittest.TestCase):
 
     def test_named_network_web_mode_is_rejected_before_docker_run(self) -> None:
         result = _dry_run("run-web", "LIVE_NETWORK=app-network")
-        guard_position = result.stdout.index("run-web requires LIVE_NETWORK=host")
+        guard_position = result.stdout.index("run requires LIVE_NETWORK=host")
         run_position = result.stdout.index("docker run", guard_position)
         self.assertLess(guard_position, run_position)
 

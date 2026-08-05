@@ -30,6 +30,8 @@
   let systemIndex = 0;
   let selectionDirty = false;
   let shouldFollowConversation = true;
+  let selectedModel = '';
+  let selectedReasoningEffort = 'none';
 
   onMount(() => {
     preferences = loadPreferences(localStorage);
@@ -62,6 +64,8 @@
     }
     if (!isWebSnapshot(value)) return;
     snapshot = value;
+    selectedModel = snapshot.provider.activeModel;
+    selectedReasoningEffort = snapshot.provider.reasoningEffort;
     if (!selectionDirty) syncSelectedDevices();
     if (snapshot.requiresAudioSetup && !settingsDialog.open) openAudioSettings();
     await tick();
@@ -87,6 +91,22 @@
 
   function control(command: 'pause' | 'resume'): void {
     send({ type: 'control', command });
+  }
+
+  function updateProvider(): void {
+    if (!selectedModel) return;
+    send({
+      type: 'provider_settings',
+      model: selectedModel,
+      reasoning_effort: selectedReasoningEffort
+    });
+  }
+
+  function activityLabel(activity: WebSnapshot['provider']['activity'][number]): string {
+    const target = activity.output_kind ? ` · ${activity.output_kind}` : '';
+    const tool = activity.tool ? ` · ${activity.tool}` : '';
+    const reasoning = activity.reasoning_effort ? ` · reasoning ${activity.reasoning_effort}` : '';
+    return `${activity.phase.replaceAll('_', ' ')}${target}${tool}${reasoning}`;
   }
 
   function openAudioSettings(): void {
@@ -225,8 +245,33 @@
     </div>
     <div class="header-actions">
       <button class="quiet-button" onclick={openAudioSettings}>Sources</button>
-      <button class="quiet-button" onclick={() => control('pause')}>Pause</button>
-      <button class="quiet-button" onclick={() => control('resume')}>Resume</button>
+      <label class="compact-select">
+        <span>Model</span>
+        <select bind:value={selectedModel} onchange={updateProvider}>
+          {#each snapshot.provider.models as model}
+            <option value={model}>{model}</option>
+          {/each}
+        </select>
+      </label>
+      <label class="compact-select">
+        <span>Reasoning</span>
+        <select bind:value={selectedReasoningEffort} onchange={updateProvider}>
+          <option value="none">Default</option>
+          <option value="minimal">Minimal</option>
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+        </select>
+      </label>
+      {#if snapshot.sessionState === 'running'}
+        <button class="stop-button" onclick={() => control('pause')}>Stop listening</button>
+      {:else}
+        <button
+          class="primary-button"
+          disabled={snapshot.requiresAudioSetup}
+          onclick={() => control('resume')}>Start listening</button
+        >
+      {/if}
     </div>
   </header>
 
@@ -234,6 +279,21 @@
     <span class="event-label">Now</span>
     <span>{snapshot.notice}</span>
   </section>
+
+  <details class="activity-panel">
+    <summary>LLM activity <span>{snapshot.provider.activity.length}</span></summary>
+    <div class="activity-scroll" aria-live="polite">
+      {#each snapshot.provider.activity.slice(-12) as activity}
+        <div class="activity-row">
+          <span class:active={activity.phase.endsWith('started')}></span>
+          <strong>{activityLabel(activity)}</strong>
+          <small>{activity.model ?? snapshot.provider.activeModel}</small>
+        </div>
+      {:else}
+        <p>No generation has started yet.</p>
+      {/each}
+    </div>
+  </details>
 
   <section class:collapsed={preferences.sourceBarCollapsed} class="source-strip">
     <button
@@ -247,7 +307,9 @@
     {#if !preferences.sourceBarCollapsed}
       <div class="active-source microphone">
         <div class="source-heading">
-          <span>Microphone</span><strong>{snapshot.activeAudio.microphone.level}%</strong>
+          <span>Microphone · {snapshot.activeAudio.microphone.state}</span><strong
+            >{snapshot.activeAudio.microphone.level}%</strong
+          >
         </div>
         <div class="level-track">
           <span style={`width:${snapshot.activeAudio.microphone.level}%`}></span>
@@ -259,7 +321,9 @@
       </div>
       <div class="active-source system">
         <div class="source-heading">
-          <span>System audio</span><strong>{snapshot.activeAudio.system.level}%</strong>
+          <span>System audio · {snapshot.activeAudio.system.state}</span><strong
+            >{snapshot.activeAudio.system.level}%</strong
+          >
         </div>
         <div class="level-track">
           <span style={`width:${snapshot.activeAudio.system.level}%`}></span>
@@ -392,11 +456,16 @@
         <span class="eyebrow">Audio routing</span>
         <h2>Choose live sources</h2>
       </div>
-      {#if !snapshot.requiresAudioSetup}<button
-          class="icon-button"
-          aria-label="Close source settings"
-          onclick={closeAudioSettings}>×</button
-        >{/if}
+      <div class="modal-actions">
+        <button class="quiet-button" onclick={() => send({ type: 'audio_rescan' })}
+          >Redetect devices</button
+        >
+        {#if !snapshot.requiresAudioSetup}<button
+            class="icon-button"
+            aria-label="Close source settings"
+            onclick={closeAudioSettings}>×</button
+          >{/if}
+      </div>
     </header>
     <p class="modal-intro">
       Speak and play system audio. Every compatible source is metered live so you can select by
@@ -466,7 +535,7 @@
       <span
         >{snapshot.requiresAudioSetup
           ? 'Choose both sources to begin.'
-          : 'Changes apply on the next live session.'}</span
+          : 'Changes apply immediately; a disconnected channel retries independently.'}</span
       >
       <button
         class="primary-button"

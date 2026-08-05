@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import errno
 import json
 import os
@@ -69,19 +70,35 @@ class AudioDevice:
 
     @property
     def setup_label(self) -> str:
-        """Return literal, bounded text for the local Textual option list."""
+        """Return literal, bounded text for the local source option list."""
         default_marker = " [DEFAULT]" if self.is_default else ""
         return f"{self.label}{default_marker}\n  node: {self.name} [{self.node_id}]"
 
 
 @dataclass(slots=True)
 class AudioSelectionSetup:
-    """Validated choices and persistence for one Textual audio-setup session."""
+    """Validated choices and persistence for the live audio settings screen."""
 
     store: AudioSelectionStore
     microphones: tuple[AudioDevice, ...]
     system_monitors: tuple[AudioDevice, ...]
     selection: AudioSelection | None
+    _revision: int = field(default=0, init=False)
+    _changed: asyncio.Event = field(default_factory=asyncio.Event, init=False)
+
+    @property
+    def revision(self) -> int:
+        """Return the monotonic routing revision consumed by capture workers."""
+        return self._revision
+
+    @property
+    def selection_available(self) -> bool:
+        """Whether both currently selected nodes are visible in discovery."""
+        return self.selection is not None and _selection_is_available(
+            self.selection,
+            self.microphones,
+            self.system_monitors,
+        )
 
     def select(
         self,
@@ -104,8 +121,29 @@ class AudioSelectionSetup:
             system_capture_sink=system_monitor.capture_sink,
         )
         self.store.save(selection)
-        self.selection = selection
+        if selection != self.selection:
+            self.selection = selection
+            self._revision += 1
+            self._changed.set()
         return selection
+
+    def refresh(self, nodes: Sequence[Mapping[str, str]]) -> None:
+        """Replace discovery candidates while retaining a reconnectable selection."""
+        self.microphones = _candidate_devices(nodes, is_system_monitor=False)
+        self.system_monitors = _candidate_devices(nodes, is_system_monitor=True)
+        if self.selection is not None and self.selection_available:
+            self.selection = _with_device_labels(
+                self.selection,
+                self.microphones,
+                self.system_monitors,
+            )
+
+    async def wait_for_change(self, revision: int) -> int:
+        """Wait until the operator selects a different routing pair."""
+        while self._revision == revision:
+            await self._changed.wait()
+            self._changed.clear()
+        return self._revision
 
 
 class AudioSelectionStore:
@@ -189,14 +227,9 @@ def prepare_audio_selection_setup(
     mic_node: str | None,
     system_node: str | None,
 ) -> AudioSelectionSetup:
-    """Prepare safe candidates and any reusable selection for the Textual app."""
+    """Prepare safe candidates and any reusable selection for the web app."""
     microphones = _candidate_devices(nodes, is_system_monitor=False)
     system_monitors = _candidate_devices(nodes, is_system_monitor=True)
-    if not microphones:
-        raise CaptureError("no compatible PipeWire microphone source is visible")
-    if not system_monitors:
-        raise CaptureError("no compatible PipeWire system-audio source is visible")
-
     explicit_selection = _explicit_selection(mic_node, system_node)
     if explicit_selection is not None:
         _require_available_selection(

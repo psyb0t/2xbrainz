@@ -27,11 +27,12 @@ class SessionCommand(StrEnum):
 class SessionController:
     """Gate capture forwarding without creating a separate control service."""
 
-    def __init__(self) -> None:
-        self._state = SessionState.RUNNING
+    def __init__(self, *, start_paused: bool = False) -> None:
+        self._state = SessionState.PAUSED if start_paused else SessionState.RUNNING
         self._capture_gate = asyncio.Event()
         self._stopped = asyncio.Event()
-        self._capture_gate.set()
+        if not start_paused:
+            self._capture_gate.set()
 
     @property
     def state(self) -> SessionState:

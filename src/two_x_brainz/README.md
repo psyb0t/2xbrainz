@@ -2,7 +2,7 @@
 
 This package contains the local session state machine and all external service
 adapters used by the CLI. It has no database; it renders live events through
-Textual or a loopback FastAPI/Svelte console and delegates
+a loopback FastAPI/Svelte console and delegates
 continuous ASR to Talkies.
 
 ## Contents
@@ -24,7 +24,7 @@ continuous ASR to Talkies.
 - `vad.py` — typed adapter that buffers 20 ms PCM capture frames into exact
   bundled-Silero inference windows and validates speech probabilities.
 - `audio_selection.py` — bounded local selection-file validation and the
-  candidate/controller backing the in-app first-run, stale-device, and F3
+  candidate/controller backing the in-app first-run and hotplug-aware
   setup view for one non-monitor microphone source and one system-audio capture
   source (a monitor source or a directly capturable sink).
 - `audio.py` — bounded WAV fixture loading plus in-memory PCM normalization for
@@ -53,16 +53,15 @@ continuous ASR to Talkies.
 - `fixture_trace.py` — append-only, redacted JSONL evidence for explicit real
   fixtures; it records synthetic fixture inputs, CLI output, structured runtime
   diagnostics, and terminal outcomes without tokens or PCM data.
-- `terminal.py` — bounded, control-sequence-safe Textual operator console with
-  one temporary level probe per displayed audio candidate during setup, status
-  timers, selected capture labels, independent scrolling, focused-pane views,
-  and strict local lifecycle controls.
-- `web.py` — loopback FastAPI/Uvicorn adapter over the same terminal state:
-  bounded structured snapshots, same-origin pause/resume controls through the
-  existing runtime queue, compiled Svelte assets at `/`, and the equivalent
-  all-candidate audio setup path. The frontend owns browser-local layout
+- `terminal.py` — bounded, control-sequence-safe presentation state with one
+  temporary level probe per displayed audio candidate, selected capture labels,
+  channel health, and strict local lifecycle controls. It owns no TUI.
+- `web.py` — loopback FastAPI/Uvicorn adapter over the shared presentation
+  state: bounded structured snapshots, same-origin start/pause controls through
+  the runtime queue, compiled Svelte assets at `/`, and all-candidate audio
+  setup. The frontend owns browser-local layout
   preferences; application audio selection remains in the validated config file.
-  Process shutdown remains with the owning terminal so the page cannot stop its
+  Process shutdown remains with the owning shell so the page cannot stop its
   own server.
 - `logging_config.py` — credential-redacted rotating JSON event log.
 - `runtime.py` and `cli.py` — live orchestration and user-facing commands.
@@ -111,8 +110,9 @@ continuous ASR to Talkies.
   hysteresis, and continuous input rotates after 60 seconds so noise cannot
   hold Talkies or downstream generation open forever.
 - Audio-selection persistence contains only validated stable node names. A
-  missing, malformed, or unavailable saved node never reaches `pw-record`; it
-  reopens selection before model verification or capture starts.
+  missing or malformed pair opens Sources. A device lost during a run marks
+  only its channel reconnecting; its peer continues, and redetection or a new
+  selection replaces only the affected route.
 - System capture targets are `Audio/Source` monitor nodes or directly
   capturable `Audio/Sink` nodes. PipeWire default markers are recommendations;
   setup probes and independent live level meters reveal the two capture paths
@@ -139,24 +139,23 @@ continuous ASR to Talkies.
   capture. Warm-up sends one all-zero 20 ms frame and requires uncancelled
   one-frame terminal statistics, preventing a silent ASR-model substitution or
   a concurrent lazy-initialization race without using captured audio.
-- Only fixed local lifecycle words can alter a live session. Pause and stop
-  cancel generation before any later frame reaches Talkies; `Ctrl+Q` uses the
-  same clean stop path.
+- Only fixed local lifecycle commands can alter capture. The browser's Start
+  and Stop listening controls map to resume and pause; pause cancels generation
+  before any later frame reaches Talkies. Process shutdown remains `Ctrl+C` in
+  the owning shell.
 - Reply draft records expose `running` before one terminal completed, failed,
   cancelled, or superseded state. Completed draft text is advisory display
   state, never an action or provider-context input.
 - Background tasks inherit context-local logging scope and must be cancelled or
   discarded before a stale result reaches the CLI. Completed draft and insight
   queues are bounded.
-- Runtime JSON records use schema version 1. The live terminal consumes them
+- Runtime JSON records use schema version 1. The web presentation consumes them
   internally while the rotating log retains them; replay prints them. Opaque
   turn and generation IDs link related records without exposing session or
   stream identities.
-- Expected PipeWire and Talkies stream failures emit one fixed
-  `session_error` reason before the live command terminates non-zero; no error
-  message, endpoint, stream identity, audio, or credential reaches the terminal
-  or rotating log. Simultaneous stream failures are fanned in before that single
-  record is emitted.
+- Expected PipeWire and Talkies stream failures are handled by independent
+  role-scoped retry loops. Neither upstream error text nor endpoint, stream
+  identity, audio, or credentials reach the browser.
 - A successful rolling summary becomes the provider-context prefix and permits
   trimming only the transcript history it covers; the recent line window stays
   available for the next draft.
@@ -173,10 +172,11 @@ priority cancellation. Integration tests start local protocol-conforming
 WebSocket and HTTP servers to prove concurrent native PCM framing, terminal
 statistics, and both file-transcription response shapes; fake `pw-record`
 processes cover the same capture framing code without a host PipeWire socket.
-Control tests cover pause/resume gating, stop wakeup, idempotency, removed
-reply-action rejection, and malformed control-line rejection. Terminal tests
-cover clean Ctrl+Q/Ctrl+C shutdown, all-candidate setup meters, independent
-scrolling, focused-pane views, and separate user/system meters. See the architecture overview in
+Control tests cover paused startup, pause/resume gating, stop wakeup,
+idempotency, removed reply-action rejection, and malformed control-line
+rejection. Web-console tests cover all-candidate setup meters, audio redetection,
+runtime provider settings, bounded activity history, and separate user/system
+channel state. See the architecture overview in
 [`docs/architecture.md`](../../docs/architecture.md). The opt-in
 `make live-fixture` route generates temporary Talkies WAVs and drives the
 production capture adapter through a controlled overlap; `make

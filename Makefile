@@ -16,7 +16,7 @@ LIVE_LOG_DIRECTORY := /logs
 LOG_TAIL_LINES ?= 200
 LOG_FILE ?=
 WEB_PORT ?= 7860
-RUN_ARGUMENTS ?= --output tui
+RUN_ARGUMENTS ?= --web-port $(WEB_PORT)
 FIXTURE_TRACE_DIRECTORY := $(PROJECT_ROOT)/.testing/fixture-traces
 # host, so the app reaches AIGate and Talkies on the ports they already publish
 # without the caller having to know which Docker network they sit on. Override
@@ -155,21 +155,20 @@ test-coverage: ## Run tests and remove the image; coverage is not installed yet.
 test-real: ## Check real AIGate prompts, then remove its dedicated image.
 	$(call RUN_WITH_IMAGE_CLEANUP,(test -f "$(ENV_FILE)" || { echo "$(ENV_FILE) is required and must be gitignored" >&2; exit 1; }) && mkdir -p "$(FIXTURE_TRACE_DIRECTORY)" && $(BUILD_REAL_TEST_IMAGE) && docker run --rm --init $(RUNTIME_LIMITS) --read-only --tmpfs /tmp:rw$(comma)noexec$(comma)nosuid$(comma)size=512m --user "$$(id -u):$$(id -g)" --cap-drop ALL --security-opt no-new-privileges:true --network "$(LIVE_NETWORK)" $(FIXTURE_DOCKER_HOST_ARGUMENTS) --env-file "$(ENV_FILE)" $(AIGATE_URL_ARGUMENT) -e TWOXBRAINZ_AIGATE_MODEL="$(FIXTURE_AIGATE_MODEL)" -e TWOXBRAINZ_FIXTURE_TRACE_DIR=/fixture-traces -v "$(FIXTURE_TRACE_DIRECTORY):/fixture-traces:rw" -v "$(PROJECT_ROOT)/tests/integration/real_aigate_prompts.py:/fixture/real_aigate_prompts.py:ro" --entrypoint python $(REAL_TEST_IMAGE) /fixture/real_aigate_prompts.py,$(REAL_TEST_IMAGE))
 
-build: ## Build and tag the production CLI image.
+build: ## Build and tag the production web application image.
 	$(BUILD_APP_IMAGES)
 
-run: build ## Start the Textual live console; missing or stale devices open setup.
+run: validate-web-network build ## Start the local Svelte console at http://127.0.0.1:<port>.
 	@test -f "$(ENV_FILE)" || (echo "$(ENV_FILE) is required and must be gitignored" >&2; exit 1)
 	@test -n "$${XDG_RUNTIME_DIR:-}" || (echo "XDG_RUNTIME_DIR is required" >&2; exit 1)
 	@test -d "$(AUDIO_CONFIG_DIRECTORY)" || mkdir -p -m 700 "$(AUDIO_CONFIG_DIRECTORY)"
 	@install -d -m 700 "$(LOG_DIRECTORY)"
 	docker run --rm --init -it $(RUNTIME_LIMITS) --read-only --tmpfs /tmp:rw,noexec,nosuid,size=512m --user "$$(id -u):$$(id -g)" --cap-drop ALL --security-opt no-new-privileges:true --network "$(LIVE_NETWORK)" $(DOCKER_HOST_ARGUMENTS) --env-file "$(ENV_FILE)" -e XDG_RUNTIME_DIR=/pipewire-runtime -e TWOXBRAINZ_AUDIO_CONFIG_FILE=/audio-config/audio-selection.json -e TWOXBRAINZ_LOG_DIRECTORY="$(LIVE_LOG_DIRECTORY)" -v "$${XDG_RUNTIME_DIR}:/pipewire-runtime:ro" -v "$(AUDIO_CONFIG_DIRECTORY):/audio-config:rw" -v "$(LOG_DIRECTORY):$(LIVE_LOG_DIRECTORY):rw" $(APP_IMAGE) live $(RUN_ARGUMENTS)
 
-run-web: RUN_ARGUMENTS := --output web --web-port $(WEB_PORT)
 validate-web-network:
-	@test "$(LIVE_NETWORK)" = "host" || (echo "run-web requires LIVE_NETWORK=host because the web server binds only to loopback" >&2; exit 1)
+	@test "$(LIVE_NETWORK)" = "host" || (echo "run requires LIVE_NETWORK=host because the web server binds only to loopback" >&2; exit 1)
 
-run-web: validate-web-network run ## Start the local Svelte live console at http://127.0.0.1:<port>.
+run-web: run ## Compatibility alias for make run.
 
 logs: build ## Follow the newest session log; set LOG_FILE to select one explicitly.
 	docker run --rm --init --read-only --tmpfs /tmp:rw,noexec,nosuid,size=512m --user "$$(id -u):$$(id -g)" --cap-drop ALL --security-opt no-new-privileges:true -e TWOXBRAINZ_LOG_NAME="$(LOG_FILE)" -v "$(LOG_DIRECTORY):$(LIVE_LOG_DIRECTORY):ro" --entrypoint /bin/sh $(APP_IMAGE) -c 'set -eu; selected_log="$${TWOXBRAINZ_LOG_NAME}"; if [ -z "$$selected_log" ]; then selected_log="$$(find "$(LIVE_LOG_DIRECTORY)" -maxdepth 1 -type f -name "*_2xbrainz*.log" -printf "%T@ %f\n" | sort -nr | sed -n "1{s/^[^ ]* //;p;}")"; fi; case "$$selected_log" in ""|*/*|*..*|*[!0-9TZ_.-]*) echo "invalid session log name" >&2; exit 1;; esac; case "$$selected_log" in *_2xbrainz.log|*_2xbrainz-[0-9]*.log) ;; *) echo "invalid session log name" >&2; exit 1;; esac; test -f "$(LIVE_LOG_DIRECTORY)/$$selected_log" || { echo "no live log yet: run make run first" >&2; exit 1; }; exec tail -n "$(LOG_TAIL_LINES)" -F "$(LIVE_LOG_DIRECTORY)/$$selected_log"'

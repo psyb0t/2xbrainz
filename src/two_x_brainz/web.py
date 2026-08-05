@@ -7,7 +7,8 @@ import contextlib
 import contextvars
 import json
 import logging
-from collections.abc import AsyncIterator, Generator, Mapping
+from collections import deque
+from collections.abc import AsyncIterator, Awaitable, Callable, Generator, Mapping
 from dataclasses import dataclass, field
 from json import JSONDecodeError
 from pathlib import Path
@@ -22,13 +23,14 @@ from starlette.responses import Response
 from starlette.staticfiles import StaticFiles
 
 from two_x_brainz.audio_selection import AudioDevice, AudioSelection
+from two_x_brainz.capture import list_pipewire_nodes
 from two_x_brainz.constants import (
     DEFAULT_WEB_CONSOLE_PORT,
     MAX_WEB_CONSOLE_PORT,
     MIN_WEB_CONSOLE_PORT,
     WEB_CONSOLE_HOST,
 )
-from two_x_brainz.errors import WebConsoleError
+from two_x_brainz.errors import CaptureError, WebConsoleError
 from two_x_brainz.terminal import LiveTerminal
 
 _SNAPSHOT_INTERVAL_SECONDS = 0.25
@@ -41,6 +43,9 @@ _STATIC_INDEX_FILENAME = "index.html"
 _USER_ROLE = "user"
 _REMOTE_ROLE = "remote"
 _CONTROL_COMMANDS = frozenset({"pause", "resume"})
+_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high"})
+_MAX_MODEL_ID_CHARACTERS = 200
+_MAX_PROVIDER_ACTIVITY_ENTRIES = 80
 _POLICY_VIOLATION_CLOSE_CODE = 1008
 _MESSAGE_TOO_LARGE_CLOSE_CODE = 1009
 _DEFAULT_STATIC_DIRECTORY = Path(__file__).resolve().parents[2] / "web" / "dist"
@@ -82,8 +87,26 @@ class _AudioMeteringMessage(BaseModel):
     enabled: bool
 
 
+class _AudioRescanMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    type: Literal["audio_rescan"]
+
+
+class _ProviderSettingsMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    type: Literal["provider_settings"]
+    model: str = Field(min_length=1, max_length=_MAX_MODEL_ID_CHARACTERS)
+    reasoning_effort: Literal["none", "minimal", "low", "medium", "high"]
+
+
 _ClientMessage = Annotated[
-    _ControlMessage | _AudioSelectionMessage | _AudioMeteringMessage,
+    _ControlMessage
+    | _AudioSelectionMessage
+    | _AudioMeteringMessage
+    | _AudioRescanMessage
+    | _ProviderSettingsMessage,
     Field(discriminator="type"),
 ]
 _CLIENT_MESSAGE_ADAPTER: TypeAdapter[_ClientMessage] = TypeAdapter(_ClientMessage)
@@ -132,8 +155,15 @@ class WebSnapshot:
     system_label: str
     system_node: str
     system_level: int
+    microphone_state: str
+    system_state: str
     microphones: tuple[WebAudioMeter, ...]
     system_monitors: tuple[WebAudioMeter, ...]
+    session_state: str = "starting"
+    models: tuple[str, ...] = ()
+    active_model: str = ""
+    reasoning_effort: str = "none"
+    provider_activity: tuple[dict[str, object], ...] = ()
 
     def payload(self) -> dict[str, object]:
         return {
@@ -145,16 +175,25 @@ class WebSnapshot:
             "coach": self.coach,
             "story": self.story,
             "requiresAudioSetup": self.requires_audio_setup,
+            "sessionState": self.session_state,
+            "provider": {
+                "models": list(self.models),
+                "activeModel": self.active_model,
+                "reasoningEffort": self.reasoning_effort,
+                "activity": list(self.provider_activity),
+            },
             "activeAudio": {
                 "microphone": {
                     "label": self.microphone_label,
                     "nodeName": self.microphone_node,
                     "level": self.microphone_level,
+                    "state": self.microphone_state,
                 },
                 "system": {
                     "label": self.system_label,
                     "nodeName": self.system_node,
                     "level": self.system_level,
+                    "state": self.system_state,
                 },
             },
             "audioSetup": {
@@ -197,6 +236,16 @@ class WebConsole:
     _server: _EmbeddedServer | None = field(default=None, init=False)
     _server_task: asyncio.Task[None] | None = field(default=None, init=False)
     _url: str | None = field(default=None, init=False)
+    _models: tuple[str, ...] = field(default=(), init=False)
+    _active_model: str = field(default="", init=False)
+    _reasoning_effort: str = field(default="none", init=False)
+    _provider_activity: deque[dict[str, object]] = field(
+        default_factory=lambda: deque(maxlen=_MAX_PROVIDER_ACTIVITY_ENTRIES),
+        init=False,
+    )
+    _provider_settings_callback: Callable[[str, str], Awaitable[None]] | None = field(
+        default=None, init=False
+    )
 
     @property
     def interactive(self) -> bool:
@@ -209,7 +258,7 @@ class WebConsole:
         return self._url
 
     async def open(self) -> AudioSelection | None:
-        """Start the static server and wait only for mandatory first-run setup."""
+        """Start the static server without starting or blocking on capture."""
         self._validate_startup()
         if self.state.current_audio_selection is not None:
             self.state.apply_audio_selection(self.state.current_audio_selection)
@@ -236,9 +285,6 @@ class WebConsole:
         self._url = f"http://{WEB_CONSOLE_HOST}:{self.port}/"
         logger.info(_WEB_URL_MESSAGE, extra={"url": self._url})
         print(f"2xbrainz web console: {self._url}", flush=True)
-        if self.state.requires_audio_setup:
-            self.start_audio_metering()
-            return await self.state.wait_for_audio_selection()
         return self.state.current_audio_selection
 
     async def close(self) -> None:
@@ -267,6 +313,8 @@ class WebConsole:
 
     def consume(self, record: Mapping[str, object]) -> None:
         """Apply one sanitized runtime record to shared presentation state."""
+        if record.get("kind") == "provider_activity":
+            self.record_provider_activity(record)
         self.state.consume(record)
 
     def set_audio_level(self, speaker_role: str, percent: int) -> None:
@@ -294,12 +342,37 @@ class WebConsole:
             system_label=self.state.system_label or "",
             system_node=self.state.system_node,
             system_level=self.state.audio_level(_REMOTE_ROLE),
+            microphone_state=self.state.audio_channel_state(_USER_ROLE),
+            system_state=self.state.audio_channel_state(_REMOTE_ROLE),
             microphones=self._audio_meters(_USER_ROLE, self._microphones()),
             system_monitors=self._audio_meters(
                 _REMOTE_ROLE,
                 self._system_monitors(),
             ),
+            session_state=self.state.session_state,
+            models=self._models,
+            active_model=self._active_model,
+            reasoning_effort=self._reasoning_effort,
+            provider_activity=tuple(self._provider_activity),
         )
+
+    def configure_provider(
+        self,
+        *,
+        models: tuple[str, ...],
+        active_model: str,
+        reasoning_effort: str,
+        callback: Callable[[str, str], Awaitable[None]],
+    ) -> None:
+        """Publish validated provider options and install the runtime updater."""
+        self._models = models
+        self._active_model = active_model
+        self._reasoning_effort = reasoning_effort
+        self._provider_settings_callback = callback
+
+    def record_provider_activity(self, activity: Mapping[str, object]) -> None:
+        """Retain a bounded, already-sanitized provider activity timeline."""
+        self._provider_activity.append(dict(activity))
 
     def start_audio_metering(self) -> None:
         """Start all candidate probes while the source modal is visible."""
@@ -398,7 +471,47 @@ class WebConsole:
                 else:
                     self.stop_audio_metering()
                 continue
+            if isinstance(message, _AudioRescanMessage):
+                await self._rescan_audio()
+                continue
+            if isinstance(message, _ProviderSettingsMessage):
+                await self._set_provider_settings(
+                    message.model,
+                    message.reasoning_effort,
+                )
+                continue
             self._select_audio(message.microphone_index, message.system_index)
+
+    async def _rescan_audio(self) -> None:
+        setup = self.state.audio_setup
+        if setup is None:
+            return
+        try:
+            setup.refresh(await list_pipewire_nodes())
+        except CaptureError:
+            logger.warning(
+                "audio device rescan failed",
+                extra={"reason": "audio_device_rescan_failed"},
+            )
+            return
+        self.stop_audio_metering()
+        self.start_audio_metering()
+
+    async def _set_provider_settings(self, model: str, reasoning_effort: str) -> None:
+        callback = self._provider_settings_callback
+        if (
+            callback is None
+            or model not in self._models
+            or reasoning_effort not in _REASONING_EFFORTS
+        ):
+            logger.warning(
+                "provider settings rejected",
+                extra={"reason": "provider_settings_invalid"},
+            )
+            return
+        await callback(model, reasoning_effort)
+        self._active_model = model
+        self._reasoning_effort = reasoning_effort
 
     def _select_audio(self, microphone_index: int, system_index: int) -> None:
         microphones = self._microphones()

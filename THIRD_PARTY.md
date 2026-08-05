@@ -8,7 +8,7 @@ source distributions and lockfiles remain the authoritative dependency lists.
 
 | License | Runtime components |
 | --- | --- |
-| MIT | annotated-doc, annotated-types, anyio, click-default-group, fastapi, linkify-it-py, markdown-it-py, mdit-py-plugins, mdurl, platformdirs, pydantic, pydantic-core, pysilero-vad, rich, Svelte, textual, typing-inspection, uc-micro-py |
+| MIT | annotated-doc, annotated-types, anyio, fastapi, markdown-it-py, mdurl, pydantic, pydantic-core, pysilero-vad, rich, Svelte, typing-inspection |
 | BSD-3-Clause | click, h11, idna, starlette, uvicorn, websockets |
 | BSD-2-Clause | Pygments |
 | PSF-2.0 | typing-extensions |

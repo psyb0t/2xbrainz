@@ -87,12 +87,13 @@ for the full list. AIGate keeps Talkies on a private network and serves it at
 ```bash
 TWOXBRAINZ_AIGATE_URL=http://localhost:4000/v1
 TWOXBRAINZ_AIGATE_MODEL=your-configured-model
+TWOXBRAINZ_AIGATE_REASONING_EFFORT=none
 TWOXBRAINZ_AIGATE_TOKEN=your-gateway-token
 TWOXBRAINZ_TALKIES_MODEL=nemotron-3.5-asr-0.6b
 ```
 
-**2. Inspect the audio nodes if you want to.** `make run` and `make run-web` present the same
-compatible microphone and system-output nodes in its in-app Audio Setup view,
+**2. Inspect the audio nodes if you want to.** `make run` presents the
+compatible microphone and system-output nodes in its in-app Sources view,
 so this is only for checking what PipeWire exposes:
 
 ```bash
@@ -120,7 +121,8 @@ same time**: speak into the mic and play system audio, then select the two rows
 whose independent meters react. The chosen stable node names are saved to
 `$XDG_CONFIG_HOME/2xbrainz/audio-selection.json` (or
 `~/.config/2xbrainz/audio-selection.json`) with mode `0600`. If either saved
-node is unavailable later, it asks again.
+node is unavailable later, its channel waits and retries while the other
+channel keeps running.
 
 **3. Go.**
 
@@ -128,18 +130,16 @@ node is unavailable later, it asks again.
 make run
 ```
 
-On the first launch, the Textual app opens Audio Setup: select the microphone,
-then the system audio source with the arrow keys, Enter, or the mouse. On later
-launches it reuses the saved pair and opens the dashboard directly. Press `F3`
-at any time to return to Audio Setup; a change made while a call is running is
-saved for the next live session so current capture is not interrupted. The web
-console exposes the same controls in its **Audio setup** panel. A missing or
-stale saved pair opens setup automatically.
+Open `http://127.0.0.1:7860`. The browser starts idle and opens Sources when no
+usable pair is saved. Select a microphone and system-audio source, then press
+**Start listening**. The saved pair is reused on later runs. Sources remains
+available throughout the session; redetection and changes apply to the affected
+capture channel without restarting the page or discarding the conversation.
 
 `--network host` is the default because it just works: it reaches AIGate on the
 port it already publishes, and resolves tailnet names the same way your shell
 does. No hunting for which Docker network the gateway is on. If you'd rather join
-one explicitly for the TUI or benchmark targets, set `LIVE_NETWORK=<name>` and
+one explicitly for benchmark or fixture targets, set `LIVE_NETWORK=<name>` and
 swap `localhost` for the gateway's service name in `.env`. Named-network mode
 uses the repository's small host-side Python helper to validate an optional
 hostname mapping. The loopback-only web console intentionally requires the
@@ -157,40 +157,40 @@ help.
 
 ## Driving it while it runs
 
-`make run` opens an interactive Textual operator console. `make run-web` opens
-the same live session in a responsive Svelte browser console at
-`http://127.0.0.1:7860` (override with `WEB_PORT=9000 make run-web`). A compact status bar
-shows the session state, active operation (for example, `Calling reply LLM`),
-and elapsed timers. Below it, MIC INPUT and SYSTEM AUDIO show the selected
-friendly names and independent live levels. The browser console keeps
-Conversation, Reply suggestion, Private coach, and Story so far in separate
-scrollable, collapsible, resizable panels instead of collapsing them into one
-feed. Panel state and split sizes persist in browser-local storage. Source
-selection lives in a modal with a live meter beside every microphone and
-system-audio candidate. Sink candidates are captured through PipeWire monitor
-ports, so their meters represent playback routed to that output rather than a
-fallback microphone. The browser exposes Sources, Pause, and Resume; session
-shutdown remains in the owning terminal so stopping the process cannot strand a
-broken browser page. The terminal conversation and guidance panes retain independent
-scrolling and focused views; click a pane or move focus to it, then use the
-mouse wheel or Up/Down, Page Up/Down, Home, and End to read it. New content
-auto-follows only while that pane remains at its bottom. Press `F2` to cycle
-split, full-conversation, and full-guidance views, or `F3` to change the saved
-audio pair. Type a command in the input area and press Enter:
+`make run` builds the production image and serves the Svelte operator console at
+`http://127.0.0.1:7860` (override with `WEB_PORT=9000 make run`).
+`make run-web` remains only as a compatibility alias.
 
-| Command | What happens |
-|---|---|
-| `pause` / `resume` | Stop and restart capture |
-| `stop` | Shut down the terminal session cleanly |
+The app opens **idle**. It does not open either PipeWire capture process or send
+audio to Talkies until you press **Start listening**. **Stop listening** pauses
+both capture gates but keeps the browser, transcript, story, and guidance alive.
 
-`Ctrl+P`, `Ctrl+R`, `Ctrl+X`, and `Ctrl+Q` pause, resume, stop, and quit
-cleanly; `Ctrl+C` follows the same clean stop path while the terminal UI has
-focus. Guidance is advisory: it is never sent or spoken, requires no
-accept/dismiss step, and is not supplied back to the model. Each new generation
-uses the current transcript and rolling story only.
+The top bar provides:
 
-The dashboard stays clean. Every runtime event goes to a rotating local JSON log
-instead, which you can follow in another terminal:
+- the current AIGate model inventory and a runtime model selector;
+- reasoning effort (`Default`, `Minimal`, `Low`, `Medium`, or `High`) for
+  future requests; and
+- a bounded LLM activity trail showing request phases, output type, model, and
+  allowlisted search/calculation tool calls. It reports provider activity, not
+  fabricated or private hidden chain-of-thought.
+
+Conversation, Reply, Private coach, and Story so far remain separate scrollable,
+collapsible, resizable panels. Their layout persists in browser-local storage.
+
+**Sources** opens audio settings. Every visible microphone and system-audio
+candidate has its own live meter. **Redetect devices** refreshes PipeWire
+discovery after Bluetooth or USB devices disconnect or reconnect. Saving a new
+pair applies it immediately. Each capture side is supervised independently: if
+the microphone disappears, system audio keeps transcribing while the microphone
+retries; reconnecting the same node or selecting a replacement restores only
+that side. The source strip shows each channel's `idle`, `ready`,
+`switching`, or `reconnecting` state.
+
+Guidance is advisory: it is never sent or spoken, has no accept/dismiss state,
+and is not supplied back to the model. Each generation uses the current
+transcript and rolling story.
+
+Every runtime event goes to a rotating local JSON log:
 
 ```bash
 make logs
@@ -227,7 +227,7 @@ Full reference: [configuration](docs/configuration.md).
 ```text
 PipeWire microphone ─┐                         ┌─ text draft
                      ├─ Talkies native WS ─────┤
-PipeWire system ─────┘     (same ASR model)    └─ TUI or local web console
+PipeWire system ─────┘     (same ASR model)    └─ local web console
                                                    └─ rotating JSON log
 ```
 
@@ -239,9 +239,9 @@ PipeWire system ─────┘     (same ASR model)    └─ TUI or local w
   more important is pending. Every provider call has a hard 60-second deadline, so
   a wedged model can't hold the session hostage.
 - **The text provider** only ever sees a minimized speaker-tagged transcript.
-- **The CLI** is terminal-first by design. Its interactive dashboard stays
-  human-readable; the parallel reconstruction log carries schema-versioned
-  records with opaque turn/generation IDs.
+- **The web console** is the sole live operator surface. Its loopback-only
+  control socket drives the session while the parallel reconstruction log
+  carries schema-versioned records with opaque turn/generation IDs.
 
 More detail in [docs/architecture.md](docs/architecture.md). The MVP platform
 boundary is recorded in [ADR-0001](docs/decisions/0001-mvp-launch-profile.md);

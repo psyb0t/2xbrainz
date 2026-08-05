@@ -40,7 +40,8 @@ body {
     radial-gradient(circle at 90% 0%, rgba(139, 115, 255, 0.14), transparent 38rem), var(--bg);
 }
 button,
-input {
+input,
+select {
   font: inherit;
 }
 button {
@@ -55,7 +56,7 @@ input:focus-visible {
 
 .app-shell {
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto auto minmax(0, 1fr);
   width: 100%;
   height: 100dvh;
   padding: clamp(0.55rem, 1.2vw, 1rem);
@@ -147,6 +148,39 @@ input:focus-visible {
   gap: 0.42rem;
 }
 
+.compact-select {
+  display: grid;
+  gap: 0.16rem;
+  min-width: 7rem;
+}
+.compact-select:first-of-type {
+  max-width: min(25vw, 18rem);
+}
+.compact-select span {
+  color: var(--muted);
+  font-size: 0.56rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.compact-select select {
+  min-width: 0;
+  padding: 0.42rem 1.8rem 0.42rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  color: #edf2ff;
+  background: #151a27;
+}
+
+.stop-button {
+  padding: 0.56rem 0.82rem;
+  border: 1px solid rgba(255, 120, 144, 0.45);
+  border-radius: 0.58rem;
+  color: #ffd8df;
+  background: rgba(255, 120, 144, 0.1);
+  cursor: pointer;
+}
+
 .quiet-button,
 .primary-button,
 .collapse-button,
@@ -203,6 +237,71 @@ button:disabled {
   text-transform: uppercase;
   letter-spacing: 0.12em;
   font-size: 0.65rem;
+}
+
+.activity-panel {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 0.68rem;
+  background: rgba(12, 15, 23, 0.82);
+  font-size: 0.72rem;
+}
+.activity-panel summary {
+  padding: 0.45rem 0.7rem;
+  color: #cbd5ea;
+  cursor: pointer;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.activity-panel summary span {
+  margin-left: 0.4rem;
+  color: var(--muted);
+}
+.activity-scroll {
+  display: flex;
+  gap: 0.5rem;
+  overflow-x: auto;
+  padding: 0 0.7rem 0.55rem;
+}
+.activity-scroll > p {
+  margin: 0;
+  color: var(--muted);
+}
+.activity-row {
+  display: grid;
+  grid-template-columns: auto auto;
+  grid-template-rows: auto auto;
+  flex: none;
+  min-width: 12rem;
+  padding: 0.42rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: rgba(255, 255, 255, 0.025);
+}
+.activity-row > span {
+  grid-row: 1 / 3;
+  align-self: center;
+  width: 0.45rem;
+  height: 0.45rem;
+  margin-right: 0.5rem;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.activity-row > span.active {
+  background: var(--amber);
+  box-shadow: 0 0 0.7rem rgba(243, 198, 111, 0.6);
+}
+.activity-row strong {
+  font-size: 0.68rem;
+  text-transform: capitalize;
+}
+.activity-row small {
+  max-width: 15rem;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .source-strip {
@@ -454,6 +553,11 @@ button:disabled {
   justify-content: space-between;
   padding: 1rem 1.15rem;
   border-bottom: 1px solid var(--line);
+}
+.modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
 }
 .modal-header h2 {
   font-size: 1.25rem;

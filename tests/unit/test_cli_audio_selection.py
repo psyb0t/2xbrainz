@@ -16,15 +16,13 @@ class CLIAudioSelectionTests(unittest.TestCase):
         self.assertIsNone(prepare.call_args.kwargs["mic_node"])
         self.assertIsNone(prepare.call_args.kwargs["system_node"])
         self.assertNotEqual(run_live.call_args.args[0].log_file, _settings().log_file)
-        self.assertEqual(run_live.call_args.kwargs["output"], "tui")
+        self.assertEqual(run_live.call_args.kwargs["web_port"], 7860)
 
-    def test_live_accepts_web_output_and_paired_overrides(self) -> None:
+    def test_live_accepts_web_port_and_paired_overrides(self) -> None:
         prepare, run_live = self._run_live_command(
             [
                 "2xbrainz",
                 "live",
-                "--output",
-                "web",
                 "--web-port",
                 "9000",
                 "--mic-node",
@@ -36,16 +34,13 @@ class CLIAudioSelectionTests(unittest.TestCase):
 
         self.assertEqual(prepare.call_args.kwargs["mic_node"], "mic-usb")
         self.assertEqual(prepare.call_args.kwargs["system_node"], "speaker-usb")
-        self.assertEqual(run_live.call_args.kwargs["output"], "web")
         self.assertEqual(run_live.call_args.kwargs["web_port"], 9000)
 
     def test_live_rejects_removed_select_audio_argument(self) -> None:
         self._assert_parse_rejected(["2xbrainz", "live", "--select-audio"])
 
     def test_live_rejects_a_non_loopback_web_port_range(self) -> None:
-        self._assert_parse_rejected(
-            ["2xbrainz", "live", "--output", "web", "--web-port", "80"]
-        )
+        self._assert_parse_rejected(["2xbrainz", "live", "--web-port", "80"])
 
     def _assert_parse_rejected(self, argv: list[str]) -> None:
         with patch.object(sys, "argv", argv), self.assertRaises(SystemExit):

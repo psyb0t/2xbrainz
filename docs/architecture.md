@@ -1,6 +1,7 @@
 # Architecture
 
-2xbrainz is a single-user, Docker-run CLI. It deliberately keeps audio capture,
+2xbrainz is a single-user, Docker-run web application. It deliberately keeps
+audio capture,
 live ASR, turn state, and text drafting as replaceable boundaries rather than
 creating a distributed control plane.
 
@@ -31,7 +32,7 @@ host PipeWire socket (read-only mount)
                          │
                          └─> transcript store -> turn manager -> coordinator
                                                             │
-                                                            ├─> Textual TUI or local Svelte console
+                                                            ├─> local Svelte console
                                                             ├─> rotating local event log
                                                             ├─> remote reply draft
                                                             └─> user commentary / rolling summary
@@ -39,15 +40,16 @@ host PipeWire socket (read-only mount)
                                                                  with text-only context
 ```
 
-Before opening capture, `live` reads the visible PipeWire nodes through the
-existing read-only runtime mount. It reuses a validated local selection when
-both stable node names remain available; otherwise the initial TUI or web screen
-is Audio Setup for one non-monitor microphone source and one system-audio
+At startup, `live` reads the visible PipeWire nodes through the existing
+read-only runtime mount and opens the browser idle. It reuses a validated local
+selection when available; otherwise Sources asks for one non-monitor microphone
+source and one system-audio
 capture source: a monitor source when available, or a directly capturable sink.
 It persists only those names in the host-mounted per-user
-configuration file. `F3` returns to the same setup screen later; a pair changed
-during a call is deliberately saved for the next session rather than replacing
-two active capture streams. The
+configuration file. Sources remains available throughout the run. Redetection
+refreshes candidates after hotplug, and a changed pair restarts only the affected
+capture channel. A missing channel retries independently while its peer continues.
+The
 PipeWire configured default source and default output are a first-choice
 recommendation, not a claim about an application's current route. While Audio
 Setup is visible, one short-lived meter probe runs for every displayed candidate
@@ -125,13 +127,11 @@ independent multi-turn finals without recreating either capture process.
 - Every provider job carries the fixed 60-second application deadline. An
   expired draft, commentary, or summary becomes a typed failed result and
   cannot hold capture or later turns hostage.
-- An expected PipeWire or Talkies stream failure emits one versioned
-  `session_error` record with a fixed reason (`capture_unavailable`,
-  `asr_unavailable`, or `asr_protocol_error`) before ending the session with a
-  non-zero exit. The record and CLI message never include the upstream error,
-  endpoint, stream identity, audio, or credentials. Unknown failures retain
-  ordinary crash behavior for diagnosis. The runtime fans in simultaneous
-  expected stream failures before writing that one public record.
+- An expected PipeWire or Talkies stream failure marks only its audio channel
+  `reconnecting`, clears that channel's meter, and retries it. The peer channel,
+  web server, transcript, and provider state remain alive. Switching a route
+  cancels and replaces only that channel. Error details stay in the structured
+  diagnostic log and never enter browser snapshots.
 - A `pw-record` subprocess that exits without one complete PCM frame is a
   capture failure even when its exit status is zero. A silent capture-only
   session is never a successful live session.
@@ -192,15 +192,10 @@ independent multi-turn finals without recreating either capture process.
   CLI state, then parses CommonMark into a text-only subset. Safe inline
   presentation becomes visible text; structural Markdown and HTML are rejected
   without rendering provider-controlled markup.
-- [`terminal.py`](../src/two_x_brainz/terminal.py) turns bounded runtime state
-  into a Textual alternate-screen operator console. Its fixed status bar carries
-  session and active-operation timers; a source strip shows selected labels and
-  two presentation-only input levels. Independent `VerticalScroll` conversation
-  and guidance panes preserve manual reading position and auto-follow only at
-  their own ends; `F2` switches split and focused-pane views, and `F3` opens
-  the audio setup screen. Only pause, resume, and stop commands pass through
-  the strict parser (`Ctrl+Q` stops cleanly), provider and transcript text is
-  rendered literally, and non-TTY output falls back to readable plain lines.
+- [`terminal.py`](../src/two_x_brainz/terminal.py) retains the bounded,
+  control-sequence-safe presentation state shared with the browser. It owns no
+  terminal interface. Transcript and provider text remain literal, and audio
+  levels are presentation-only.
 - [`web.py`](../src/two_x_brainz/web.py) adapts that exact terminal state for a
   loopback FastAPI/Svelte console. FastAPI serves the compiled assets and a
   same-origin WebSocket. Browser pause and resume controls feed the existing
@@ -219,9 +214,8 @@ For module-level invariants and file ownership, see
 
 ## Deliberate limits
 
-The runtime uses either the human-readable Textual dashboard or an equivalent
-local Svelte console for `live`, not a graphical overlay or raw JSON event
-stream. It never speaks or sends a draft
+The runtime uses the local Svelte console for `live`, not a graphical overlay,
+terminal dashboard, or raw JSON event stream. It never speaks or sends a draft
 automatically, stores no audio, and does not attempt multi-speaker diarization
 on the mixed system stream. Those boundaries prevent the always-on assistant
 from becoming an invisible actor.

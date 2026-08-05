@@ -8,7 +8,7 @@ import contextvars
 import json
 import logging
 import sys
-from collections.abc import AsyncIterable
+from collections.abc import AsyncIterable, Mapping
 from typing import Protocol
 from uuid import uuid4
 
@@ -60,6 +60,8 @@ _ASR_SEGMENT_KIND = "asr_segment"
 _ASR_SEGMENT_OPENED = "opened"
 _ASR_SEGMENT_STREAM_LABEL = "segment"
 _RUNTIME_EVENT_LOG_MESSAGE = "live runtime event"
+_AUDIO_CHANNEL_KIND = "audio_channel"
+_AUDIO_CHANNEL_RETRY_SECONDS = 1.0
 
 logger = logging.getLogger(__name__)
 
@@ -89,38 +91,57 @@ _ACTIVE_TERMINAL: contextvars.ContextVar[LivePresentation | None] = (
 )
 
 
-class _LiveSessionStopped(Exception):
-    """Ends the TaskGroup after the local operator explicitly stops capture."""
-
-
 async def run_live(
     settings: Settings,
     audio_setup: AudioSelectionSetup,
     *,
-    output: str = "tui",
     web_port: int = DEFAULT_WEB_CONSOLE_PORT,
 ) -> None:
-    """Choose capture in the app, then start the two live Talkies streams."""
+    """Serve the web console and start resilient capture only on operator request."""
     terminal_state = LiveTerminal(
         log_file=str(settings.log_file), audio_setup=audio_setup
     )
-    terminal = presentation_for_output(output, terminal_state, web_port)
+    terminal = WebConsole(terminal_state, port=web_port)
     terminal_token: contextvars.Token[LivePresentation | None] | None = None
     try:
-        selection = await terminal.open()
-        if selection is None:
-            return
-
+        await terminal.open()
         provider = AIGateClient(
             base_url=settings.aigate_url,
             model=settings.aigate_model,
             token=settings.aigate_token,
             web_research_enabled=settings.web_research_enabled,
             session_brief=settings.session_brief,
+            reasoning_effort=settings.aigate_reasoning_effort,
+            activity_sink=_write_provider_activity_event,
         )
-        await provider.verify_configured_model()
+        models = await provider.list_models()
+        provider.require_model()
+        assert provider.model is not None
+        if provider.model not in models:
+            raise RemoteServiceError(
+                "configured AIGate model is not available from the current inventory"
+            )
+
+        async def configure_provider(model: str, reasoning_effort: str) -> None:
+            if model not in models:
+                raise RemoteServiceError("selected AIGate model is unavailable")
+            provider.configure(model, reasoning_effort)
+            _write_provider_activity_event(
+                {
+                    "phase": "settings_changed",
+                    "model": model,
+                    "reasoning_effort": reasoning_effort,
+                }
+            )
+
+        terminal.configure_provider(
+            models=models,
+            active_model=provider.model,
+            reasoning_effort=provider.reasoning_effort,
+            callback=configure_provider,
+        )
         coordinator = ConversationCoordinator(provider, provider)
-        controller = SessionController()
+        controller = SessionController(start_paused=True)
         session_id = str(uuid4())
         stream_config = TalkiesStreamConfig(
             url=settings.talkies_ws_url,
@@ -131,18 +152,6 @@ async def run_live(
         await talkies_client.verify_configured_model()
         await talkies_client.warm_configured_model()
         drift_monitor = InterStreamDriftMonitor()
-        microphone_monitor = CaptureFrameMonitor(
-            session_id=session_id,
-            stream_id=_MICROPHONE_STREAM_ID,
-            speaker_role=SpeakerRole.USER,
-            drift_monitor=drift_monitor,
-        )
-        system_monitor = CaptureFrameMonitor(
-            session_id=session_id,
-            stream_id=_SYSTEM_STREAM_ID,
-            speaker_role=SpeakerRole.REMOTE,
-            drift_monitor=drift_monitor,
-        )
         terminal_token = _ACTIVE_TERMINAL.set(terminal)
         renderer_context = contextvars.copy_context()
         renderer = renderer_context.run(
@@ -159,59 +168,36 @@ async def run_live(
                 state=controller.state,
                 action=_SESSION_STARTED_ACTION,
                 changed=True,
-                aigate_model=settings.aigate_model,
+                aigate_model=provider.model,
             )
             async with asyncio.TaskGroup() as group:
                 group.create_task(
-                    _consume_stream(
-                        client=TalkiesClient(stream_config),
+                    _supervise_audio_channel(
+                        stream_config=stream_config,
                         coordinator=coordinator,
                         session_id=session_id,
                         stream_id=_MICROPHONE_STREAM_ID,
                         speaker_role=SpeakerRole.USER,
-                        frames=_metered_frames(
-                            microphone_monitor.annotate(
-                                _gated_frames(
-                                    PipeWireSource(selection.mic_node).frames(),
-                                    controller,
-                                )
-                            )
-                        ),
-                        capture_monitor=microphone_monitor,
+                        audio_setup=audio_setup,
+                        controller=controller,
+                        drift_monitor=drift_monitor,
                     ),
                     context=contextvars.copy_context(),
                 )
                 group.create_task(
-                    _consume_stream(
-                        client=TalkiesClient(stream_config),
+                    _supervise_audio_channel(
+                        stream_config=stream_config,
                         coordinator=coordinator,
                         session_id=session_id,
                         stream_id=_SYSTEM_STREAM_ID,
                         speaker_role=SpeakerRole.REMOTE,
-                        frames=_metered_frames(
-                            system_monitor.annotate(
-                                _gated_frames(
-                                    PipeWireSource(
-                                        selection.system_node,
-                                        capture_sink=selection.system_capture_sink,
-                                    ).frames(),
-                                    controller,
-                                )
-                            )
-                        ),
-                        capture_monitor=system_monitor,
+                        audio_setup=audio_setup,
+                        controller=controller,
+                        drift_monitor=drift_monitor,
                     ),
                     context=contextvars.copy_context(),
                 )
                 group.create_task(_read_session_controls(controller, coordinator))
-                group.create_task(_raise_when_stopped(controller))
-        except* _LiveSessionStopped:
-            pass
-        except* (CaptureError, ProtocolError, RemoteServiceError) as error_group:
-            write_session_error_event(
-                session_error_reason(_first_expected_live_error(error_group))
-            )
-            raise
         finally:
             controller.stop()
             await coordinator.stop()
@@ -228,27 +214,133 @@ async def run_live(
         await terminal.close()
 
 
-def presentation_for_output(
-    output: str,
-    terminal_state: LiveTerminal,
-    web_port: int,
-) -> LivePresentation:
-    if output == "tui":
-        return terminal_state
-    if output == "web":
-        return WebConsole(terminal_state, port=web_port)
-    raise ValueError("unsupported live output mode")
-
-
 async def _gated_frames(
     frames: AsyncIterable[bytes],
     controller: SessionController,
 ) -> AsyncIterable[bytes]:
-    """Keep unapproved paused frames out of the Talkies transport."""
-    async for frame in frames:
-        if not await controller.wait_for_forwarding():
+    """Do not even open capture until the operator enables forwarding."""
+    iterator = aiter(frames)
+    while await controller.wait_for_forwarding():
+        try:
+            frame = await anext(iterator)
+        except StopAsyncIteration:
             return
+        if controller.state is not SessionState.RUNNING:
+            continue
         yield frame
+
+
+async def _supervise_audio_channel(
+    *,
+    stream_config: TalkiesStreamConfig,
+    coordinator: ConversationCoordinator,
+    session_id: str,
+    stream_id: str,
+    speaker_role: SpeakerRole,
+    audio_setup: AudioSelectionSetup,
+    controller: SessionController,
+    drift_monitor: InterStreamDriftMonitor,
+) -> None:
+    """Restart one failed or rerouted channel without disturbing its peer."""
+    attempt = 0
+    while controller.state is not SessionState.STOPPED:
+        selection = audio_setup.selection
+        revision = audio_setup.revision
+        if selection is None:
+            _write_audio_channel_event(speaker_role, "waiting_for_device")
+            await audio_setup.wait_for_change(revision)
+            continue
+        attempt += 1
+        node_name = (
+            selection.mic_node
+            if speaker_role is SpeakerRole.USER
+            else selection.system_node
+        )
+        capture_sink = (
+            False if speaker_role is SpeakerRole.USER else selection.system_capture_sink
+        )
+        attempt_stream_id = f"{stream_id}:route:{revision}:attempt:{attempt}"
+        capture_monitor = CaptureFrameMonitor(
+            session_id=session_id,
+            stream_id=attempt_stream_id,
+            speaker_role=speaker_role,
+            drift_monitor=drift_monitor,
+        )
+        _write_audio_channel_event(speaker_role, "ready")
+        capture_task = asyncio.create_task(
+            _consume_stream(
+                client=TalkiesClient(stream_config),
+                coordinator=coordinator,
+                session_id=session_id,
+                stream_id=attempt_stream_id,
+                speaker_role=speaker_role,
+                frames=_metered_frames(
+                    capture_monitor.annotate(
+                        _gated_frames(
+                            PipeWireSource(
+                                node_name,
+                                capture_sink=capture_sink,
+                            ).frames(),
+                            controller,
+                        )
+                    )
+                ),
+                capture_monitor=capture_monitor,
+            ),
+            name=f"capture-{speaker_role.value}-{attempt}",
+        )
+        route_task = asyncio.create_task(
+            audio_setup.wait_for_change(revision),
+            name=f"capture-route-{speaker_role.value}-{attempt}",
+        )
+        done, pending = await asyncio.wait(
+            {capture_task, route_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+        for task in pending:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        if route_task in done:
+            _write_audio_channel_event(speaker_role, "switching")
+            continue
+        try:
+            await capture_task
+        except asyncio.CancelledError:
+            raise
+        except (CaptureError, ProtocolError, RemoteServiceError):
+            _write_audio_channel_event(speaker_role, "reconnecting")
+            terminal = _ACTIVE_TERMINAL.get()
+            if terminal is not None:
+                terminal.set_audio_level(speaker_role.value, 0)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(
+                    audio_setup.wait_for_change(revision),
+                    timeout=_AUDIO_CHANNEL_RETRY_SECONDS,
+                )
+            continue
+        _write_audio_channel_event(speaker_role, "reconnecting")
+
+
+def _write_audio_channel_event(speaker_role: SpeakerRole, state: str) -> None:
+    _emit_event(
+        {
+            "schema_version": JSON_RECORD_SCHEMA_VERSION,
+            "kind": _AUDIO_CHANNEL_KIND,
+            "speaker_role": speaker_role.value,
+            "state": state,
+        }
+    )
+
+
+def _write_provider_activity_event(activity: Mapping[str, object]) -> None:
+    record = {
+        "schema_version": JSON_RECORD_SCHEMA_VERSION,
+        "kind": "provider_activity",
+        **activity,
+    }
+    _emit_event(record)
 
 
 async def _metered_frames(
@@ -330,12 +422,6 @@ def _apply_session_command(
     return controller.stop()
 
 
-async def _raise_when_stopped(controller: SessionController) -> None:
-    """Cancel capture streams once stop is requested through the control channel."""
-    await controller.wait_for_stop()
-    raise _LiveSessionStopped()
-
-
 def _emit_event(record: dict[str, object]) -> None:
     """Log every runtime event and route it to the active human-facing terminal."""
     logger.info(_RUNTIME_EVENT_LOG_MESSAGE, extra={"event": record})
@@ -392,16 +478,6 @@ def session_error_reason(error: Exception) -> str:
     if isinstance(error, ProtocolError):
         return _ASR_PROTOCOL_ERROR_REASON
     return _ASR_UNAVAILABLE_REASON
-
-
-def _first_expected_live_error(
-    error_group: BaseExceptionGroup[Exception],
-) -> CaptureError | ProtocolError | RemoteServiceError:
-    """Return one typed stream error from a TaskGroup exception group."""
-    for error in error_group.exceptions:
-        if isinstance(error, CaptureError | ProtocolError | RemoteServiceError):
-            return error
-    raise RuntimeError("expected a typed live stream error")
 
 
 async def _consume_stream(

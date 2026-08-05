@@ -7,6 +7,7 @@ import socket
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import httpx
 from websockets.asyncio.client import connect
@@ -188,6 +189,63 @@ class WebConsoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
         assert selection is not None
         self.assertEqual(selection.mic_node, "backup-mic")
         self.assertEqual(selection.system_node, "backup-system")
+
+    async def test_websocket_updates_provider_and_redetects_audio_devices(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            state = _state_with_selection(Path(temporary_directory) / "audio.json")
+            console = WebConsole(
+                state,
+                port=_free_port(),
+                static_directory=_static_app(Path(temporary_directory)),
+            )
+            callback = AsyncMock()
+            console.configure_provider(
+                models=("model-a", "model-b"),
+                active_model="model-a",
+                reasoning_effort="none",
+                callback=callback,
+            )
+            with patch(
+                "two_x_brainz.web.list_pipewire_nodes",
+                new_callable=AsyncMock,
+                return_value=[],
+            ) as discover:
+                await console.open()
+                try:
+                    async with connect(
+                        _websocket_url(console),
+                        origin=_origin(console),
+                        proxy=None,
+                    ) as websocket:
+                        await websocket.recv()
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    "type": "provider_settings",
+                                    "model": "model-not-in-inventory",
+                                    "reasoning_effort": "high",
+                                }
+                            )
+                        )
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    "type": "provider_settings",
+                                    "model": "model-b",
+                                    "reasoning_effort": "high",
+                                }
+                            )
+                        )
+                        await websocket.send(json.dumps({"type": "audio_rescan"}))
+                        await asyncio.sleep(0.05)
+                finally:
+                    await console.close()
+
+        callback.assert_awaited_once_with("model-b", "high")
+        discover.assert_awaited_once_with()
+        assert state.audio_setup is not None
+        self.assertEqual(state.audio_setup.microphones, ())
+        self.assertTrue(console.snapshot().requires_audio_setup)
 
 
 def _audio_setup(path: Path) -> AudioSelectionSetup:

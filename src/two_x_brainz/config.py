@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
 from two_x_brainz.constants import (
+    DEFAULT_AIGATE_REASONING_EFFORT,
     DEFAULT_AIGATE_URL,
     DEFAULT_AUDIO_CONFIG_FILE,
     DEFAULT_LOG_FILE,
@@ -16,6 +17,7 @@ from two_x_brainz.constants import (
     DEFAULT_TALKIES_MODEL,
     DEFAULT_WEB_RESEARCH_ENABLED,
     ENV_AIGATE_MODEL,
+    ENV_AIGATE_REASONING_EFFORT,
     ENV_AIGATE_TOKEN,
     ENV_AIGATE_URL,
     ENV_AUDIO_CONFIG_FILE,
@@ -36,6 +38,7 @@ _AIGATE_SCHEMES = frozenset({"http", "https"})
 _AIGATE_API_PATH_SUFFIX = "/v1"
 _TALKIES_GATEWAY_PREFIX = "/talkies"
 _WEBSOCKET_SCHEME_BY_HTTP_SCHEME = {"http": "ws", "https": "wss"}
+_VALID_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +61,7 @@ class Settings:
     session_brief: str | None = field(default=None, repr=False)
     audio_config_file: Path = Path(DEFAULT_AUDIO_CONFIG_FILE)
     web_research_enabled: bool = DEFAULT_WEB_RESEARCH_ENABLED
+    aigate_reasoning_effort: str = DEFAULT_AIGATE_REASONING_EFFORT
 
     @classmethod
     def from_environment(cls) -> Settings:
@@ -66,6 +70,15 @@ class Settings:
         talkies_ws_url = _talkies_stream_url(aigate_url)
         talkies_model = _read_required_text(ENV_TALKIES_MODEL, DEFAULT_TALKIES_MODEL)
         aigate_model = _read_optional_text(ENV_AIGATE_MODEL)
+        aigate_reasoning_effort = _read_required_text(
+            ENV_AIGATE_REASONING_EFFORT,
+            DEFAULT_AIGATE_REASONING_EFFORT,
+        ).lower()
+        if aigate_reasoning_effort not in _VALID_REASONING_EFFORTS:
+            raise ConfigurationError(
+                f"{ENV_AIGATE_REASONING_EFFORT} must be one of: "
+                + ", ".join(sorted(_VALID_REASONING_EFFORTS))
+            )
         aigate_token = _read_optional_text(ENV_AIGATE_TOKEN)
         session_brief = _read_optional_bounded_text(
             ENV_SESSION_BRIEF,
@@ -91,6 +104,7 @@ class Settings:
             talkies_token=aigate_token,
             aigate_url=aigate_url,
             aigate_model=aigate_model,
+            aigate_reasoning_effort=aigate_reasoning_effort,
             aigate_token=aigate_token,
             session_brief=session_brief,
             log_level=log_level,
