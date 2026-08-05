@@ -14,7 +14,7 @@ from websockets.asyncio.server import ServerConnection, serve
 
 from two_x_brainz.aigate import DraftProvider
 from two_x_brainz.benchmark import run_asr_benchmark
-from two_x_brainz.config import AIGateMode, Settings
+from two_x_brainz.config import Settings
 from two_x_brainz.constants import DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE_HZ
 from two_x_brainz.contracts import (
     DraftRequest,
@@ -49,7 +49,6 @@ class TalkiesBenchmarkIntegrationTests(unittest.TestCase):
                     talkies_model="fixture-model",
                     talkies_token=None,
                     aigate_url="http://127.0.0.1:4000/v1",
-                    aigate_mode=AIGateMode.LOCAL,
                     aigate_model=None,
                     aigate_token=None,
                     log_level="INFO",
@@ -123,7 +122,6 @@ class TalkiesBenchmarkIntegrationTests(unittest.TestCase):
                         talkies_model="fixture-model",
                         talkies_token=None,
                         aigate_url="http://127.0.0.1:4000/v1",
-                        aigate_mode=AIGateMode.LOCAL,
                         aigate_model=None,
                         aigate_token=None,
                         log_level="INFO",
@@ -167,7 +165,6 @@ class TalkiesBenchmarkIntegrationTests(unittest.TestCase):
                     talkies_model="fixture-model",
                     talkies_token=None,
                     aigate_url="http://127.0.0.1:4000/v1",
-                    aigate_mode=AIGateMode.LOCAL,
                     aigate_model="draft-model",
                     aigate_token=None,
                     log_level="INFO",
@@ -211,7 +208,6 @@ class TalkiesBenchmarkIntegrationTests(unittest.TestCase):
                     talkies_model="fixture-model",
                     talkies_token=None,
                     aigate_url="http://127.0.0.1:4000/v1",
-                    aigate_mode=AIGateMode.LOCAL,
                     aigate_model=None,
                     aigate_token=None,
                     log_level="INFO",

@@ -18,3 +18,5 @@ CODEX.local.md
 .env.*
 !.env.example
 .telemetry/
+web/node_modules
+web/dist

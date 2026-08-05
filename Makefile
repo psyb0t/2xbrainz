@@ -1,12 +1,22 @@
 SHELL := /bin/bash
+comma := ,
 
 DEV_IMAGE := 2xbrainz-dev:local
 APP_IMAGE := 2xbrainz:local
+REAL_TEST_IMAGE := 2xbrainz-test-real:local
+WEB_TOOL_IMAGE := node:24-bookworm-slim@sha256:cd84903a12dbd26b46f1f3b8144a2568c41c5d37ddd0c7a80a34c7a19786b35f
 RELEASE_IMAGE ?= psyb0t/2xbrainz
 VERSION ?= $(shell awk -F'"' '/^version[[:space:]]*=[[:space:]]*"/ { print $$2; exit }' pyproject.toml)
 TAG := v$(VERSION)
 PROJECT_ROOT := $(CURDIR)
 ENV_FILE ?= .env
+AUDIO_CONFIG_DIRECTORY ?= $(if $(XDG_CONFIG_HOME),$(XDG_CONFIG_HOME),$(HOME)/.config)/2xbrainz
+LOG_DIRECTORY ?= $(PROJECT_ROOT)/logs
+LIVE_LOG_DIRECTORY := /logs
+LOG_TAIL_LINES ?= 200
+LOG_FILE ?=
+WEB_PORT ?= 7860
+RUN_ARGUMENTS ?= --output tui
 FIXTURE_TRACE_DIRECTORY := $(PROJECT_ROOT)/.testing/fixture-traces
 # host, so the app reaches AIGate and Talkies on the ports they already publish
 # without the caller having to know which Docker network they sit on. Override
@@ -15,7 +25,6 @@ LIVE_NETWORK ?= host
 BENCHMARK_AUDIO ?= tests/fixtures/commons-audio-cc0.wav
 BENCHMARK_REFERENCE_FILE ?=
 TALKIES_MODEL ?=
-TALKIES_WS_URL ?=
 AIGATE_URL ?=
 FIXTURE_TTS_MODEL ?= kokoro-82m-nvidia
 FIXTURE_TTS_VOICE ?= af_heart
@@ -28,21 +37,46 @@ RUNTIME_MEMORY ?= 1g
 RUNTIME_PIDS ?= 128
 RUNTIME_LIMITS := --memory=$(RUNTIME_MEMORY) --cpus=$(RUNTIME_CPUS) --pids-limit=$(RUNTIME_PIDS)
 BUMP_HOST := bash scripts/bump_exclude_newer.sh pyproject.toml
-DOCKER_HOST_ARGUMENTS = $$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m two_x_brainz.docker_hosts \
-	"$(ENV_FILE)")
-FIXTURE_DOCKER_HOST_ARGUMENTS = $$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m two_x_brainz.docker_hosts \
-	"$(ENV_FILE)" "$(AIGATE_URL)" "$(TALKIES_WS_URL)")
+DOCKER_HOST_ARGUMENTS = $(if $(filter host,$(LIVE_NETWORK)),,$$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m two_x_brainz.docker_hosts \
+	"$(ENV_FILE)"))
+FIXTURE_DOCKER_HOST_ARGUMENTS = $(if $(filter host,$(LIVE_NETWORK)),,$$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m two_x_brainz.docker_hosts \
+	"$(ENV_FILE)" "$(AIGATE_URL)"))
 TALKIES_MODEL_ARGUMENT = $(if $(strip $(TALKIES_MODEL)),-e TWOXBRAINZ_TALKIES_MODEL="$(TALKIES_MODEL)")
-TALKIES_WS_URL_ARGUMENT = $(if $(strip $(TALKIES_WS_URL)),-e TWOXBRAINZ_TALKIES_WS_URL="$(TALKIES_WS_URL)")
 AIGATE_URL_ARGUMENT = $(if $(strip $(AIGATE_URL)),-e TWOXBRAINZ_AIGATE_URL="$(AIGATE_URL)")
 BENCHMARK_REFERENCE_ARGUMENT = $(if $(strip $(BENCHMARK_REFERENCE_FILE)),--reference-file /fixture/reference.txt)
 BENCHMARK_REFERENCE_MOUNT = $(if $(strip $(BENCHMARK_REFERENCE_FILE)),-v "$(abspath $(BENCHMARK_REFERENCE_FILE)):/fixture/reference.txt:ro")
 ASR_CANDIDATE_MODELS := nemotron-3.5-asr-0.6b sherpa-zipformer-en-left-64 sherpa-zipformer-en-left-128 sherpa-zipformer-en-int8-left-64 sherpa-zipformer-en-int8-left-128 vosk-small-en-us-0.15
-DEV_RUN := docker run --rm --init --read-only --tmpfs /tmp:rw,noexec,nosuid,size=512m --tmpfs /work-env:rw,exec,nosuid,size=512m --user "$$(id -u):$$(id -g)" -e HOME=/tmp -e PYRIGHT_PYTHON_CACHE_DIR=/work-env/pyright-cache -e RUFF_CACHE_DIR=/tmp/ruff-cache -e UV_CACHE_DIR=/tmp/uv-cache -e UV_PROJECT_ENVIRONMENT=/work-env/venv -v "$(PROJECT_ROOT):/workspace:ro" -w /workspace $(DEV_IMAGE)
-DEV_RUN_WRITE := docker run --rm --init --read-only --tmpfs /tmp:rw,noexec,nosuid,size=512m --tmpfs /work-env:rw,exec,nosuid,size=512m --user "$$(id -u):$$(id -g)" -e HOME=/tmp -e PYRIGHT_PYTHON_CACHE_DIR=/work-env/pyright-cache -e RUFF_CACHE_DIR=/tmp/ruff-cache -e UV_CACHE_DIR=/tmp/uv-cache -e UV_PROJECT_ENVIRONMENT=/work-env/venv -v "$(PROJECT_ROOT):/workspace" -w /workspace $(DEV_IMAGE)
+BUILD_DEV_IMAGE = docker build --file Dockerfile.dev --tag $(DEV_IMAGE) .
+BUILD_APP_IMAGES = docker build --file Dockerfile --tag $(APP_IMAGE) --tag $(RELEASE_IMAGE):$(TAG) --tag $(RELEASE_IMAGE):latest .
+BUILD_REAL_TEST_IMAGE = docker build --file Dockerfile --tag $(REAL_TEST_IMAGE) .
+DEV_RUN := docker run --rm --init --read-only --tmpfs /tmp:rw,noexec,nosuid,size=512m --tmpfs /work-env:rw,exec,nosuid,size=1g --user "$$(id -u):$$(id -g)" -e HOME=/tmp -e PYRIGHT_PYTHON_CACHE_DIR=/work-env/pyright-cache -e RUFF_CACHE_DIR=/tmp/ruff-cache -e UV_CACHE_DIR=/tmp/uv-cache -e UV_PROJECT_ENVIRONMENT=/work-env/venv -v "$(PROJECT_ROOT):/workspace:ro" -w /workspace $(DEV_IMAGE)
+DEV_RUN_WRITE := docker run --rm --init --read-only --tmpfs /tmp:rw,noexec,nosuid,size=512m --tmpfs /work-env:rw,exec,nosuid,size=1g --user "$$(id -u):$$(id -g)" -e HOME=/tmp -e PYRIGHT_PYTHON_CACHE_DIR=/work-env/pyright-cache -e RUFF_CACHE_DIR=/tmp/ruff-cache -e UV_CACHE_DIR=/tmp/uv-cache -e UV_PROJECT_ENVIRONMENT=/work-env/venv -v "$(PROJECT_ROOT):/workspace" -w /workspace $(DEV_IMAGE)
+WEB_LOCK_RUN := docker run --rm --init --read-only --tmpfs /tmp:rw,exec,nosuid,size=1g --user "$$(id -u):$$(id -g)" -e HOME=/tmp -e COREPACK_HOME=/tmp/corepack -e PNPM_HOME=/tmp/pnpm -v "$(PROJECT_ROOT)/web:/web:rw" -w /web $(WEB_TOOL_IMAGE)
+
+define RUN_WITH_IMAGE_CLEANUP
+	@status=0; \
+	cleanup_images() { \
+		cleanup_status=0; \
+		for image in $(2); do \
+			if docker image inspect "$$image" >/dev/null 2>&1; then \
+				docker image rm "$$image" || cleanup_status=$$?; \
+			fi; \
+		done; \
+		return "$$cleanup_status"; \
+	}; \
+	trap 'status=130; cleanup_images; exit "$$status"' INT TERM; \
+	$(1) || status=$$?; \
+	trap - INT TERM; \
+	cleanup_status=0; \
+	cleanup_images || cleanup_status=$$?; \
+	if [ "$$status" -eq 0 ] && [ "$$cleanup_status" -ne 0 ]; then \
+		status=$$cleanup_status; \
+	fi; \
+	exit "$$status"
+endef
 
 .DEFAULT_GOAL := help
-.PHONY: help version dev-image shell dep pkg-lock pkg-add pkg-remove pkg-update pkg-upgrade lint lint-fix format test test-unit test-integration test-coverage test-real build run replay devices live live-fixture live-interview-fixture live-product-fixture benchmark benchmark-with-draft benchmark-candidates benchmark-candidates-with-draft clean
+.PHONY: help version dev-image shell dep pkg-lock pkg-add pkg-remove pkg-update pkg-upgrade web-pkg-lock web-check web-format web-build lint lint-fix format test test-unit test-integration test-coverage test-real build run validate-web-network run-web logs doctor replay devices live-fixture live-interview-fixture live-product-fixture benchmark benchmark-with-draft benchmark-candidates benchmark-candidates-with-draft clean
 
 help: ## Show supported development commands.
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -51,7 +85,7 @@ version: ## Print the release image tag derived from pyproject.toml.
 	@printf '%s\n' "$(TAG)"
 
 dev-image: ## Build the locked-down development image.
-	docker build --file Dockerfile.dev --tag $(DEV_IMAGE) .
+	$(BUILD_DEV_IMAGE)
 
 shell: dev-image ## Open a shell in the development image.
 	$(DEV_RUN_WRITE) bash
@@ -81,10 +115,22 @@ pkg-upgrade: dev-image ## Upgrade all pinned packages after reviewing the lockfi
 	$(BUMP_HOST)
 	$(DEV_RUN_WRITE) uv lock --upgrade
 
-format: dev-image ## Format Python sources inside Docker.
+web-pkg-lock: ## Refresh the age-gated Svelte lockfile in a Node container.
+	$(WEB_LOCK_RUN) corepack pnpm install --lockfile-only --ignore-scripts
+
+web-check: dev-image ## Type-check, test, format-check, and build the Svelte console.
+	docker run --rm --init --read-only --tmpfs /tmp:rw,noexec,nosuid,size=512m --tmpfs /opt/web/node_modules/.vite:rw,exec,nosuid,size=32m --tmpfs /opt/web/node_modules/.vite-temp:rw,exec,nosuid,size=32m --tmpfs /opt/web/dist:rw,noexec,nosuid,size=32m $(DEV_IMAGE) sh -c 'cd /opt/web && pnpm check && pnpm test && pnpm build'
+
+web-format: dev-image ## Format Svelte and TypeScript sources in Docker.
+	$(DEV_RUN_WRITE) sh -c 'cd /opt/web && pnpm exec prettier --config /opt/web/prettier.config.js --write /workspace/web'
+
+web-build: dev-image ## Compile the static Svelte bundle in Docker.
+	docker run --rm --init --read-only --tmpfs /tmp:rw,noexec,nosuid,size=512m --tmpfs /opt/web/node_modules/.vite-temp:rw,exec,nosuid,size=32m --tmpfs /opt/web/dist:rw,noexec,nosuid,size=32m $(DEV_IMAGE) sh -c 'cd /opt/web && pnpm build'
+
+format: web-format ## Format Python and web sources inside Docker.
 	$(DEV_RUN_WRITE) uv run --frozen --group dev ruff format src tests
 
-lint: dev-image ## Run lint, format check, and strict type checking inside Docker.
+lint: dev-image web-check ## Run lint, format check, and strict type checking inside Docker.
 	$(DEV_RUN) uv run --frozen --group dev ruff check src tests
 	$(DEV_RUN) uv run --frozen --group dev ruff format --check src tests
 	$(DEV_RUN) uv run --frozen --group dev pyright
@@ -94,27 +140,43 @@ lint-fix: dev-image ## Apply safe lint fixes and formatting inside Docker.
 	$(DEV_RUN_WRITE) uv run --frozen --group dev ruff check --fix src tests
 	$(DEV_RUN_WRITE) uv run --frozen --group dev ruff format src tests
 
-test: test-unit test-integration ## Run the entire test suite inside Docker.
+test: ## Run the entire test suite inside Docker, then remove its image.
+	$(call RUN_WITH_IMAGE_CLEANUP,$(BUILD_DEV_IMAGE) && $(DEV_RUN) uv run --frozen --group dev pytest -o cache_dir=/tmp/pytest-cache tests,$(DEV_IMAGE))
 
-test-unit: dev-image ## Run unit tests inside Docker.
-	$(DEV_RUN) uv run --frozen --group dev pytest -o cache_dir=/tmp/pytest-cache tests/unit
+test-unit: ## Run unit tests inside Docker, then remove its image.
+	$(call RUN_WITH_IMAGE_CLEANUP,$(BUILD_DEV_IMAGE) && $(DEV_RUN) uv run --frozen --group dev pytest -o cache_dir=/tmp/pytest-cache tests/unit,$(DEV_IMAGE))
 
-test-integration: dev-image ## Run integration tests inside Docker.
-	$(DEV_RUN) uv run --frozen --group dev pytest -o cache_dir=/tmp/pytest-cache tests/integration
+test-integration: ## Run integration tests inside Docker, then remove its image.
+	$(call RUN_WITH_IMAGE_CLEANUP,$(BUILD_DEV_IMAGE) && $(DEV_RUN) uv run --frozen --group dev pytest -o cache_dir=/tmp/pytest-cache tests/integration,$(DEV_IMAGE))
 
-test-coverage: dev-image ## Run tests; coverage tooling is intentionally not installed yet.
-	$(DEV_RUN) uv run --frozen --group dev pytest -o cache_dir=/tmp/pytest-cache tests
+test-coverage: ## Run tests and remove the image; coverage is not installed yet.
+	$(call RUN_WITH_IMAGE_CLEANUP,$(BUILD_DEV_IMAGE) && $(DEV_RUN) uv run --frozen --group dev pytest -o cache_dir=/tmp/pytest-cache tests,$(DEV_IMAGE))
 
-test-real: build ## Check real AIGate prompts with synthetic text from the gitignored .env.
-	@test -f "$(ENV_FILE)" || (echo "$(ENV_FILE) is required and must be gitignored" >&2; exit 1)
-	@mkdir -p "$(FIXTURE_TRACE_DIRECTORY)"
-	docker run --rm --init $(RUNTIME_LIMITS) --read-only --tmpfs /tmp:rw,noexec,nosuid,size=512m --user "$$(id -u):$$(id -g)" --cap-drop ALL --security-opt no-new-privileges:true --network "$(LIVE_NETWORK)" $(FIXTURE_DOCKER_HOST_ARGUMENTS) --env-file "$(ENV_FILE)" $(AIGATE_URL_ARGUMENT) -e TWOXBRAINZ_AIGATE_MODEL="$(FIXTURE_AIGATE_MODEL)" -e TWOXBRAINZ_FIXTURE_TRACE_DIR=/fixture-traces -v "$(FIXTURE_TRACE_DIRECTORY):/fixture-traces:rw" -v "$(PROJECT_ROOT)/tests/integration/real_aigate_prompts.py:/fixture/real_aigate_prompts.py:ro" --entrypoint python $(APP_IMAGE) /fixture/real_aigate_prompts.py
+test-real: ## Check real AIGate prompts, then remove its dedicated image.
+	$(call RUN_WITH_IMAGE_CLEANUP,(test -f "$(ENV_FILE)" || { echo "$(ENV_FILE) is required and must be gitignored" >&2; exit 1; }) && mkdir -p "$(FIXTURE_TRACE_DIRECTORY)" && $(BUILD_REAL_TEST_IMAGE) && docker run --rm --init $(RUNTIME_LIMITS) --read-only --tmpfs /tmp:rw$(comma)noexec$(comma)nosuid$(comma)size=512m --user "$$(id -u):$$(id -g)" --cap-drop ALL --security-opt no-new-privileges:true --network "$(LIVE_NETWORK)" $(FIXTURE_DOCKER_HOST_ARGUMENTS) --env-file "$(ENV_FILE)" $(AIGATE_URL_ARGUMENT) -e TWOXBRAINZ_AIGATE_MODEL="$(FIXTURE_AIGATE_MODEL)" -e TWOXBRAINZ_FIXTURE_TRACE_DIR=/fixture-traces -v "$(FIXTURE_TRACE_DIRECTORY):/fixture-traces:rw" -v "$(PROJECT_ROOT)/tests/integration/real_aigate_prompts.py:/fixture/real_aigate_prompts.py:ro" --entrypoint python $(REAL_TEST_IMAGE) /fixture/real_aigate_prompts.py,$(REAL_TEST_IMAGE))
 
 build: ## Build and tag the production CLI image.
-	docker build --file Dockerfile --tag $(APP_IMAGE) --tag $(RELEASE_IMAGE):$(TAG) --tag $(RELEASE_IMAGE):latest .
+	$(BUILD_APP_IMAGES)
 
-run: build ## Run the production CLI image with a read-only filesystem.
-	docker run --rm --init $(RUNTIME_LIMITS) --read-only --tmpfs /tmp:rw,noexec,nosuid,size=512m --cap-drop ALL --security-opt no-new-privileges:true $(APP_IMAGE) doctor
+run: build ## Start the Textual live console; missing or stale devices open setup.
+	@test -f "$(ENV_FILE)" || (echo "$(ENV_FILE) is required and must be gitignored" >&2; exit 1)
+	@test -n "$${XDG_RUNTIME_DIR:-}" || (echo "XDG_RUNTIME_DIR is required" >&2; exit 1)
+	@test -d "$(AUDIO_CONFIG_DIRECTORY)" || mkdir -p -m 700 "$(AUDIO_CONFIG_DIRECTORY)"
+	@install -d -m 700 "$(LOG_DIRECTORY)"
+	docker run --rm --init -it $(RUNTIME_LIMITS) --read-only --tmpfs /tmp:rw,noexec,nosuid,size=512m --user "$$(id -u):$$(id -g)" --cap-drop ALL --security-opt no-new-privileges:true --network "$(LIVE_NETWORK)" $(DOCKER_HOST_ARGUMENTS) --env-file "$(ENV_FILE)" -e XDG_RUNTIME_DIR=/pipewire-runtime -e TWOXBRAINZ_AUDIO_CONFIG_FILE=/audio-config/audio-selection.json -e TWOXBRAINZ_LOG_DIRECTORY="$(LIVE_LOG_DIRECTORY)" -v "$${XDG_RUNTIME_DIR}:/pipewire-runtime:ro" -v "$(AUDIO_CONFIG_DIRECTORY):/audio-config:rw" -v "$(LOG_DIRECTORY):$(LIVE_LOG_DIRECTORY):rw" $(APP_IMAGE) live $(RUN_ARGUMENTS)
+
+run-web: RUN_ARGUMENTS := --output web --web-port $(WEB_PORT)
+validate-web-network:
+	@test "$(LIVE_NETWORK)" = "host" || (echo "run-web requires LIVE_NETWORK=host because the web server binds only to loopback" >&2; exit 1)
+
+run-web: validate-web-network run ## Start the local Svelte live console at http://127.0.0.1:<port>.
+
+logs: build ## Follow the newest session log; set LOG_FILE to select one explicitly.
+	docker run --rm --init --read-only --tmpfs /tmp:rw,noexec,nosuid,size=512m --user "$$(id -u):$$(id -g)" --cap-drop ALL --security-opt no-new-privileges:true -e TWOXBRAINZ_LOG_NAME="$(LOG_FILE)" -v "$(LOG_DIRECTORY):$(LIVE_LOG_DIRECTORY):ro" --entrypoint /bin/sh $(APP_IMAGE) -c 'set -eu; selected_log="$${TWOXBRAINZ_LOG_NAME}"; if [ -z "$$selected_log" ]; then selected_log="$$(find "$(LIVE_LOG_DIRECTORY)" -maxdepth 1 -type f -name "*_2xbrainz*.log" -printf "%T@ %f\n" | sort -nr | sed -n "1{s/^[^ ]* //;p;}")"; fi; case "$$selected_log" in ""|*/*|*..*|*[!0-9TZ_.-]*) echo "invalid session log name" >&2; exit 1;; esac; case "$$selected_log" in *_2xbrainz.log|*_2xbrainz-[0-9]*.log) ;; *) echo "invalid session log name" >&2; exit 1;; esac; test -f "$(LIVE_LOG_DIRECTORY)/$$selected_log" || { echo "no live log yet: run make run first" >&2; exit 1; }; exec tail -n "$(LOG_TAIL_LINES)" -F "$(LIVE_LOG_DIRECTORY)/$$selected_log"'
+
+doctor: build ## Print a sanitized resolved configuration for troubleshooting.
+	@test -f "$(ENV_FILE)" || (echo "$(ENV_FILE) is required and must be gitignored" >&2; exit 1)
+	docker run --rm --init $(RUNTIME_LIMITS) --read-only --tmpfs /tmp:rw,noexec,nosuid,size=512m --cap-drop ALL --security-opt no-new-privileges:true --env-file "$(ENV_FILE)" $(APP_IMAGE) doctor
 
 replay: build ## Replay the bundled conversation fixture in the production image.
 	docker run --rm --init $(RUNTIME_LIMITS) --read-only --tmpfs /tmp:rw,noexec,nosuid,size=512m --cap-drop ALL --security-opt no-new-privileges:true -v "$(PROJECT_ROOT)/examples:/examples:ro" $(APP_IMAGE) replay --events /examples/conversation.jsonl
@@ -123,17 +185,10 @@ devices: build ## List host PipeWire nodes from the production container.
 	@test -n "$${XDG_RUNTIME_DIR:-}" || (echo "XDG_RUNTIME_DIR is required" >&2; exit 1)
 	docker run --rm --init $(RUNTIME_LIMITS) --read-only --tmpfs /tmp:rw,noexec,nosuid,size=512m --user "$$(id -u):$$(id -g)" --cap-drop ALL --security-opt no-new-privileges:true -e XDG_RUNTIME_DIR=/pipewire-runtime -v "$${XDG_RUNTIME_DIR}:/pipewire-runtime:ro" $(APP_IMAGE) devices
 
-live: build ## Capture two PipeWire nodes; override RUNTIME_CPUS/MEMORY after measuring.
-	@test -n "$(MIC_NODE)" || (echo "MIC_NODE is required" >&2; exit 1)
-	@test -n "$(SYSTEM_NODE)" || (echo "SYSTEM_NODE is required" >&2; exit 1)
-	@test -f "$(ENV_FILE)" || (echo "$(ENV_FILE) is required and must be gitignored" >&2; exit 1)
-	@test -n "$${XDG_RUNTIME_DIR:-}" || (echo "XDG_RUNTIME_DIR is required" >&2; exit 1)
-	docker run --rm --init -i $(RUNTIME_LIMITS) --read-only --tmpfs /tmp:rw,noexec,nosuid,size=512m --user "$$(id -u):$$(id -g)" --cap-drop ALL --security-opt no-new-privileges:true --network "$(LIVE_NETWORK)" $(DOCKER_HOST_ARGUMENTS) --env-file "$(ENV_FILE)" -e XDG_RUNTIME_DIR=/pipewire-runtime -v "$${XDG_RUNTIME_DIR}:/pipewire-runtime:ro" $(APP_IMAGE) live --mic-node "$(MIC_NODE)" --system-node "$(SYSTEM_NODE)"
-
 live-fixture: build ## Exercise overlapping Talkies TTS fixture devices; AIGate stays mocked.
 	@test -f "$(ENV_FILE)" || (echo "$(ENV_FILE) is required and must be gitignored" >&2; exit 1)
 	@mkdir -p "$(FIXTURE_TRACE_DIRECTORY)"
-	docker run --rm --init $(RUNTIME_LIMITS) --read-only --tmpfs /tmp:rw,noexec,nosuid,size=512m --tmpfs /fixture-work:rw,exec,nosuid,size=512m --user "$$(id -u):$$(id -g)" --cap-drop ALL --security-opt no-new-privileges:true --network "$(LIVE_NETWORK)" $(FIXTURE_DOCKER_HOST_ARGUMENTS) --env-file "$(ENV_FILE)" $(AIGATE_URL_ARGUMENT) $(TALKIES_MODEL_ARGUMENT) $(TALKIES_WS_URL_ARGUMENT) -e TWOXBRAINZ_AIGATE_MODEL="$(FIXTURE_AIGATE_MODEL)" -e TWOXBRAINZ_FIXTURE_REAL_AIGATE="$(FIXTURE_REAL_AIGATE)" -e TWOXBRAINZ_FIXTURE_AUDIO_SCENARIO="$(FIXTURE_AUDIO_SCENARIO)" -e TWOXBRAINZ_FIXTURE_TTS_MODEL="$(FIXTURE_TTS_MODEL)" -e TWOXBRAINZ_FIXTURE_TTS_VOICE="$(FIXTURE_TTS_VOICE)" -e TWOXBRAINZ_FIXTURE_WORK_DIR=/fixture-work -e TWOXBRAINZ_FIXTURE_TRACE_DIR=/fixture-traces -v "$(FIXTURE_TRACE_DIRECTORY):/fixture-traces:rw" -v "$(PROJECT_ROOT)/tests/integration/live_talkies_tts_fixture.py:/fixture/live_talkies_tts_fixture.py:ro" --entrypoint python $(APP_IMAGE) /fixture/live_talkies_tts_fixture.py
+	docker run --rm --init $(RUNTIME_LIMITS) --read-only --tmpfs /tmp:rw,noexec,nosuid,size=512m --tmpfs /fixture-work:rw,exec,nosuid,size=512m --user "$$(id -u):$$(id -g)" --cap-drop ALL --security-opt no-new-privileges:true --network "$(LIVE_NETWORK)" $(FIXTURE_DOCKER_HOST_ARGUMENTS) --env-file "$(ENV_FILE)" $(AIGATE_URL_ARGUMENT) $(TALKIES_MODEL_ARGUMENT) -e TWOXBRAINZ_AIGATE_MODEL="$(FIXTURE_AIGATE_MODEL)" -e TWOXBRAINZ_FIXTURE_REAL_AIGATE="$(FIXTURE_REAL_AIGATE)" -e TWOXBRAINZ_FIXTURE_AUDIO_SCENARIO="$(FIXTURE_AUDIO_SCENARIO)" -e TWOXBRAINZ_FIXTURE_TTS_MODEL="$(FIXTURE_TTS_MODEL)" -e TWOXBRAINZ_FIXTURE_TTS_VOICE="$(FIXTURE_TTS_VOICE)" -e TWOXBRAINZ_FIXTURE_WORK_DIR=/fixture-work -e TWOXBRAINZ_FIXTURE_TRACE_DIR=/fixture-traces -v "$(FIXTURE_TRACE_DIRECTORY):/fixture-traces:rw" -v "$(PROJECT_ROOT)/tests/integration/live_talkies_tts_fixture.py:/fixture/live_talkies_tts_fixture.py:ro" --entrypoint python $(APP_IMAGE) /fixture/live_talkies_tts_fixture.py
 
 live-interview-fixture: FIXTURE_AUDIO_SCENARIO := interview
 live-interview-fixture: live-fixture ## Exercise four-turn Talkies audio with deterministic AIGate.

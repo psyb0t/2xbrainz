@@ -5,9 +5,18 @@ live ASR, turn state, and text drafting as replaceable boundaries rather than
 creating a distributed control plane.
 
 The current MVP launch profile is Linux PipeWire with CPU-native ASR and
-ephemeral session state. See
-[ADR-0001](decisions/0001-mvp-launch-profile.md) for the exact platform,
-resource, provider, and retention boundaries.
+ephemeral in-memory session state. See
+[ADR-0001](decisions/0001-mvp-launch-profile.md) for the platform, resource,
+and provider boundary, and
+[ADR-0002](decisions/0002-persistent-reconstruction-log.md) for bounded local
+event-log retention.
+
+## Contents
+
+- [Runtime flow](#runtime-flow)
+- [State invariants](#state-invariants)
+- [Components](#components)
+- [Deliberate limits](#deliberate-limits)
 
 ## Runtime flow
 
@@ -22,11 +31,29 @@ host PipeWire socket (read-only mount)
                          │
                          └─> transcript store -> turn manager -> coordinator
                                                             │
+                                                            ├─> Textual TUI or local Svelte console
+                                                            ├─> rotating local event log
                                                             ├─> remote reply draft
                                                             └─> user commentary / rolling summary
                                                                  via AIGate /chat/completions
                                                                  with text-only context
 ```
+
+Before opening capture, `live` reads the visible PipeWire nodes through the
+existing read-only runtime mount. It reuses a validated local selection when
+both stable node names remain available; otherwise the initial TUI or web screen
+is Audio Setup for one non-monitor microphone source and one system-audio
+capture source: a monitor source when available, or a directly capturable sink.
+It persists only those names in the host-mounted per-user
+configuration file. `F3` returns to the same setup screen later; a pair changed
+during a call is deliberately saved for the next session rather than replacing
+two active capture streams. The
+PipeWire configured default source and default output are a first-choice
+recommendation, not a claim about an application's current route. While Audio
+Setup is visible, one short-lived meter probe runs for every displayed candidate
+and the UI renders each independent level, so the operator can identify active
+routes before persisting a pair. The dashboard then meters only its two selected
+capture paths. No audio or PipeWire socket is written to that file.
 
 `live` opens one Talkies stream per capture node. Before it constructs either
 PipeWire source, both `live` and `benchmark` verify the selected model inventory
@@ -63,12 +90,15 @@ its synthetic session. This makes prompt/provider failures distinct from
 capture/ASR timing failures while keeping both scenarios fully reproducible
 without host audio hardware. The scenario also exercises the native-ASR
 compatibility path: when a backend finalizes only after `end`, the runtime keeps
-PipeWire capture open but ends the current Talkies segment after detected speech
-is followed by a bounded silence interval. It waits for the next audible frame
-before opening a new segment with a new logical ASR identity, avoiding an idle
-backend connection while another turn's LLM work is in flight. This lets
-Nemotron produce independent multi-turn finals without recreating either
-capture process.
+PipeWire capture open while a local Silero model independently bounds each
+Talkies segment. Speech start requires consecutive positive model windows;
+speech end uses a lower probability threshold and sustained silence, providing
+hysteresis against noisy microphones. A short pre-roll preserves initial
+phonemes, and a 60-second safety boundary rotates continuous audio even if
+silence never arrives. The runtime waits for the next detected speech region
+before opening a new logical ASR identity, avoiding an idle backend connection
+while another turn's LLM work is in flight. This lets Nemotron produce
+independent multi-turn finals without recreating either capture process.
 
 ## State invariants
 
@@ -92,7 +122,7 @@ capture process.
 - A result is visible only when its generation ID and transcript revision still
   match the coordinator's active state; a changed revision discards stale
   background output.
-- Every provider job carries the fixed 15-second application deadline. An
+- Every provider job carries the fixed 60-second application deadline. An
   expired draft, commentary, or summary becomes a typed failed result and
   cannot hold capture or later turns hostage.
 - An expected PipeWire or Talkies stream failure emits one versioned
@@ -122,6 +152,10 @@ capture process.
   bounded relative drift between matching frame sequences. It rejects a clean
   subprocess exit that did not yield a complete frame. It never retains PCM or
   device identifiers for diagnostics.
+- [`vad.py`](../src/two_x_brainz/vad.py) adapts arbitrary 20 ms capture frames
+  to the bundled Silero model's exact inference window, validates every speech
+  probability, and converts model failures into typed capture failures. Each
+  role owns a separate stateful detector.
 - [`talkies.py`](../src/two_x_brainz/talkies.py) validates the Talkies protocol
   at the boundary, maps native WebSocket transcripts plus terminal stream
   statistics into typed contracts, preserves optional word offsets and
@@ -138,42 +172,64 @@ capture process.
   not a model-quality claim.
 - [`docker_hosts.py`](../src/two_x_brainz/docker_hosts.py) allows the Docker
   launch targets to map a host-resolved fully-qualified provider hostname to a
-  validated IPv4 address without reading credentials. It matters when a named
+  validated IPv4 address without reading credentials. It runs only when a named
   Docker network is selected; under the default `LIVE_NETWORK=host` the
-  container already shares the host's resolver and the mapping is redundant.
+  container already shares the host's resolver and needs no host-side Python.
 - [`transcript.py`](../src/two_x_brainz/transcript.py) performs revision-safe
   transcript reconciliation and retains a bounded recent window after a
   newer rolling summary is accepted.
-- [`turns.py`](../src/two_x_brainz/turns.py) is ASR-signal-first: an endpoint
-  creates a candidate end, and only a stable final completes a turn; optional
-  VAD can only become an earlier timing hint in a later capture implementation.
-  It also exposes per-role active speech so overlap cannot be mistaken for a
-  completed reply opportunity.
+- [`turns.py`](../src/two_x_brainz/turns.py) remains ASR-signal-first after the
+  local VAD closes a transport: an endpoint creates a candidate end, and only a
+  stable final completes a turn. It also exposes per-role active speech so
+  overlap cannot be mistaken for a completed reply opportunity.
 - [`coordinator.py`](../src/two_x_brainz/coordinator.py) owns timeline entries,
   reply priority, overlap suppression, cancellation, provider deadlines,
-  stale-result rejection, and bounded completed result queues.
+  stale-result rejection, and bounded completed result queues. Reply guidance
+  is display-only: it never becomes an input to a later provider request.
 - [`aigate.py`](../src/two_x_brainz/aigate.py) is a narrow implementation of
   the OpenAI-compatible chat-completions contract used by AIGate. It applies
   application-owned token and text-length limits before provider output enters
   CLI state, then parses CommonMark into a text-only subset. Safe inline
   presentation becomes visible text; structural Markdown and HTML are rejected
   without rendering provider-controlled markup.
+- [`terminal.py`](../src/two_x_brainz/terminal.py) turns bounded runtime state
+  into a Textual alternate-screen operator console. Its fixed status bar carries
+  session and active-operation timers; a source strip shows selected labels and
+  two presentation-only input levels. Independent `VerticalScroll` conversation
+  and guidance panes preserve manual reading position and auto-follow only at
+  their own ends; `F2` switches split and focused-pane views, and `F3` opens
+  the audio setup screen. Only pause, resume, and stop commands pass through
+  the strict parser (`Ctrl+Q` stops cleanly), provider and transcript text is
+  rendered literally, and non-TTY output falls back to readable plain lines.
+- [`web.py`](../src/two_x_brainz/web.py) adapts that exact terminal state for a
+  loopback FastAPI/Svelte console. FastAPI serves the compiled assets and a
+  same-origin WebSocket. Browser pause and resume controls feed the existing
+  strict control queue; process shutdown remains with the owning terminal so
+  the web console cannot terminate the server that serves its own page.
+  Bounded structured snapshots update separate conversation, reply,
+  private-coach, story, and all-candidate setup-meter panels. Svelte renders
+  provider text literally and owns only browser-local layout preferences, not
+  session state.
+- [`logging_config.py`](../src/two_x_brainz/logging_config.py) writes every
+  runtime event to a credential-redacted rotating JSON log. It is the durable
+  reconstruction surface; it retains text events but never PCM.
 
 For module-level invariants and file ownership, see
 [`src/two_x_brainz/README.md`](../src/two_x_brainz/README.md).
 
 ## Deliberate limits
 
-The runtime emits JSON lines in the terminal rather than a graphical overlay
-or terminal dashboard. It never speaks or sends a draft automatically, stores
-no audio, and does not attempt multi-speaker diarization on the mixed system
-stream. Those boundaries prevent the always-on assistant from becoming an
-invisible actor.
+The runtime uses either the human-readable Textual dashboard or an equivalent
+local Svelte console for `live`, not a graphical overlay or raw JSON event
+stream. It never speaks or sends a draft
+automatically, stores no audio, and does not attempt multi-speaker diarization
+on the mixed system stream. Those boundaries prevent the always-on assistant
+from becoming an invisible actor.
 
-Live and replay use the same JSON-line record shapes for transcript, turn,
-timeline, draft, commentary, and summary output. This lets a local consumer
-validate its parser with the deterministic replay fixture before attaching to
-live audio. Every record carries `schema_version: 1`. Turn and timeline records
+Live and replay use the same JSON record shapes for transcript, turn, timeline,
+draft, commentary, and summary events. Replay prints them for deterministic
+test consumers; live writes them to the rotating log while rendering the
+dashboard. Every record carries `schema_version: 1`. Turn and timeline records
 share an opaque `turn_id`; generated records carry opaque `generation_id` and
 `trigger_turn_id` fields. These support local correlation without exposing a
 session ID, stream ID, audio bytes, or credentials.

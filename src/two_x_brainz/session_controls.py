@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 from enum import StrEnum
 
 _MAX_CONTROL_LINE_CHARACTERS = 32
-_MAX_EDIT_TEXT_CHARACTERS = 1_000
 
 
 class SessionState(StrEnum):
@@ -24,23 +22,6 @@ class SessionCommand(StrEnum):
     PAUSE = "pause"
     RESUME = "resume"
     STOP = "stop"
-
-
-class DraftAction(StrEnum):
-    """Explicit human-gate actions for the currently displayed reply draft."""
-
-    ACCEPT = "accept"
-    DISMISS = "dismiss"
-    EDIT = "edit"
-    REGENERATE = "regenerate"
-
-
-@dataclass(frozen=True, slots=True)
-class DraftActionRequest:
-    """A parsed local action; edit text is never sent to the provider."""
-
-    action: DraftAction
-    text: str | None
 
 
 class SessionController:
@@ -101,21 +82,3 @@ def parse_session_command(line: str) -> SessionCommand | None:
         return SessionCommand(normalized)
     except ValueError:
         return None
-
-
-def parse_draft_action(line: str) -> DraftActionRequest | None:
-    """Parse a bounded action line without treating it as executable input."""
-    stripped = line.strip()
-    command_text, separator, text = stripped.partition(" ")
-    try:
-        action = DraftAction(command_text.lower())
-    except ValueError:
-        return None
-    if action is not DraftAction.EDIT:
-        if separator:
-            return None
-        return DraftActionRequest(action=action, text=None)
-    edited_text = text.strip()
-    if not edited_text or len(edited_text) > _MAX_EDIT_TEXT_CHARACTERS:
-        return None
-    return DraftActionRequest(action=action, text=edited_text)

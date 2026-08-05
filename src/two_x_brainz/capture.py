@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import re
 import time
-from collections.abc import AsyncIterable, AsyncIterator
+from collections import deque
+from collections.abc import AsyncIterable, AsyncIterator, Mapping
 from dataclasses import dataclass
+from typing import cast
 
 from two_x_brainz.constants import (
     DEFAULT_CHANNELS,
@@ -24,27 +27,62 @@ from two_x_brainz.constants import (
     PIPEWIRE_OPTION_CHANNELS,
     PIPEWIRE_OPTION_FORMAT,
     PIPEWIRE_OPTION_LATENCY,
+    PIPEWIRE_OPTION_PROPERTIES,
     PIPEWIRE_OPTION_RATE,
     PIPEWIRE_OPTION_TARGET,
     PIPEWIRE_OUTPUT_TARGET,
     PIPEWIRE_RECORD_COMMAND,
-    SPEECH_ACTIVITY_SAMPLE_THRESHOLD,
-    SPEECH_TURN_SILENCE_FRAME_COUNT,
+    PIPEWIRE_SINK_CAPTURE_PROPERTIES,
+    VAD_MAX_SEGMENT_AUDIO_BYTES,
+    VAD_PRE_ROLL_FRAME_COUNT,
+    VAD_SILENCE_WINDOW_COUNT,
+    VAD_SPEECH_START_PROBABILITY,
+    VAD_SPEECH_START_WINDOW_COUNT,
+    VAD_SPEECH_STOP_PROBABILITY,
 )
 from two_x_brainz.contracts import AudioFrame, SpeakerRole
 from two_x_brainz.errors import CaptureError
-from two_x_brainz.json_support import (
-    decode_json,
-    require_json_array,
-    require_json_object,
-)
+from two_x_brainz.vad import StreamingVoiceActivityDetector
 
 logger = logging.getLogger(__name__)
 
 _NODE_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 _PIPEWIRE_DUMP_COMMAND = "pw-dump"
+_PIPEWIRE_DUMP_OPTION_NO_COLORS = "--no-colors"
 _MAX_DEVICE_OUTPUT_BYTES = 1_000_000
+_MAX_DEVICE_ERROR_BYTES = 65_536
+_PIPEWIRE_DISCOVERY_READ_BYTES = 65_536
+_PIPEWIRE_DISCOVERY_TIMEOUT_SECONDS = 10
+_PIPEWIRE_TERMINATION_TIMEOUT_SECONDS = 1
 _EMPTY_CAPTURE_ERROR = "PipeWire capture ended without PCM frames"
+_PIPEWIRE_NODE_PATTERN = re.compile(
+    r'^  \{\n    "id": (?P<id>\d+),\n'
+    r'    "type": "PipeWire:Interface:Node",(?P<body>.*?)(?=^  \{|^\])',
+    re.MULTILINE | re.DOTALL,
+)
+_PIPEWIRE_NODE_PROPERTY_PATTERN = re.compile(
+    r'"(?P<name>node\.name|media\.class|node\.description|node\.nick|'
+    r'device\.description|device\.product\.name)":\s*'
+    r'(?P<value>"(?:\\.|[^"\\])*")'
+)
+_PIPEWIRE_METADATA_INTERFACE = "PipeWire:Interface:Metadata"
+_PIPEWIRE_DEFAULT_METADATA_NAME = "default"
+_PIPEWIRE_METADATA_NAME_PROPERTY = "metadata.name"
+_PIPEWIRE_METADATA_ITEMS_FIELD = "metadata"
+_PIPEWIRE_DEFAULT_AUDIO_SOURCE_KEY = "default.audio.source"
+_PIPEWIRE_DEFAULT_AUDIO_SINK_KEY = "default.audio.sink"
+_PIPEWIRE_DEFAULT_VALUE_NAME_KEY = "name"
+_PIPEWIRE_DEFAULT_VALUE_ID_KEY = "id"
+_PIPEWIRE_NODE_DESCRIPTION_PROPERTIES = (
+    "node.description",
+    "node.nick",
+    "device.description",
+    "device.product.name",
+)
+_DEFAULT_SOURCE_ROLE = "source"
+_DEFAULT_SINK_ROLE = "sink"
+_PCM_S16LE_MAX_ABSOLUTE_SAMPLE = 32_768
+_AUDIO_LEVEL_PERCENT_MAXIMUM = 100
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,10 +90,10 @@ class PipeWireSource:
     """A single PipeWire node captured as bounded PCM16LE frames."""
 
     node_id: str
+    capture_sink: bool = False
 
     def __post_init__(self) -> None:
-        if not _NODE_ID.fullmatch(self.node_id):
-            raise CaptureError("PipeWire node must be a short node name or serial")
+        validate_pipewire_node_identifier(self.node_id)
 
     async def frames(self) -> AsyncIterator[bytes]:
         """Yield 20 ms PCM frames and terminate the child process on exit."""
@@ -63,16 +101,27 @@ class PipeWireSource:
             PIPEWIRE_RECORD_COMMAND,
             PIPEWIRE_OPTION_TARGET,
             self.node_id,
-            PIPEWIRE_OPTION_RATE,
-            str(DEFAULT_SAMPLE_RATE_HZ),
-            PIPEWIRE_OPTION_CHANNELS,
-            str(DEFAULT_CHANNELS),
-            PIPEWIRE_OPTION_FORMAT,
-            PIPEWIRE_FORMAT_S16,
-            PIPEWIRE_OPTION_LATENCY,
-            PIPEWIRE_LATENCY,
-            PIPEWIRE_OUTPUT_TARGET,
         ]
+        if self.capture_sink:
+            command.extend(
+                [
+                    PIPEWIRE_OPTION_PROPERTIES,
+                    PIPEWIRE_SINK_CAPTURE_PROPERTIES,
+                ]
+            )
+        command.extend(
+            [
+                PIPEWIRE_OPTION_RATE,
+                str(DEFAULT_SAMPLE_RATE_HZ),
+                PIPEWIRE_OPTION_CHANNELS,
+                str(DEFAULT_CHANNELS),
+                PIPEWIRE_OPTION_FORMAT,
+                PIPEWIRE_FORMAT_S16,
+                PIPEWIRE_OPTION_LATENCY,
+                PIPEWIRE_LATENCY,
+                PIPEWIRE_OUTPUT_TARGET,
+            ]
+        )
         try:
             process = await asyncio.create_subprocess_exec(
                 *command,
@@ -85,7 +134,7 @@ class PipeWireSource:
         if process.stdout is None or process.stderr is None:
             raise CaptureError("PipeWire capture did not expose standard streams")
 
-        logger.info("PipeWire capture started", extra={"node_id": self.node_id})
+        logger.info("PipeWire capture started")
         try:
             frame_count = 0
             chunks = _read_pipewire_chunks(process.stdout)
@@ -108,7 +157,7 @@ class PipeWireSource:
                 except TimeoutError:
                     process.kill()
                     await process.wait()
-            logger.info("PipeWire capture stopped", extra={"node_id": self.node_id})
+            logger.info("PipeWire capture stopped")
 
 
 @dataclass(frozen=True, slots=True)
@@ -264,12 +313,21 @@ class CaptureFrameMonitor:
 
 
 class SilenceTurnSegmenter:
-    """Rotate the ASR transport after audible speech is followed by silence."""
+    """Rotate ASR transports using neural speech probability and hysteresis."""
 
-    def __init__(self, frames: AsyncIterable[AudioFrame]) -> None:
+    def __init__(
+        self,
+        frames: AsyncIterable[AudioFrame],
+        detector: StreamingVoiceActivityDetector | None = None,
+    ) -> None:
         self._frames = aiter(frames)
+        self._detector = detector or StreamingVoiceActivityDetector()
         self._capture_ended = False
         self._last_boundary: str | None = None
+        self._speech_start_windows = 0
+        self._silence_windows = 0
+        self._pre_roll: deque[AudioFrame] = deque(maxlen=VAD_PRE_ROLL_FRAME_COUNT)
+        self._pending_start_frames: deque[AudioFrame] = deque()
 
     @property
     def capture_ended(self) -> bool:
@@ -282,12 +340,19 @@ class SilenceTurnSegmenter:
         return self._last_boundary
 
     async def next_speech_frame(self) -> AudioFrame | None:
-        """Wait for audible input before opening another native ASR transport."""
+        """Wait for sustained neural speech evidence and retain bounded pre-roll."""
         if self._capture_ended:
             return None
         async for frame in self._frames:
-            if _frame_has_speech(frame.samples):
-                return frame
+            self._pre_roll.append(frame)
+            probabilities = self._detector.observe(frame.samples)
+            if not self._speech_started(probabilities):
+                continue
+            self._pending_start_frames.extend(self._pre_roll)
+            self._pre_roll.clear()
+            self._speech_start_windows = 0
+            self._silence_windows = 0
+            return self._pending_start_frames.popleft()
         self._capture_ended = True
         self._last_boundary = "capture_ended"
         return None
@@ -296,41 +361,52 @@ class SilenceTurnSegmenter:
         self,
         first_speech_frame: AudioFrame | None = None,
     ) -> AsyncIterator[AudioFrame]:
-        """Yield a continuous frame slice ending after sustained silence."""
+        """Yield one bounded utterance ending after silence or a safety limit."""
         if self._capture_ended:
             return
         self._last_boundary = None
-        saw_speech = first_speech_frame is not None
-        consecutive_silence_frames = 0
-        if first_speech_frame is not None:
-            yield first_speech_frame
+        if first_speech_frame is None:
+            first_speech_frame = await self.next_speech_frame()
+        if first_speech_frame is None:
+            return
+        segment_audio_bytes = len(first_speech_frame.samples)
+        yield first_speech_frame
+        while self._pending_start_frames:
+            pending_frame = self._pending_start_frames.popleft()
+            segment_audio_bytes += len(pending_frame.samples)
+            yield pending_frame
         async for frame in self._frames:
             yield frame
-            if _frame_has_speech(frame.samples):
-                saw_speech = True
-                consecutive_silence_frames = 0
-                continue
-            if not saw_speech:
-                continue
-            consecutive_silence_frames += 1
-            if consecutive_silence_frames >= SPEECH_TURN_SILENCE_FRAME_COUNT:
+            segment_audio_bytes += len(frame.samples)
+            probabilities = self._detector.observe(frame.samples)
+            self._update_silence(probabilities)
+            if self._silence_windows >= VAD_SILENCE_WINDOW_COUNT:
                 self._last_boundary = "silence"
+                self._silence_windows = 0
+                return
+            if segment_audio_bytes >= VAD_MAX_SEGMENT_AUDIO_BYTES:
+                self._last_boundary = "max_duration"
+                self._silence_windows = 0
                 return
         self._capture_ended = True
         self._last_boundary = "capture_ended"
 
+    def _speech_started(self, probabilities: tuple[float, ...]) -> bool:
+        for probability in probabilities:
+            if probability < VAD_SPEECH_START_PROBABILITY:
+                self._speech_start_windows = 0
+                continue
+            self._speech_start_windows += 1
+            if self._speech_start_windows >= VAD_SPEECH_START_WINDOW_COUNT:
+                return True
+        return False
 
-def _frame_has_speech(samples: bytes) -> bool:
-    """Return whether a PCM16LE frame exceeds the local activity floor."""
-    for offset in range(0, len(samples), PCM_S16LE_SAMPLE_BYTES):
-        sample = int.from_bytes(
-            samples[offset : offset + PCM_S16LE_SAMPLE_BYTES],
-            PCM_S16LE_BYTEORDER,
-            signed=True,
-        )
-        if abs(sample) >= SPEECH_ACTIVITY_SAMPLE_THRESHOLD:
-            return True
-    return False
+    def _update_silence(self, probabilities: tuple[float, ...]) -> None:
+        for probability in probabilities:
+            if probability >= VAD_SPEECH_STOP_PROBABILITY:
+                self._silence_windows = 0
+                continue
+            self._silence_windows += 1
 
 
 def _other_speaker_role(speaker_role: SpeakerRole) -> SpeakerRole:
@@ -380,6 +456,7 @@ async def list_pipewire_nodes() -> list[dict[str, str]]:
     try:
         process = await asyncio.create_subprocess_exec(
             _PIPEWIRE_DUMP_COMMAND,
+            _PIPEWIRE_DUMP_OPTION_NO_COLORS,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -388,40 +465,286 @@ async def list_pipewire_nodes() -> list[dict[str, str]]:
     if process.stdout is None or process.stderr is None:
         raise CaptureError("pw-dump did not expose standard streams")
 
-    raw = await process.stdout.read(_MAX_DEVICE_OUTPUT_BYTES + 1)
-    exit_code = await process.wait()
-    if len(raw) > _MAX_DEVICE_OUTPUT_BYTES:
+    output_task = asyncio.create_task(
+        _read_bounded_pipewire_stream(process.stdout, _MAX_DEVICE_OUTPUT_BYTES)
+    )
+    error_task = asyncio.create_task(
+        _read_bounded_pipewire_stream(process.stderr, _MAX_DEVICE_ERROR_BYTES)
+    )
+    try:
+        (
+            exit_code,
+            (raw, output_truncated),
+            (stderr, error_truncated),
+        ) = await asyncio.wait_for(
+            asyncio.gather(process.wait(), output_task, error_task),
+            timeout=_PIPEWIRE_DISCOVERY_TIMEOUT_SECONDS,
+        )
+    except TimeoutError as error:
+        await _terminate_pipewire_process(process)
+        raise CaptureError("pw-dump discovery timed out") from error
+    except BaseException:
+        await _terminate_pipewire_process(process)
+        raise
+
+    if output_truncated:
         raise CaptureError("pw-dump output exceeds the configured size limit")
     if exit_code != 0:
-        stderr = (await process.stderr.read()).decode("utf-8", errors="replace")
-        raise CaptureError(f"pw-dump exited with code {exit_code}: {stderr}")
-    try:
-        objects = require_json_array(decode_json(raw))
-    except ValueError as error:
-        raise CaptureError("pw-dump returned invalid JSON") from error
+        if error_truncated:
+            raise CaptureError(f"pw-dump exited with code {exit_code}")
+        stderr_message = stderr.decode("utf-8", errors="replace")
+        raise CaptureError(f"pw-dump exited with code {exit_code}: {stderr_message}")
+    return _extract_pipewire_nodes(raw)
 
+
+def _extract_pipewire_nodes(raw: bytes) -> list[dict[str, str]]:
+    """Extract capture-safe Node metadata from PipeWire's JSON-like output."""
+    text = raw.decode("utf-8", errors="replace")
+    try:
+        decoded = json.loads(text)
+    except json.JSONDecodeError:
+        return _extract_json_like_pipewire_nodes(text)
+    if not isinstance(decoded, list):
+        return []
+    return _extract_json_pipewire_nodes(cast(list[object], decoded))
+
+
+def _extract_json_pipewire_nodes(decoded: list[object]) -> list[dict[str, str]]:
+    """Extract Node metadata from a strict JSON PipeWire document."""
+    defaults = _extract_default_pipewire_nodes(decoded)
     nodes: list[dict[str, str]] = []
-    for item in objects:
-        try:
-            node = require_json_object(item)
-        except ValueError:
+    for item in decoded:
+        if not isinstance(item, dict):
             continue
+        node = cast(dict[str, object], item)
         if node.get("type") != "PipeWire:Interface:Node":
             continue
         node_id = node.get("id")
         info = node.get("info")
-        if not isinstance(node_id, int):
+        if not isinstance(node_id, int) or not isinstance(info, dict):
             continue
-        try:
-            info_object = require_json_object(info)
-        except ValueError:
+        info_object = cast(dict[str, object], info)
+        properties = info_object.get("props")
+        if not isinstance(properties, dict):
             continue
-        try:
-            props = require_json_object(info_object.get("props"))
-        except ValueError:
+        property_map = cast(dict[str, object], properties)
+        name = property_map.get("node.name")
+        media_class = property_map.get("media.class")
+        if not isinstance(name, str) or not isinstance(media_class, str):
             continue
-        name = props.get("node.name")
-        media_class = props.get("media.class")
-        if isinstance(name, str) and isinstance(media_class, str):
-            nodes.append({"id": str(node_id), "name": name, "media_class": media_class})
+        nodes.append(
+            _pipewire_node_record(
+                node_id=str(node_id),
+                name=name,
+                media_class=media_class,
+                properties=property_map,
+                defaults=defaults,
+            )
+        )
     return nodes
+
+
+def _extract_json_like_pipewire_nodes(text: str) -> list[dict[str, str]]:
+    """Extract Node metadata from PipeWire documents containing SPA pod fragments."""
+    nodes: list[dict[str, str]] = []
+    for match in _PIPEWIRE_NODE_PATTERN.finditer(text):
+        properties = _extract_pipewire_node_properties(match.group("body"))
+        name = properties.get("node.name")
+        media_class = properties.get("media.class")
+        if name is None or media_class is None:
+            continue
+        nodes.append(
+            _pipewire_node_record(
+                node_id=match.group("id"),
+                name=name,
+                media_class=media_class,
+                properties=properties,
+                defaults={},
+            )
+        )
+    return nodes
+
+
+def _extract_pipewire_node_properties(node_body: str) -> dict[str, str]:
+    """Decode only quoted PipeWire node properties used for capture selection."""
+    properties: dict[str, str] = {}
+    for match in _PIPEWIRE_NODE_PROPERTY_PATTERN.finditer(node_body):
+        try:
+            value = json.loads(match.group("value"))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, str):
+            properties[match.group("name")] = value
+    return properties
+
+
+def _extract_default_pipewire_nodes(decoded: list[object]) -> dict[str, str]:
+    """Read current default identifiers without trusting metadata as targets."""
+    defaults: dict[str, str] = {}
+    for item in decoded:
+        if not isinstance(item, dict):
+            continue
+        metadata = cast(dict[str, object], item)
+        if metadata.get("type") != _PIPEWIRE_METADATA_INTERFACE:
+            continue
+        info = metadata.get("info")
+        if not isinstance(info, dict):
+            continue
+        info_map = cast(dict[str, object], info)
+        properties = info_map.get("props")
+        if not isinstance(properties, dict):
+            continue
+        property_map = cast(dict[str, object], properties)
+        if (
+            property_map.get(_PIPEWIRE_METADATA_NAME_PROPERTY)
+            != _PIPEWIRE_DEFAULT_METADATA_NAME
+        ):
+            continue
+        entries = metadata.get(_PIPEWIRE_METADATA_ITEMS_FIELD)
+        if not isinstance(entries, list):
+            continue
+        for raw_entry in cast(list[object], entries):
+            if not isinstance(raw_entry, dict):
+                continue
+            entry = cast(dict[str, object], raw_entry)
+            key = entry.get("key")
+            value = _pipewire_default_value(entry.get("value"))
+            if (
+                key
+                in {
+                    _PIPEWIRE_DEFAULT_AUDIO_SOURCE_KEY,
+                    _PIPEWIRE_DEFAULT_AUDIO_SINK_KEY,
+                }
+                and value is not None
+            ):
+                defaults[cast(str, key)] = value
+    return defaults
+
+
+def _pipewire_default_value(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        decoded = json.loads(value)
+    except json.JSONDecodeError:
+        return value
+    if isinstance(decoded, str):
+        return decoded
+    if not isinstance(decoded, dict):
+        return None
+    decoded_map = cast(dict[str, object], decoded)
+    for key in (_PIPEWIRE_DEFAULT_VALUE_NAME_KEY, _PIPEWIRE_DEFAULT_VALUE_ID_KEY):
+        identifier = decoded_map.get(key)
+        if isinstance(identifier, str):
+            return identifier
+        if isinstance(identifier, int):
+            return str(identifier)
+    return None
+
+
+def _pipewire_node_record(
+    *,
+    node_id: str,
+    name: str,
+    media_class: str,
+    properties: Mapping[str, object],
+    defaults: Mapping[str, str],
+) -> dict[str, str]:
+    record = {
+        "id": node_id,
+        "name": name,
+        "media_class": media_class,
+    }
+    description = _pipewire_node_description(properties)
+    if description:
+        record["description"] = description
+    default_role = _default_role_for_node(node_id, name, defaults)
+    if default_role is not None:
+        record["default_role"] = default_role
+    return record
+
+
+def _pipewire_node_description(properties: Mapping[str, object]) -> str | None:
+    for key in _PIPEWIRE_NODE_DESCRIPTION_PROPERTIES:
+        value = properties.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _default_role_for_node(
+    node_id: str,
+    name: str,
+    defaults: Mapping[str, str],
+) -> str | None:
+    default_source = defaults.get(_PIPEWIRE_DEFAULT_AUDIO_SOURCE_KEY)
+    if default_source in {node_id, name}:
+        return _DEFAULT_SOURCE_ROLE
+    default_sink = defaults.get(_PIPEWIRE_DEFAULT_AUDIO_SINK_KEY)
+    if default_sink is None:
+        return None
+    if default_sink in {node_id, name} or name == f"{default_sink}.monitor":
+        return _DEFAULT_SINK_ROLE
+    return None
+
+
+def audio_level_percent(samples: bytes) -> int:
+    """Reduce one PCM frame to a bounded in-memory display level."""
+    if not samples:
+        return 0
+    maximum = 0
+    for offset in range(0, len(samples), PCM_S16LE_SAMPLE_BYTES):
+        sample = int.from_bytes(
+            samples[offset : offset + PCM_S16LE_SAMPLE_BYTES],
+            PCM_S16LE_BYTEORDER,
+            signed=True,
+        )
+        maximum = max(maximum, abs(sample))
+    return min(
+        _AUDIO_LEVEL_PERCENT_MAXIMUM,
+        round(maximum * _AUDIO_LEVEL_PERCENT_MAXIMUM / _PCM_S16LE_MAX_ABSOLUTE_SAMPLE),
+    )
+
+
+async def _read_bounded_pipewire_stream(
+    reader: asyncio.StreamReader,
+    maximum_bytes: int,
+) -> tuple[bytes, bool]:
+    """Drain a PipeWire subprocess stream while retaining only its bounded prefix."""
+    retained = bytearray()
+    truncated = False
+    while chunk := await reader.read(_PIPEWIRE_DISCOVERY_READ_BYTES):
+        remaining = maximum_bytes - len(retained)
+        if remaining <= 0:
+            truncated = True
+            continue
+        retained.extend(chunk[:remaining])
+        if len(chunk) > remaining:
+            truncated = True
+    return bytes(retained), truncated
+
+
+async def _terminate_pipewire_process(
+    process: asyncio.subprocess.Process,
+) -> None:
+    """Stop a timed-out PipeWire subprocess without leaving a child behind."""
+    if process.returncode is not None:
+        return
+    try:
+        process.terminate()
+    except ProcessLookupError:
+        return
+    try:
+        await asyncio.wait_for(
+            process.wait(),
+            timeout=_PIPEWIRE_TERMINATION_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        process.kill()
+        await process.wait()
+
+
+def validate_pipewire_node_identifier(node_id: str) -> None:
+    """Reject identifiers that cannot safely become a PipeWire subprocess argument."""
+    if not _NODE_ID.fullmatch(node_id):
+        raise CaptureError("PipeWire node must be a short node name or serial")

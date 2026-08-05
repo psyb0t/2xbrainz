@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 from two_x_brainz.aigate import AIGateClient
 from two_x_brainz.benchmark import ASRBenchmarkReport, NativeStreamBenchmark
 from two_x_brainz.cli import main
-from two_x_brainz.config import AIGateMode, Settings
+from two_x_brainz.config import Settings
 from two_x_brainz.contracts import SpeakerRole
 from two_x_brainz.errors import CaptureError, RemoteServiceError
 
@@ -329,7 +329,6 @@ def _settings(aigate_model: str | None = None) -> Settings:
         talkies_model="fixture-model",
         talkies_token=None,
         aigate_url="http://aigate:4000/v1",
-        aigate_mode=AIGateMode.LOCAL,
         aigate_model=aigate_model,
         aigate_token=None,
         log_level="INFO",

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
-from collections import deque
 from dataclasses import dataclass
 from datetime import timedelta
 from uuid import uuid4
@@ -13,14 +12,10 @@ from uuid import uuid4
 from two_x_brainz.aigate import DraftProvider, InsightProvider
 from two_x_brainz.constants import (
     DEFAULT_PROVIDER_GENERATION_DEADLINE,
-    MAX_DRAFT_OUTCOME_BACKLOG,
     MAX_DRAFT_RESULT_BACKLOG,
-    MAX_DRAFT_TEXT_CHARACTERS,
     MAX_INSIGHT_RESULT_BACKLOG,
 )
 from two_x_brainz.contracts import (
-    DraftOutcome,
-    DraftOutcomeAction,
     DraftRequest,
     DraftResult,
     GenerationStatus,
@@ -51,7 +46,7 @@ class CoordinatorUpdate:
 
 
 class ConversationCoordinator:
-    """Owns transcript state and one high-priority human-gated reply job."""
+    """Owns transcript state and one high-priority advisory reply job."""
 
     def __init__(
         self,
@@ -70,8 +65,6 @@ class ConversationCoordinator:
         self._active_generation_id: str | None = None
         self._active_draft_request: DraftRequest | None = None
         self._last_draft: DraftResult | None = None
-        self._last_reply_request: DraftRequest | None = None
-        self._draft_outcomes: deque[DraftOutcome] = deque()
         self._completed_drafts: asyncio.Queue[DraftResult] = asyncio.Queue(
             maxsize=MAX_DRAFT_RESULT_BACKLOG
         )
@@ -148,79 +141,15 @@ class ConversationCoordinator:
         return self._last_draft
 
     async def next_completed_draft(self) -> DraftResult:
-        """Wait for a terminal draft result for actions and deterministic tests."""
+        """Wait for a terminal advisory result and deterministic tests."""
         return await self._completed_drafts.get()
 
     async def next_draft_event(self) -> DraftResult:
         """Wait for the latest visible draft lifecycle event for terminal output."""
         return await self._draft_events.get()
 
-    def record_draft_outcome(
-        self,
-        action: DraftOutcomeAction,
-    ) -> DraftOutcome | None:
-        """Consume and preserve one explicit local action for a current draft."""
-        draft = self.current_draft()
-        if draft is None:
-            return None
-        if len(self._draft_outcomes) >= MAX_DRAFT_OUTCOME_BACKLOG:
-            discarded = self._draft_outcomes.popleft()
-            logger.warning(
-                "discarded oldest local draft outcome",
-                extra={"generation_id": discarded.draft.generation_id},
-            )
-        outcome = DraftOutcome(action=action, draft=draft)
-        self._draft_outcomes.append(outcome)
-        self._last_draft = None
-        logger.info(
-            "recorded local draft outcome",
-            extra={
-                "action": action.value,
-                "generation_id": draft.generation_id,
-            },
-        )
-        return outcome
-
-    def draft_outcomes(self) -> tuple[DraftOutcome, ...]:
-        """Return immutable in-memory outcomes for the active session only."""
-        return tuple(self._draft_outcomes)
-
-    def edit_current_draft(self, text: str) -> DraftResult | None:
-        """Replace current draft text locally without calling the provider."""
-        edited_text = text.strip()
-        if not edited_text or len(edited_text) > MAX_DRAFT_TEXT_CHARACTERS:
-            return None
-        draft = self.current_draft()
-        if draft is None:
-            return None
-        edited_draft = DraftResult(
-            generation_id=draft.generation_id,
-            trigger_turn_id=draft.trigger_turn_id,
-            context_revision=draft.context_revision,
-            status=GenerationStatus.COMPLETED,
-            text=edited_text,
-        )
-        self._publish_terminal_draft(edited_draft)
-        return edited_draft
-
-    async def regenerate_current_draft(self) -> bool:
-        """Start another draft only when the displayed context remains current."""
-        draft = self.current_draft()
-        request = self._last_reply_request
-        if draft is None or request is None:
-            return False
-        if request.context_revision != draft.context_revision:
-            return False
-        await self._cancel_active(GenerationStatus.SUPERSEDED)
-        self._last_draft = None
-        await self._start_draft_request(
-            trigger_turn_id=request.trigger_turn_id,
-            transcript=request.transcript,
-        )
-        return True
-
     def current_draft(self) -> DraftResult | None:
-        """Return only a completed draft whose context still matches the transcript."""
+        """Return only current display guidance, never provider context."""
         draft = self._last_draft
         if draft is None or draft.status is not GenerationStatus.COMPLETED:
             return None
@@ -269,7 +198,6 @@ class ConversationCoordinator:
             transcript=transcript,
             deadline_seconds=self._generation_deadline_seconds,
         )
-        self._last_reply_request = request
         self._active_generation_id = request.generation_id
         self._active_draft_request = request
         self._publish_draft_event(

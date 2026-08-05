@@ -31,19 +31,14 @@ jobs:
     uses: psyb0t/reusable-github-workflows/.github/workflows/docker-image-workflow.yml@master
     with:
       repository_name: psyb0t/2xbrainz
-      target_platforms: "linux/amd64,linux/arm64"
-      # The scan runs AFTER the image push and the GitHub Release, so a finding
-      # can never un-publish either one -- fail_build would only paint the run
-      # red after the fact. Findings land in the Security tab regardless, which
-      # is where they are meant to be read. `high` is the threshold that would
-      # apply if this is ever flipped to true.
+      # ADR-0001 supports x86_64 Linux only for the MVP.
+      target_platforms: "linux/amd64"
+      # The reusable workflow scans after publishing, so release preparation
+      # also runs this gate locally before the release script is generated.
       scan_severity: "high"
-      scan_fail_build: false
-      # scan_only_fixed is deliberately left at its default (false): with
-      # fail_build off nothing is blocked by an unfixable CVE anyway, so hiding
-      # the no-fix-available findings would only remove signal from the
-      # Security tab. scan_vex_file is unset -- there is no OpenVEX doc in this
-      # repo, and an unreviewed suppression is worse than a noisy tab.
+      scan_fail_build: true
+      scan_only_fixed: true
+      scan_vex_file: security/openvex.json
     secrets:
       dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
       dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}

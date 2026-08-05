@@ -1,0 +1,83 @@
+export const PREFERENCES_KEY = '2xbrainz.web.layout.v1';
+
+export interface LayoutPreferences {
+  mainSplitPercent: number;
+  replyHeightPercent: number;
+  coachHeightPercent: number;
+  sourceBarCollapsed: boolean;
+  replyCollapsed: boolean;
+  coachCollapsed: boolean;
+  storyCollapsed: boolean;
+}
+
+export const DEFAULT_PREFERENCES: LayoutPreferences = {
+  mainSplitPercent: 62,
+  replyHeightPercent: 34,
+  coachHeightPercent: 33,
+  sourceBarCollapsed: false,
+  replyCollapsed: false,
+  coachCollapsed: false,
+  storyCollapsed: false
+};
+
+const MIN_MAIN_PERCENT = 28;
+const MAX_MAIN_PERCENT = 78;
+const MIN_GUIDANCE_PERCENT = 15;
+const MAX_GUIDANCE_PERCENT = 70;
+
+export function loadPreferences(storage: Storage): LayoutPreferences {
+  try {
+    const raw = storage.getItem(PREFERENCES_KEY);
+    if (raw === null) return { ...DEFAULT_PREFERENCES };
+    const parsed: unknown = JSON.parse(raw);
+    if (!isRecord(parsed)) return { ...DEFAULT_PREFERENCES };
+    return normalizePreferences(parsed);
+  } catch {
+    return { ...DEFAULT_PREFERENCES };
+  }
+}
+
+export function savePreferences(storage: Storage, value: LayoutPreferences): void {
+  try {
+    storage.setItem(PREFERENCES_KEY, JSON.stringify(normalizePreferences(value)));
+  } catch {
+    return;
+  }
+}
+
+export function normalizePreferences(
+  value: Partial<LayoutPreferences> | Record<string, unknown>
+): LayoutPreferences {
+  return {
+    mainSplitPercent: clampNumber(value.mainSplitPercent, 62, MIN_MAIN_PERCENT, MAX_MAIN_PERCENT),
+    replyHeightPercent: clampNumber(
+      value.replyHeightPercent,
+      34,
+      MIN_GUIDANCE_PERCENT,
+      MAX_GUIDANCE_PERCENT
+    ),
+    coachHeightPercent: clampNumber(
+      value.coachHeightPercent,
+      33,
+      MIN_GUIDANCE_PERCENT,
+      MAX_GUIDANCE_PERCENT
+    ),
+    sourceBarCollapsed: booleanOrDefault(value.sourceBarCollapsed, false),
+    replyCollapsed: booleanOrDefault(value.replyCollapsed, false),
+    coachCollapsed: booleanOrDefault(value.coachCollapsed, false),
+    storyCollapsed: booleanOrDefault(value.storyCollapsed, false)
+  };
+}
+
+function clampNumber(value: unknown, fallback: number, minimum: number, maximum: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+function booleanOrDefault(value: unknown, fallback: boolean): boolean {
+  return typeof value === 'boolean' ? value : fallback;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}

@@ -6,6 +6,9 @@ CODEX.local.md
 .agent_knowledge/
 .plan-and-delegate/
 .testing/
+.secaudit/
+.anustimes/
+.brutal_reviews/
 PLAN.md
 plan.md
 implplan.md
@@ -30,12 +33,16 @@ htmlcov/
 
 # Python tooling and runtime diagnostics
 .venv/
+web/node_modules/
+web/dist/
 __pycache__/
 *.pyc
 .ruff_cache/
 .pytest_cache/
 .mypy_cache/
 *.log
+logs/*
+!logs/.gitkeep
 
 # Editor / IDE
 .vscode/

@@ -7,14 +7,24 @@ import asyncio
 import json
 import logging
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from two_x_brainz import VERSION
 from two_x_brainz.aigate import AIGateClient, EchoDraftProvider
+from two_x_brainz.audio_selection import (
+    AudioSelectionStore,
+    prepare_audio_selection_setup,
+)
 from two_x_brainz.benchmark import run_asr_benchmark
 from two_x_brainz.capture import list_pipewire_nodes
 from two_x_brainz.config import Settings
-from two_x_brainz.constants import JSON_RECORD_SCHEMA_VERSION
+from two_x_brainz.constants import (
+    DEFAULT_WEB_CONSOLE_PORT,
+    JSON_RECORD_SCHEMA_VERSION,
+    MAX_WEB_CONSOLE_PORT,
+    MIN_WEB_CONSOLE_PORT,
+)
 from two_x_brainz.coordinator import ConversationCoordinator
 from two_x_brainz.errors import (
     CaptureError,
@@ -22,7 +32,7 @@ from two_x_brainz.errors import (
     RemoteServiceError,
     TwoXBrainzError,
 )
-from two_x_brainz.logging_config import configure_logging
+from two_x_brainz.logging_config import allocate_session_log_file, configure_logging
 from two_x_brainz.replay import load_replay_events
 from two_x_brainz.runtime import run_live, transcript_record
 
@@ -43,6 +53,11 @@ def main() -> int:
     arguments = parser.parse_args()
     try:
         settings = Settings.from_environment()
+        if arguments.command == "live":
+            settings = replace(
+                settings,
+                log_file=allocate_session_log_file(settings.log_file),
+            )
         configure_logging(settings.log_level, settings.log_file)
         return asyncio.run(_run(arguments, settings))
     except TwoXBrainzError as error:
@@ -89,8 +104,23 @@ def _build_parser() -> argparse.ArgumentParser:
         "live",
         help="capture two PipeWire nodes and call Talkies",
     )
-    live.add_argument("--mic-node", required=True)
-    live.add_argument("--system-node", required=True)
+    live.add_argument("--mic-node", help="optional visible microphone node override")
+    live.add_argument(
+        "--system-node",
+        help="optional visible system-output node override",
+    )
+    live.add_argument(
+        "--output",
+        choices=("tui", "web"),
+        default="tui",
+        help="operator presentation mode (default: tui)",
+    )
+    live.add_argument(
+        "--web-port",
+        type=_web_port,
+        default=DEFAULT_WEB_CONSOLE_PORT,
+        help="loopback port for --output web",
+    )
     benchmark = subcommands.add_parser(
         "benchmark",
         help="verify concurrent Talkies native and file contracts with one WAV",
@@ -121,7 +151,18 @@ async def _run(arguments: argparse.Namespace, settings: Settings) -> int:
         await _run_replay(arguments.events, settings)
         return _EXIT_SUCCESS
     if command == "live":
-        await run_live(settings, arguments.mic_node, arguments.system_node)
+        audio_setup = prepare_audio_selection_setup(
+            nodes=await list_pipewire_nodes(),
+            store=AudioSelectionStore(settings.audio_config_file),
+            mic_node=arguments.mic_node,
+            system_node=arguments.system_node,
+        )
+        await run_live(
+            settings,
+            audio_setup,
+            output=arguments.output,
+            web_port=arguments.web_port,
+        )
         return _EXIT_SUCCESS
     if command == "benchmark":
         draft_provider = None
@@ -130,6 +171,8 @@ async def _run(arguments: argparse.Namespace, settings: Settings) -> int:
                 base_url=settings.aigate_url,
                 model=settings.aigate_model,
                 token=settings.aigate_token,
+                web_research_enabled=settings.web_research_enabled,
+                session_brief=settings.session_brief,
             )
             draft_provider.require_model()
         report = await run_asr_benchmark(
@@ -174,6 +217,19 @@ async def _run(arguments: argparse.Namespace, settings: Settings) -> int:
         )
         return _EXIT_SUCCESS
     raise TwoXBrainzError(f"unsupported command: {command}")
+
+
+def _web_port(value: str) -> int:
+    try:
+        port = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("web port must be an integer") from error
+    if not MIN_WEB_CONSOLE_PORT <= port <= MAX_WEB_CONSOLE_PORT:
+        raise argparse.ArgumentTypeError(
+            f"web port must be between {MIN_WEB_CONSOLE_PORT} and "
+            f"{MAX_WEB_CONSOLE_PORT}"
+        )
+    return port
 
 
 async def _run_replay(events_path: Path, settings: Settings) -> None:
@@ -262,9 +318,10 @@ def _write_status(settings: Settings) -> None:
                 "talkies_model": settings.talkies_model,
                 "talkies_token_configured": settings.talkies_token is not None,
                 "aigate_url": settings.aigate_url,
-                "aigate_mode": settings.aigate_mode.value,
                 "aigate_model": settings.aigate_model,
                 "aigate_token_configured": settings.aigate_token is not None,
+                "web_research_enabled": settings.web_research_enabled,
+                "session_brief_configured": settings.session_brief is not None,
                 "log_level": settings.log_level,
             },
             separators=(",", ":"),

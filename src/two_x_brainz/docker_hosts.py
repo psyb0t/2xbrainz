@@ -10,7 +10,7 @@ from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import urlparse
 
-from two_x_brainz.constants import ENV_AIGATE_URL, ENV_TALKIES_WS_URL
+from two_x_brainz.constants import ENV_AIGATE_URL
 
 _DOCKER_ADD_HOST_FLAG = "--add-host="
 _FULLY_QUALIFIED_HOSTNAME_DELIMITER = "."
@@ -18,16 +18,8 @@ _FQDN_PATTERN = re.compile(
     r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
     r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
 )
-_URL_ENVIRONMENT_KEYS = frozenset(
-    {
-        ENV_AIGATE_URL,
-        ENV_TALKIES_WS_URL,
-    }
-)
-_URL_SCHEMES = {
-    ENV_AIGATE_URL: frozenset({"http", "https"}),
-    ENV_TALKIES_WS_URL: frozenset({"ws", "wss"}),
-}
+_URL_ENVIRONMENT_KEYS = frozenset({ENV_AIGATE_URL})
+_URL_SCHEMES = {ENV_AIGATE_URL: frozenset({"http", "https"})}
 
 ResolveIPv4 = Callable[[str], str | None]
 
@@ -77,19 +69,16 @@ def resolve_ipv4(hostname: str) -> str | None:
 
 def main(arguments: list[str]) -> int:
     """Print shell-safe Docker host arguments for one dotenv-format file."""
-    if len(arguments) not in {2, 4}:
+    if len(arguments) not in {2, 3}:
         print(
-            "usage: docker_hosts.py <environment-file> [aigate-url talkies-url]",
+            "usage: docker_hosts.py <environment-file> [aigate-url]",
             file=sys.stderr,
         )
         return 2
     environment_file = Path(arguments[1])
     endpoint_overrides = ()
-    if len(arguments) == 4:
-        endpoint_overrides = (
-            (ENV_AIGATE_URL, arguments[2]),
-            (ENV_TALKIES_WS_URL, arguments[3]),
-        )
+    if len(arguments) == 3:
+        endpoint_overrides = ((ENV_AIGATE_URL, arguments[2]),)
     try:
         docker_arguments = docker_host_arguments(
             environment_file,

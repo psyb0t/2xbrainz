@@ -6,11 +6,14 @@ import asyncio
 import contextlib
 import contextvars
 import json
+import logging
 import sys
 from collections.abc import AsyncIterable
+from typing import Protocol
 from uuid import uuid4
 
 from two_x_brainz.aigate import AIGateClient
+from two_x_brainz.audio_selection import AudioSelection, AudioSelectionSetup
 from two_x_brainz.capture import (
     CaptureFrameMonitor,
     CaptureStats,
@@ -18,14 +21,13 @@ from two_x_brainz.capture import (
     InterStreamDriftStats,
     PipeWireSource,
     SilenceTurnSegmenter,
+    audio_level_percent,
 )
 from two_x_brainz.config import Settings
-from two_x_brainz.constants import JSON_RECORD_SCHEMA_VERSION
+from two_x_brainz.constants import DEFAULT_WEB_CONSOLE_PORT, JSON_RECORD_SCHEMA_VERSION
 from two_x_brainz.contracts import (
     ASRStreamStats,
     AudioFrame,
-    DraftOutcome,
-    DraftOutcomeAction,
     DraftResult,
     InsightResult,
     SpeakerRole,
@@ -35,20 +37,19 @@ from two_x_brainz.contracts import (
 from two_x_brainz.coordinator import ConversationCoordinator
 from two_x_brainz.errors import CaptureError, ProtocolError, RemoteServiceError
 from two_x_brainz.session_controls import (
-    DraftAction,
-    DraftActionRequest,
     SessionCommand,
     SessionController,
     SessionState,
-    parse_draft_action,
     parse_session_command,
 )
 from two_x_brainz.talkies import TalkiesClient, TalkiesStreamConfig
+from two_x_brainz.terminal import LiveTerminal
+from two_x_brainz.web import WebConsole
 
 _MAX_CONTROL_LINE_BYTES = 1_024
 _SESSION_STARTED_ACTION = "started"
 _CONTROL_ERROR_KIND = "control_error"
-_CONTROL_ERROR_MESSAGE = "use pause, resume, stop, accept, dismiss, edit, or regenerate"
+_CONTROL_ERROR_MESSAGE = "use pause, resume, or stop"
 _MICROPHONE_STREAM_ID = "microphone"
 _SYSTEM_STREAM_ID = "system"
 _SESSION_ERROR_KIND = "session_error"
@@ -58,117 +59,185 @@ _ASR_PROTOCOL_ERROR_REASON = "asr_protocol_error"
 _ASR_SEGMENT_KIND = "asr_segment"
 _ASR_SEGMENT_OPENED = "opened"
 _ASR_SEGMENT_STREAM_LABEL = "segment"
+_RUNTIME_EVENT_LOG_MESSAGE = "live runtime event"
+
+logger = logging.getLogger(__name__)
+
+
+class LivePresentation(Protocol):
+    """The shared runtime adapter contract for a local operator presentation."""
+
+    @property
+    def interactive(self) -> bool: ...
+
+    async def open(self) -> AudioSelection | None: ...
+
+    async def close(self) -> None: ...
+
+    def consume(self, record: dict[str, object]) -> None: ...
+
+    def set_audio_level(self, speaker_role: str, percent: int) -> None: ...
+
+    def control_lines(self) -> AsyncIterable[str]: ...
+
+
+_ACTIVE_TERMINAL: contextvars.ContextVar[LivePresentation | None] = (
+    contextvars.ContextVar(
+        "active_terminal",
+        default=None,
+    )
+)
 
 
 class _LiveSessionStopped(Exception):
     """Ends the TaskGroup after the local operator explicitly stops capture."""
 
 
-async def run_live(settings: Settings, mic_node: str, system_node: str) -> None:
-    """Capture mic/system nodes and print live transcript events to stdout."""
-    provider = AIGateClient(
-        base_url=settings.aigate_url,
-        model=settings.aigate_model,
-        token=settings.aigate_token,
+async def run_live(
+    settings: Settings,
+    audio_setup: AudioSelectionSetup,
+    *,
+    output: str = "tui",
+    web_port: int = DEFAULT_WEB_CONSOLE_PORT,
+) -> None:
+    """Choose capture in the app, then start the two live Talkies streams."""
+    terminal_state = LiveTerminal(
+        log_file=str(settings.log_file), audio_setup=audio_setup
     )
-    await provider.verify_configured_model()
-    coordinator = ConversationCoordinator(provider, provider)
-    controller = SessionController()
-    session_id = str(uuid4())
-    stream_config = TalkiesStreamConfig(
-        url=settings.talkies_ws_url,
-        model=settings.talkies_model,
-        token=settings.talkies_token,
-    )
-    talkies_client = TalkiesClient(stream_config)
-    await talkies_client.verify_configured_model()
-    await talkies_client.warm_configured_model()
-    drift_monitor = InterStreamDriftMonitor()
-    microphone_monitor = CaptureFrameMonitor(
-        session_id=session_id,
-        stream_id=_MICROPHONE_STREAM_ID,
-        speaker_role=SpeakerRole.USER,
-        drift_monitor=drift_monitor,
-    )
-    system_monitor = CaptureFrameMonitor(
-        session_id=session_id,
-        stream_id=_SYSTEM_STREAM_ID,
-        speaker_role=SpeakerRole.REMOTE,
-        drift_monitor=drift_monitor,
-    )
-    renderer_context = contextvars.copy_context()
-    renderer = renderer_context.run(
-        asyncio.create_task,
-        _render_drafts(coordinator),
-    )
-    insight_renderer_context = contextvars.copy_context()
-    insight_renderer = insight_renderer_context.run(
-        asyncio.create_task,
-        _render_insights(coordinator),
-    )
-    _write_session_event(
-        state=controller.state,
-        action=_SESSION_STARTED_ACTION,
-        changed=True,
-        aigate_mode=settings.aigate_mode.value,
-        aigate_model=settings.aigate_model,
-    )
-
+    terminal = presentation_for_output(output, terminal_state, web_port)
+    terminal_token: contextvars.Token[LivePresentation | None] | None = None
     try:
-        async with asyncio.TaskGroup() as group:
-            group.create_task(
-                _consume_stream(
-                    client=TalkiesClient(stream_config),
-                    coordinator=coordinator,
-                    session_id=session_id,
-                    stream_id=_MICROPHONE_STREAM_ID,
-                    speaker_role=SpeakerRole.USER,
-                    frames=microphone_monitor.annotate(
-                        _gated_frames(
-                            PipeWireSource(mic_node).frames(),
-                            controller,
-                        )
-                    ),
-                    capture_monitor=microphone_monitor,
-                ),
-                context=contextvars.copy_context(),
-            )
-            group.create_task(
-                _consume_stream(
-                    client=TalkiesClient(stream_config),
-                    coordinator=coordinator,
-                    session_id=session_id,
-                    stream_id=_SYSTEM_STREAM_ID,
-                    speaker_role=SpeakerRole.REMOTE,
-                    frames=system_monitor.annotate(
-                        _gated_frames(
-                            PipeWireSource(system_node).frames(),
-                            controller,
-                        )
-                    ),
-                    capture_monitor=system_monitor,
-                ),
-                context=contextvars.copy_context(),
-            )
-            group.create_task(_read_session_controls(controller, coordinator))
-            group.create_task(_raise_when_stopped(controller))
-    except* _LiveSessionStopped:
-        pass
-    except* (CaptureError, ProtocolError, RemoteServiceError) as error_group:
-        write_session_error_event(
-            session_error_reason(_first_expected_live_error(error_group))
+        selection = await terminal.open()
+        if selection is None:
+            return
+
+        provider = AIGateClient(
+            base_url=settings.aigate_url,
+            model=settings.aigate_model,
+            token=settings.aigate_token,
+            web_research_enabled=settings.web_research_enabled,
+            session_brief=settings.session_brief,
         )
-        raise
+        await provider.verify_configured_model()
+        coordinator = ConversationCoordinator(provider, provider)
+        controller = SessionController()
+        session_id = str(uuid4())
+        stream_config = TalkiesStreamConfig(
+            url=settings.talkies_ws_url,
+            model=settings.talkies_model,
+            token=settings.talkies_token,
+        )
+        talkies_client = TalkiesClient(stream_config)
+        await talkies_client.verify_configured_model()
+        await talkies_client.warm_configured_model()
+        drift_monitor = InterStreamDriftMonitor()
+        microphone_monitor = CaptureFrameMonitor(
+            session_id=session_id,
+            stream_id=_MICROPHONE_STREAM_ID,
+            speaker_role=SpeakerRole.USER,
+            drift_monitor=drift_monitor,
+        )
+        system_monitor = CaptureFrameMonitor(
+            session_id=session_id,
+            stream_id=_SYSTEM_STREAM_ID,
+            speaker_role=SpeakerRole.REMOTE,
+            drift_monitor=drift_monitor,
+        )
+        terminal_token = _ACTIVE_TERMINAL.set(terminal)
+        renderer_context = contextvars.copy_context()
+        renderer = renderer_context.run(
+            asyncio.create_task,
+            _render_drafts(coordinator),
+        )
+        insight_renderer_context = contextvars.copy_context()
+        insight_renderer = insight_renderer_context.run(
+            asyncio.create_task,
+            _render_insights(coordinator),
+        )
+        try:
+            _write_session_event(
+                state=controller.state,
+                action=_SESSION_STARTED_ACTION,
+                changed=True,
+                aigate_model=settings.aigate_model,
+            )
+            async with asyncio.TaskGroup() as group:
+                group.create_task(
+                    _consume_stream(
+                        client=TalkiesClient(stream_config),
+                        coordinator=coordinator,
+                        session_id=session_id,
+                        stream_id=_MICROPHONE_STREAM_ID,
+                        speaker_role=SpeakerRole.USER,
+                        frames=_metered_frames(
+                            microphone_monitor.annotate(
+                                _gated_frames(
+                                    PipeWireSource(selection.mic_node).frames(),
+                                    controller,
+                                )
+                            )
+                        ),
+                        capture_monitor=microphone_monitor,
+                    ),
+                    context=contextvars.copy_context(),
+                )
+                group.create_task(
+                    _consume_stream(
+                        client=TalkiesClient(stream_config),
+                        coordinator=coordinator,
+                        session_id=session_id,
+                        stream_id=_SYSTEM_STREAM_ID,
+                        speaker_role=SpeakerRole.REMOTE,
+                        frames=_metered_frames(
+                            system_monitor.annotate(
+                                _gated_frames(
+                                    PipeWireSource(
+                                        selection.system_node,
+                                        capture_sink=selection.system_capture_sink,
+                                    ).frames(),
+                                    controller,
+                                )
+                            )
+                        ),
+                        capture_monitor=system_monitor,
+                    ),
+                    context=contextvars.copy_context(),
+                )
+                group.create_task(_read_session_controls(controller, coordinator))
+                group.create_task(_raise_when_stopped(controller))
+        except* _LiveSessionStopped:
+            pass
+        except* (CaptureError, ProtocolError, RemoteServiceError) as error_group:
+            write_session_error_event(
+                session_error_reason(_first_expected_live_error(error_group))
+            )
+            raise
+        finally:
+            controller.stop()
+            await coordinator.stop()
+            write_capture_drift_event(drift_monitor.stats())
+            renderer.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await renderer
+            insight_renderer.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await insight_renderer
     finally:
-        controller.stop()
-        await coordinator.stop()
-        write_capture_drift_event(drift_monitor.stats())
-        renderer.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await renderer
-        insight_renderer.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await insight_renderer
+        if terminal_token is not None:
+            _ACTIVE_TERMINAL.reset(terminal_token)
+        await terminal.close()
+
+
+def presentation_for_output(
+    output: str,
+    terminal_state: LiveTerminal,
+    web_port: int,
+) -> LivePresentation:
+    if output == "tui":
+        return terminal_state
+    if output == "web":
+        return WebConsole(terminal_state, port=web_port)
+    raise ValueError("unsupported live output mode")
 
 
 async def _gated_frames(
@@ -182,11 +251,32 @@ async def _gated_frames(
         yield frame
 
 
+async def _metered_frames(
+    frames: AsyncIterable[AudioFrame],
+) -> AsyncIterable[AudioFrame]:
+    """Update the active local console from derived frame amplitude only."""
+    async for frame in frames:
+        terminal = _ACTIVE_TERMINAL.get()
+        if terminal is not None:
+            terminal.set_audio_level(
+                frame.speaker_role.value,
+                audio_level_percent(frame.samples),
+            )
+        yield frame
+
+
 async def _read_session_controls(
     controller: SessionController,
     coordinator: ConversationCoordinator,
 ) -> None:
     """Read bounded local control lines without echoing untrusted input."""
+    terminal = _ACTIVE_TERMINAL.get()
+    if terminal is not None and terminal.interactive:
+        async for line in terminal.control_lines():
+            if await handle_control_line(line, controller, coordinator):
+                return
+        return
+
     reader = asyncio.StreamReader(limit=_MAX_CONTROL_LINE_BYTES)
     protocol = asyncio.StreamReaderProtocol(reader)
     loop = asyncio.get_running_loop()
@@ -200,29 +290,32 @@ async def _read_session_controls(
                 continue
             if not raw_line:
                 return
-            command = parse_session_command(raw_line.decode("utf-8", errors="replace"))
-            if command is not None:
-                changed = _apply_session_command(command, controller)
-                if changed and command is not SessionCommand.RESUME:
-                    await coordinator.stop()
-                _write_session_event(
-                    state=controller.state,
-                    action=command.value,
-                    changed=changed,
-                )
-                if command is SessionCommand.STOP:
-                    return
-                continue
-            action_request = parse_draft_action(
-                raw_line.decode("utf-8", errors="replace")
-            )
-            if action_request is None:
-                _write_control_error()
-                continue
-            changed, outcome = await _apply_draft_action(action_request, coordinator)
-            write_draft_action_event(action_request.action, changed, outcome)
+            line = raw_line.decode("utf-8", errors="replace")
+            if await handle_control_line(line, controller, coordinator):
+                return
     finally:
         transport.close()
+
+
+async def handle_control_line(
+    line: str,
+    controller: SessionController,
+    coordinator: ConversationCoordinator,
+) -> bool:
+    """Apply one trusted-local console line through the existing strict parser."""
+    command = parse_session_command(line)
+    if command is not None:
+        changed = _apply_session_command(command, controller)
+        if changed and command is not SessionCommand.RESUME:
+            await coordinator.stop()
+        _write_session_event(
+            state=controller.state,
+            action=command.value,
+            changed=changed,
+        )
+        return command is SessionCommand.STOP
+    _write_control_error()
+    return False
 
 
 def _apply_session_command(
@@ -237,28 +330,20 @@ def _apply_session_command(
     return controller.stop()
 
 
-async def _apply_draft_action(
-    request: DraftActionRequest,
-    coordinator: ConversationCoordinator,
-) -> tuple[bool, DraftOutcome | None]:
-    """Apply a parsed human-gate action through the coordinator boundary."""
-    if request.action is DraftAction.ACCEPT:
-        outcome = coordinator.record_draft_outcome(DraftOutcomeAction.ACCEPTED)
-        return outcome is not None, outcome
-    if request.action is DraftAction.DISMISS:
-        outcome = coordinator.record_draft_outcome(DraftOutcomeAction.DISMISSED)
-        return outcome is not None, outcome
-    if request.action is DraftAction.EDIT:
-        if request.text is None:
-            return False, None
-        return coordinator.edit_current_draft(request.text) is not None, None
-    return await coordinator.regenerate_current_draft(), None
-
-
 async def _raise_when_stopped(controller: SessionController) -> None:
     """Cancel capture streams once stop is requested through the control channel."""
     await controller.wait_for_stop()
     raise _LiveSessionStopped()
+
+
+def _emit_event(record: dict[str, object]) -> None:
+    """Log every runtime event and route it to the active human-facing terminal."""
+    logger.info(_RUNTIME_EVENT_LOG_MESSAGE, extra={"event": record})
+    terminal = _ACTIVE_TERMINAL.get()
+    if terminal is not None:
+        terminal.consume(record)
+        return
+    print(json.dumps(record, separators=(",", ":")))
 
 
 def _write_session_event(
@@ -266,7 +351,6 @@ def _write_session_event(
     state: SessionState,
     action: str,
     changed: bool,
-    aigate_mode: str | None = None,
     aigate_model: str | None = None,
 ) -> None:
     record: dict[str, object] = {
@@ -276,42 +360,29 @@ def _write_session_event(
         "action": action,
         "changed": changed,
     }
-    if aigate_mode is not None:
-        record["aigate_mode"] = aigate_mode
     if aigate_model is not None:
         record["aigate_model"] = aigate_model
-    print(
-        json.dumps(
-            record,
-            separators=(",", ":"),
-        )
-    )
+    _emit_event(record)
 
 
 def _write_control_error() -> None:
-    print(
-        json.dumps(
-            {
-                "schema_version": JSON_RECORD_SCHEMA_VERSION,
-                "kind": _CONTROL_ERROR_KIND,
-                "message": _CONTROL_ERROR_MESSAGE,
-            },
-            separators=(",", ":"),
-        )
+    _emit_event(
+        {
+            "schema_version": JSON_RECORD_SCHEMA_VERSION,
+            "kind": _CONTROL_ERROR_KIND,
+            "message": _CONTROL_ERROR_MESSAGE,
+        }
     )
 
 
 def write_session_error_event(reason: str) -> None:
     """Emit a fixed degraded-state record without upstream exception details."""
-    print(
-        json.dumps(
-            {
-                "schema_version": JSON_RECORD_SCHEMA_VERSION,
-                "kind": _SESSION_ERROR_KIND,
-                "reason": reason,
-            },
-            separators=(",", ":"),
-        )
+    _emit_event(
+        {
+            "schema_version": JSON_RECORD_SCHEMA_VERSION,
+            "kind": _SESSION_ERROR_KIND,
+            "reason": reason,
+        }
     )
 
 
@@ -331,34 +402,6 @@ def _first_expected_live_error(
         if isinstance(error, CaptureError | ProtocolError | RemoteServiceError):
             return error
     raise RuntimeError("expected a typed live stream error")
-
-
-def write_draft_action_event(
-    action: DraftAction,
-    changed: bool,
-    outcome: DraftOutcome | None,
-) -> None:
-    print(
-        json.dumps(
-            {
-                "schema_version": JSON_RECORD_SCHEMA_VERSION,
-                "kind": "draft_action",
-                "action": action.value,
-                "changed": changed,
-                "outcome": outcome.action.value if outcome is not None else None,
-                "generation_id": (
-                    outcome.draft.generation_id if outcome is not None else None
-                ),
-                "trigger_turn_id": (
-                    outcome.draft.trigger_turn_id if outcome is not None else None
-                ),
-                "context_revision": (
-                    outcome.draft.context_revision if outcome is not None else None
-                ),
-            },
-            separators=(",", ":"),
-        )
-    )
 
 
 async def _consume_stream(
@@ -397,18 +440,15 @@ async def _consume_stream(
                 update = await coordinator.ingest(event)
                 _write_transcript_event(event)
                 if update.turn is not None:
-                    print(
-                        json.dumps(
-                            {
-                                "schema_version": JSON_RECORD_SCHEMA_VERSION,
-                                "kind": "turn",
-                                "turn_id": update.turn.turn_id,
-                                "speaker_role": update.turn.speaker_role.value,
-                                "state": update.turn.state.value,
-                                "transcript_revision": update.turn.transcript_revision,
-                            },
-                            separators=(",", ":"),
-                        )
+                    _emit_event(
+                        {
+                            "schema_version": JSON_RECORD_SCHEMA_VERSION,
+                            "kind": "turn",
+                            "turn_id": update.turn.turn_id,
+                            "speaker_role": update.turn.speaker_role.value,
+                            "state": update.turn.state.value,
+                            "transcript_revision": update.turn.transcript_revision,
+                        }
                     )
                 if update.timeline is not None:
                     _write_timeline_event(update.timeline)
@@ -431,17 +471,14 @@ def write_asr_segment_event(
     boundary: str,
 ) -> None:
     """Emit ASR transport rotation boundaries for reconstructable live traces."""
-    print(
-        json.dumps(
-            {
-                "schema_version": JSON_RECORD_SCHEMA_VERSION,
-                "kind": _ASR_SEGMENT_KIND,
-                "speaker_role": speaker_role.value,
-                "segment_index": segment_index,
-                "boundary": boundary,
-            },
-            separators=(",", ":"),
-        )
+    _emit_event(
+        {
+            "schema_version": JSON_RECORD_SCHEMA_VERSION,
+            "kind": _ASR_SEGMENT_KIND,
+            "speaker_role": speaker_role.value,
+            "segment_index": segment_index,
+            "boundary": boundary,
+        }
     )
 
 
@@ -452,18 +489,13 @@ async def _render_drafts(coordinator: ConversationCoordinator) -> None:
 
 
 async def _render_insights(coordinator: ConversationCoordinator) -> None:
-    """Render lower-priority commentary and summary results as JSON records."""
+    """Render lower-priority commentary and summary results in the terminal."""
     while True:
         _write_insight_event(await coordinator.next_completed_insight())
 
 
 def _write_transcript_event(event: TranscriptEvent) -> None:
-    print(
-        json.dumps(
-            transcript_record(event),
-            separators=(",", ":"),
-        )
-    )
+    _emit_event(transcript_record(event))
 
 
 def transcript_record(event: TranscriptEvent) -> dict[str, object]:
@@ -495,101 +527,83 @@ def transcript_record(event: TranscriptEvent) -> dict[str, object]:
 
 
 def write_asr_stats_event(event: ASRStreamStats) -> None:
-    print(
-        json.dumps(
-            {
-                "schema_version": JSON_RECORD_SCHEMA_VERSION,
-                "kind": "asr_stats",
-                "speaker_role": event.speaker_role.value,
-                "model": event.asr_model,
-                "audio_seconds": event.audio_seconds,
-                "frames": event.frames,
-                "canceled": event.canceled,
-            },
-            separators=(",", ":"),
-        )
+    _emit_event(
+        {
+            "schema_version": JSON_RECORD_SCHEMA_VERSION,
+            "kind": "asr_stats",
+            "speaker_role": event.speaker_role.value,
+            "model": event.asr_model,
+            "audio_seconds": event.audio_seconds,
+            "frames": event.frames,
+            "canceled": event.canceled,
+        }
     )
 
 
 def write_capture_stats_event(stats: CaptureStats) -> None:
     """Emit bounded capture timing diagnostics without sensitive stream identity."""
-    print(
-        json.dumps(
-            {
-                "schema_version": JSON_RECORD_SCHEMA_VERSION,
-                "kind": "capture_stats",
-                "speaker_role": stats.speaker_role.value,
-                "frame_count": stats.frame_count,
-                "audio_seconds": stats.audio_seconds,
-                "gap_count": stats.gap_count,
-                "max_gap_seconds": stats.max_gap_seconds,
-            },
-            separators=(",", ":"),
-        )
+    _emit_event(
+        {
+            "schema_version": JSON_RECORD_SCHEMA_VERSION,
+            "kind": "capture_stats",
+            "speaker_role": stats.speaker_role.value,
+            "frame_count": stats.frame_count,
+            "audio_seconds": stats.audio_seconds,
+            "gap_count": stats.gap_count,
+            "max_gap_seconds": stats.max_gap_seconds,
+        }
     )
 
 
 def write_capture_drift_event(stats: InterStreamDriftStats) -> None:
     """Emit aggregate relative timing without frame payloads or device identity."""
-    print(
-        json.dumps(
-            {
-                "schema_version": JSON_RECORD_SCHEMA_VERSION,
-                "kind": "capture_drift",
-                "comparison_count": stats.comparison_count,
-                "max_abs_drift_seconds": stats.max_abs_drift_seconds,
-                "unmatched_frame_count": stats.unmatched_frame_count,
-            },
-            separators=(",", ":"),
-        )
+    _emit_event(
+        {
+            "schema_version": JSON_RECORD_SCHEMA_VERSION,
+            "kind": "capture_drift",
+            "comparison_count": stats.comparison_count,
+            "max_abs_drift_seconds": stats.max_abs_drift_seconds,
+            "unmatched_frame_count": stats.unmatched_frame_count,
+        }
     )
 
 
 def write_draft_event(draft: DraftResult) -> None:
-    print(
-        json.dumps(
-            {
-                "schema_version": JSON_RECORD_SCHEMA_VERSION,
-                "kind": "draft",
-                "generation_id": draft.generation_id,
-                "trigger_turn_id": draft.trigger_turn_id,
-                "status": draft.status.value,
-                "text": draft.text,
-                "context_revision": draft.context_revision,
-            },
-            separators=(",", ":"),
-        )
+    _emit_event(
+        {
+            "schema_version": JSON_RECORD_SCHEMA_VERSION,
+            "kind": "draft",
+            "generation_id": draft.generation_id,
+            "trigger_turn_id": draft.trigger_turn_id,
+            "status": draft.status.value,
+            "text": draft.text,
+            "context_revision": draft.context_revision,
+        }
     )
 
 
 def _write_insight_event(insight: InsightResult) -> None:
-    print(
-        json.dumps(
-            {
-                "schema_version": JSON_RECORD_SCHEMA_VERSION,
-                "kind": insight.kind.value,
-                "generation_id": insight.generation_id,
-                "trigger_turn_id": insight.trigger_turn_id,
-                "status": insight.status.value,
-                "text": insight.text,
-                "context_revision": insight.context_revision,
-            },
-            separators=(",", ":"),
-        )
+    _emit_event(
+        {
+            "schema_version": JSON_RECORD_SCHEMA_VERSION,
+            "kind": insight.kind.value,
+            "generation_id": insight.generation_id,
+            "trigger_turn_id": insight.trigger_turn_id,
+            "status": insight.status.value,
+            "text": insight.text,
+            "context_revision": insight.context_revision,
+        }
     )
 
 
 def _write_timeline_event(entry: TimelineEntry) -> None:
-    print(
-        json.dumps(
-            {
-                "schema_version": JSON_RECORD_SCHEMA_VERSION,
-                "kind": "timeline",
-                "turn_id": entry.turn_id,
-                "speaker_role": entry.speaker_role.value,
-                "transcript_revision": entry.transcript_revision,
-                "text": entry.text,
-            },
-            separators=(",", ":"),
-        )
+    _emit_event(
+        {
+            "schema_version": JSON_RECORD_SCHEMA_VERSION,
+            "kind": "timeline",
+            "turn_id": entry.turn_id,
+            "speaker_role": entry.speaker_role.value,
+            "transcript_revision": entry.transcript_revision,
+            "text": entry.text,
+        }
     )

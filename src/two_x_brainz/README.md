@@ -1,22 +1,36 @@
 # Application module
 
 This package contains the local session state machine and all external service
-adapters used by the CLI. The package has no web server and no database; it
-prints terminal events and delegates continuous ASR to Talkies.
+adapters used by the CLI. It has no database; it renders live events through
+Textual or a loopback FastAPI/Svelte console and delegates
+continuous ASR to Talkies.
+
+## Contents
+
+- [File map](#file-map)
+- [Invariants](#invariants)
+- [Tests](#tests)
 
 ## File map
 
 - `contracts.py` — immutable domain enums and records shared by every boundary,
   including optional ASR timing, language, and confidence metadata.
-- `config.py` — strict environment validation, including remote-text opt-in,
-  safe defaults, and constrained AIGate-token reuse for same-authority Talkies
-  routes.
-- `capture.py` — Linux PipeWire subprocess adapter, frame identity/timing, and
-  aggregate capture-gap plus relative-drift diagnostics.
+- `config.py` — strict AIGate-only environment validation, safe defaults, and
+  derivation of the Talkies proxy route from the one gateway URL.
+- `capture.py` — Linux PipeWire subprocess adapter, friendly/default device
+  metadata extraction, frame identity/timing, derived presentation-only level,
+  Silero-driven turn segmentation, and aggregate capture-gap plus
+  relative-drift diagnostics.
+- `vad.py` — typed adapter that buffers 20 ms PCM capture frames into exact
+  bundled-Silero inference windows and validates speech probabilities.
+- `audio_selection.py` — bounded local selection-file validation and the
+  candidate/controller backing the in-app first-run, stale-device, and F3
+  setup view for one non-monitor microphone source and one system-audio capture
+  source (a monitor source or a directly capturable sink).
 - `audio.py` — bounded WAV fixture loading plus in-memory PCM normalization for
   ASR evaluation; it is not the live capture path.
-- `session_controls.py` — bounded local lifecycle and human-gate action parsing
-  plus the capture-forwarding gate.
+- `session_controls.py` — bounded local lifecycle parsing plus the
+  capture-forwarding gate.
 - `talkies.py` — native WebSocket protocol validation, PCM streaming, and the
   OpenAI-compatible bounded file-transcription contract.
 - `benchmark.py` — finite, aggregate-only two-stream native/file contract
@@ -31,12 +45,26 @@ prints terminal events and delegates continuous ASR to Talkies.
 - `coordinator.py` — timeline entries, reply priority, overlap suppression,
   cancellation, and stale-result rejection for drafts, commentary, and
   summaries.
-- `aigate.py` — text-only OpenAI-compatible provider for drafts, commentary,
-  and summaries; `make test-real` probes its three real-model prompt contracts
-  and a four-turn summary-to-reply context handoff using fixed synthetic text.
+- `aigate.py` — AIGate chat provider for drafts, commentary, and summaries. It
+  exposes only bounded `search_web` and Python calculation MCP tools to reply
+  drafts when explicitly enabled; `make test-real` probes its real-model prompt
+  contracts and a four-turn summary-to-reply context handoff using fixed
+  synthetic text.
 - `fixture_trace.py` — append-only, redacted JSONL evidence for explicit real
   fixtures; it records synthetic fixture inputs, CLI output, structured runtime
   diagnostics, and terminal outcomes without tokens or PCM data.
+- `terminal.py` — bounded, control-sequence-safe Textual operator console with
+  one temporary level probe per displayed audio candidate during setup, status
+  timers, selected capture labels, independent scrolling, focused-pane views,
+  and strict local lifecycle controls.
+- `web.py` — loopback FastAPI/Uvicorn adapter over the same terminal state:
+  bounded structured snapshots, same-origin pause/resume controls through the
+  existing runtime queue, compiled Svelte assets at `/`, and the equivalent
+  all-candidate audio setup path. The frontend owns browser-local layout
+  preferences; application audio selection remains in the validated config file.
+  Process shutdown remains with the owning terminal so the page cannot stop its
+  own server.
+- `logging_config.py` — credential-redacted rotating JSON event log.
 - `runtime.py` and `cli.py` — live orchestration and user-facing commands.
 
 ## Invariants
@@ -64,14 +92,31 @@ prints terminal events and delegates continuous ASR to Talkies.
 - Provider commentary and summaries may be multi-sentence but must still be
   plain prose. They use the same text-only parser boundary and reject Markdown
   structure and HTML.
-- Every provider request carries the fixed 15-second application deadline.
+- Every provider request carries the fixed 60-second application deadline.
   Deadline expiry yields an empty typed failure for the same generation and
   never prevents later ASR turns from scheduling new work.
 - Docker host mappings can cover only a host-resolved fully-qualified Talkies
   or AIGate endpoint and include only a validated hostname and IPv4 address.
-- Never put audio or credential values in draft payloads or logs.
+- Never put audio or credential values in draft payloads or logs. The rotating
+  event log intentionally retains transcript, timeline, draft, commentary, and
+  summary text so a local operator can reconstruct a session.
+- Treat the optional session brief as trusted local framing. It is bounded,
+  omitted from status and logs, and appended to every generation prompt without
+  being inserted into the transcript.
 - PipeWire stdout chunks are never assumed to be ASR frames; only exact 20 ms
   PCM16LE frames cross the Talkies boundary.
+- Each live role owns an independent stateful Silero detector. Two consecutive
+  speech-positive windows open a segment with 200 ms of pre-roll; sustained
+  speech-negative windows close it. Separate start and stop thresholds provide
+  hysteresis, and continuous input rotates after 60 seconds so noise cannot
+  hold Talkies or downstream generation open forever.
+- Audio-selection persistence contains only validated stable node names. A
+  missing, malformed, or unavailable saved node never reaches `pw-record`; it
+  reopens selection before model verification or capture starts.
+- System capture targets are `Audio/Source` monitor nodes or directly
+  capturable `Audio/Sink` nodes. PipeWire default markers are recommendations;
+  setup probes and independent live level meters reveal the two capture paths
+  actually reaching the process.
 - The Talkies transport races sender failure against inbound WebSocket events,
   so a capture error cannot wait indefinitely for the ASR server to close.
 - A `pw-record` process that exits before producing one complete PCM frame is
@@ -80,8 +125,12 @@ prints terminal events and delegates continuous ASR to Talkies.
 - Every frame has a monotonic stream-local sequence and capture timestamp, but
   runtime output exposes only bounded aggregate gap and relative-drift timing
   diagnostics.
-- Local AIGate mode is the default. Remote text mode cannot start unless its
-  separate affirmative environment setting is exactly `true`.
+- AIGate is the sole service boundary. One validated URL, model, and optional
+  bearer token cover text generation, model inventory, Talkies, and explicitly
+  enabled allowlisted tools.
+- Search queries reject obvious structured private identifiers before reaching
+  AIGate. Calculation calls accept only a bounded arithmetic AST and send
+  application-generated Python to Piston.
 - Live startup verifies the configured AIGate model before it opens PipeWire
   capture or Talkies streams, preventing a capture-only session without reply
   drafts.
@@ -90,22 +139,23 @@ prints terminal events and delegates continuous ASR to Talkies.
   capture. Warm-up sends one all-zero 20 ms frame and requires uncancelled
   one-frame terminal statistics, preventing a silent ASR-model substitution or
   a concurrent lazy-initialization race without using captured audio.
-- Only fixed local control words can alter a live session. Pause and stop
-  cancel generation before any later frame reaches Talkies; draft actions are
-  rejected after their transcript revision becomes stale.
+- Only fixed local lifecycle words can alter a live session. Pause and stop
+  cancel generation before any later frame reaches Talkies; `Ctrl+Q` uses the
+  same clean stop path.
 - Reply draft records expose `running` before one terminal completed, failed,
-  cancelled, or superseded state. Only completed draft text remains actionable.
-- Accepted and dismissed drafts produce bounded, in-memory outcome records for
-  the active process. They are never sent, spoken, or persisted.
+  cancelled, or superseded state. Completed draft text is advisory display
+  state, never an action or provider-context input.
 - Background tasks inherit context-local logging scope and must be cancelled or
   discarded before a stale result reaches the CLI. Completed draft and insight
   queues are bounded.
-- CLI JSON records use schema version 1. Opaque turn and generation IDs link
-  related records without exposing session or stream identities.
+- Runtime JSON records use schema version 1. The live terminal consumes them
+  internally while the rotating log retains them; replay prints them. Opaque
+  turn and generation IDs link related records without exposing session or
+  stream identities.
 - Expected PipeWire and Talkies stream failures emit one fixed
   `session_error` reason before the live command terminates non-zero; no error
-  message, endpoint, stream identity, audio, or credential crosses that JSON
-  boundary. Simultaneous stream failures are fanned in before that single
+  message, endpoint, stream identity, audio, or credential reaches the terminal
+  or rotating log. Simultaneous stream failures are fanned in before that single
   record is emitted.
 - A successful rolling summary becomes the provider-context prefix and permits
   trimming only the transcript history it covers; the recent line window stays
@@ -117,13 +167,16 @@ prints terminal events and delegates continuous ASR to Talkies.
 ## Tests
 
 Unit tests cover configuration, protocol validation, WAV normalization,
+real and deterministic Silero inference, VAD hysteresis and safety boundaries,
 transcript revisions, timeline idempotency, stale-result rejection, and
 priority cancellation. Integration tests start local protocol-conforming
 WebSocket and HTTP servers to prove concurrent native PCM framing, terminal
 statistics, and both file-transcription response shapes; fake `pw-record`
 processes cover the same capture framing code without a host PipeWire socket.
-Control tests cover pause/resume gating, stop wakeup, idempotency, draft
-actions, and malformed control-line rejection. See the architecture overview in
+Control tests cover pause/resume gating, stop wakeup, idempotency, removed
+reply-action rejection, and malformed control-line rejection. Terminal tests
+cover clean Ctrl+Q/Ctrl+C shutdown, all-candidate setup meters, independent
+scrolling, focused-pane views, and separate user/system meters. See the architecture overview in
 [`docs/architecture.md`](../../docs/architecture.md). The opt-in
 `make live-fixture` route generates temporary Talkies WAVs and drives the
 production capture adapter through a controlled overlap; `make

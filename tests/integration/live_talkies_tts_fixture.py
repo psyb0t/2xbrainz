@@ -25,7 +25,6 @@ from two_x_brainz.constants import (
     AIGATE_CHAT_COMPLETIONS_PATH,
     AIGATE_MODELS_PATH,
     BEARER_PREFIX,
-    ENV_TALKIES_TOKEN,
     HEADER_AUTHORIZATION,
     HEADER_CONTENT_TYPE,
     JSON_CONTENT_TYPE,
@@ -337,7 +336,7 @@ async def _run_with_trace(
                 records = await _run_live(
                     aigate_url=aigate_url,
                     aigate_model=_AIGATE_MODEL,
-                    aigate_token="",
+                    aigate_token=talkies_token,
                     command=command,
                     user_wav=user_wav,
                     remote_wav=remote_wav,
@@ -559,10 +558,8 @@ async def _run_live(
         {
             "PATH": f"{command.parent}:{environment['PATH']}",
             "TWOXBRAINZ_AIGATE_URL": aigate_url,
-            "TWOXBRAINZ_AIGATE_MODE": "local",
             "TWOXBRAINZ_AIGATE_MODEL": aigate_model,
             "TWOXBRAINZ_AIGATE_TOKEN": aigate_token,
-            ENV_TALKIES_TOKEN: talkies_token,
             _USER_WAV_ENV: str(user_wav),
             _REMOTE_WAV_ENV: str(remote_wav),
             _FOLLOWUP_SILENCE_FRAME_COUNT_ENV: str(_FOLLOWUP_SILENCE_FRAME_COUNT),

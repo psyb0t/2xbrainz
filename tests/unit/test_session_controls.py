@@ -4,11 +4,9 @@ import asyncio
 import unittest
 
 from two_x_brainz.session_controls import (
-    DraftAction,
     SessionCommand,
     SessionController,
     SessionState,
-    parse_draft_action,
     parse_session_command,
 )
 
@@ -42,21 +40,9 @@ class SessionControllerTests(unittest.TestCase):
         self.assertIsNone(parse_session_command("status"))
         self.assertIsNone(parse_session_command("x" * 33))
 
-    def test_draft_actions_validate_their_arguments(self) -> None:
-        accept = parse_draft_action("accept")
-        edit = parse_draft_action("edit revised reply")
-
-        self.assertIsNotNone(accept)
-        assert accept is not None
-        self.assertEqual(accept.action, DraftAction.ACCEPT)
-        self.assertIsNone(accept.text)
-        self.assertIsNotNone(edit)
-        assert edit is not None
-        self.assertEqual(edit.action, DraftAction.EDIT)
-        self.assertEqual(edit.text, "revised reply")
-        self.assertIsNone(parse_draft_action("accept extra"))
-        self.assertIsNone(parse_draft_action("edit"))
-        self.assertIsNone(parse_draft_action(f"edit {'x' * 1_001}"))
+    def test_removed_reply_actions_are_not_session_commands(self) -> None:
+        for command in ("accept", "dismiss", "edit", "regenerate"):
+            self.assertIsNone(parse_session_command(command))
 
     async def _assert_new_session_allows_forwarding(self) -> None:
         controller = SessionController()

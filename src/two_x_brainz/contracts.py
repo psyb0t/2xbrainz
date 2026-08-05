@@ -41,13 +41,6 @@ class GenerationStatus(StrEnum):
     FAILED = "failed"
 
 
-class DraftOutcomeAction(StrEnum):
-    """Explicit local disposition for a completed human-gated draft."""
-
-    ACCEPTED = "accepted"
-    DISMISSED = "dismissed"
-
-
 class InsightKind(StrEnum):
     """Background text outputs that must never replace a reply draft."""
 
@@ -145,7 +138,7 @@ class TurnEvent:
 
 @dataclass(frozen=True, slots=True)
 class DraftRequest:
-    """The minimized text-only request sent to a draft provider."""
+    """The current text-only conversation state sent to a draft provider."""
 
     generation_id: str
     trigger_turn_id: str
@@ -156,21 +149,13 @@ class DraftRequest:
 
 @dataclass(frozen=True, slots=True)
 class DraftResult:
-    """A completed, human-gated reply draft."""
+    """A display-only reply suggestion for the current conversation state."""
 
     generation_id: str
     trigger_turn_id: str
     context_revision: int
     status: GenerationStatus
     text: str
-
-
-@dataclass(frozen=True, slots=True)
-class DraftOutcome:
-    """An ephemeral local record of an explicit completed-draft action."""
-
-    action: DraftOutcomeAction
-    draft: DraftResult
 
 
 @dataclass(frozen=True, slots=True)

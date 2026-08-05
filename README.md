@@ -36,28 +36,28 @@ Nothing is sent for you. Nothing is spoken for you. It drafts, you decide.
 
 - **Two streams, not one blob** — your mic and your system audio go to the ASR
   separately, so it always knows who said what without guessing from a mixdown.
-- **Knows when they shut up** — revisioned partial/endpoint/final events get
-  reconciled into actual turns, so a draft fires on a finished thought instead
-  of mid-sentence.
+- **Knows when they shut up** — a bundled Silero neural VAD independently
+  bounds each live audio stream before Talkies finalizes it. Revisioned ASR
+  events are then reconciled into actual turns, so a draft fires on a finished
+  thought instead of background noise or a permanently open microphone.
 - **Drafts a reply, keeps its mouth shut** — no auto-send, no auto-speak, no
-  injecting text into your chat window. A JSON line appears; what you do with it
-  is your business.
+  injecting text into your chat window. The live dashboard shows the suggestion;
+  what you do with it is your business.
 - **Won't talk over you** — a remote turn landing while you're still speaking is
   recorded but does not trigger a draft.
 - **Runs against your own gear** — [AIGate](https://github.com/psyb0t/aigate)
-  with [Talkies](https://github.com/psyb0t/docker-talkies) is the default, one
-  host and one token. Standalone Talkies plus any OpenAI-compatible endpoint
-  works too.
-- **Audio never leaves the box** — the text provider gets transcript text, never
-  PCM. And it needs an explicit opt-in before even that goes anywhere remote.
+  with [Talkies](https://github.com/psyb0t/docker-talkies): one host and one
+  token for ASR, drafts, search, and bounded calculations.
+- **Audio never leaves the box** — 2xbrainz streams PCM only to Talkies behind
+  your AIGate. AIGate's provider and privacy policy determine where any
+  transcript-derived text is sent.
 
 ## Requirements
 
 - Docker
 - Linux with PipeWire, for live capture (the replay path needs neither)
-- An ASR service — [Talkies](https://github.com/psyb0t/docker-talkies)
-- An OpenAI-compatible endpoint for the drafts — [AIGate](https://github.com/psyb0t/aigate),
-  or OpenAI/Groq/whatever
+- [AIGate](https://github.com/psyb0t/aigate) with Talkies enabled. It is the
+  only service 2xbrainz connects to.
 
 ## Try it with zero setup
 
@@ -75,88 +75,81 @@ docker run --rm --init --read-only \
   psyb0t/2xbrainz replay --events /examples/conversation.jsonl
 ```
 
-If that prints JSON lines, the image works and you can go wire up the real thing.
+If that prints replay records, the image works and you can go wire up the real
+thing.
 
 ## Quick start
 
-**1. Write a `.env`.** Grab [`.env.example`](.env.example) for the full list. One
-host, one token — AIGate keeps Talkies on a private network and serves it at
-`/talkies/`, so both URLs point at the gateway's published port:
+**1. Set up AIGate, then write a `.env`.** Grab [`.env.example`](.env.example)
+for the full list. AIGate keeps Talkies on a private network and serves it at
+`/talkies/`; 2xbrainz derives that path from the one AIGate API root:
 
 ```bash
 TWOXBRAINZ_AIGATE_URL=http://localhost:4000/v1
 TWOXBRAINZ_AIGATE_MODEL=your-configured-model
 TWOXBRAINZ_AIGATE_TOKEN=your-gateway-token
-TWOXBRAINZ_TALKIES_WS_URL=ws://localhost:4000/talkies/v1/audio/transcriptions/stream
 TWOXBRAINZ_TALKIES_MODEL=nemotron-3.5-asr-0.6b
 ```
 
-**2. Find your audio nodes.** Same flags as the real thing, so if this works,
-step 3 works:
+**2. Inspect the audio nodes if you want to.** `make run` and `make run-web` present the same
+compatible microphone and system-output nodes in its in-app Audio Setup view,
+so this is only for checking what PipeWire exposes:
 
 ```bash
-docker run --rm --init --network host --read-only \
-  --tmpfs /tmp:rw,noexec,nosuid,size=512m \
-  --user "$(id -u):$(id -g)" \
-  --cap-drop ALL --security-opt no-new-privileges:true \
-  -e XDG_RUNTIME_DIR=/pipewire-runtime \
-  -v "$XDG_RUNTIME_DIR:/pipewire-runtime:ro" \
-  psyb0t/2xbrainz devices | jq -r '.[] | "\(.media_class)\t\(.name)"' | sort
+make devices
 ```
 
-The `jq` is only to make it readable — drop it and you get the same data as one
-line of JSON, `{"id","name","media_class"}` per node. Two of them are yours:
+It prints JSON objects with `id`, `name`, and `media_class`, plus an optional
+friendly `description` and PipeWire `default_role`. Audio Setup shows only
+capture-safe choices:
 
 ```
-Audio/Sink      alsa_output.pci-0000_00_1f.3.analog-stereo     <- --system-node
-Audio/Source    alsa_input.pci-0000_00_1f.3.analog-stereo      <- --mic-node
+Audio/Source    alsa_input.pci-0000_00_1f.3.analog-stereo      <- microphone
+Audio/Source    alsa_output.pci-0000_00_1f.3.analog-stereo.monitor <- system audio
 Audio/Sink      bluez_output.AC_12_2F_00_11_22.1
 Stream/Output/Audio   Firefox
 ```
 
-The rule:
-
-- **`--mic-node`** → the **`Audio/Source`** that is your actual microphone. Ignore
-  anything ending in `.monitor`; those are sinks in disguise.
-- **`--system-node`** → the **`Audio/Sink`** you're currently listening through.
-  You point at the *sink*, not its monitor — `pw-record --target <sink>` captures
-  what that sink is playing, which is the other side of the conversation.
-
-Pick the sink that's actually in use. If you're on headphones it's the
-`bluez_output.*` or a USB one, not the built-in analog. `Stream/*` entries are
-individual apps, not devices — don't use those.
-
-Either the `name` or the numeric `id` works, so
-`--system-node 51` is as valid as the full `alsa_output.…` string. Names survive
-reboots; ids don't.
+Audio Setup accepts one non-monitor **`Audio/Source`** microphone and one system
+audio capture source: either an **`Audio/Source`** monitor (`*.monitor`) or a
+directly capturable **`Audio/Sink`**. It excludes `Stream/*` application entries.
+The PipeWire configured default microphone and default output are marked
+`[DEFAULT]` and sorted first. That is a recommendation, not proof of
+per-application routing. Audio Setup meters **every displayed candidate at the
+same time**: speak into the mic and play system audio, then select the two rows
+whose independent meters react. The chosen stable node names are saved to
+`$XDG_CONFIG_HOME/2xbrainz/audio-selection.json` (or
+`~/.config/2xbrainz/audio-selection.json`) with mode `0600`. If either saved
+node is unavailable later, it asks again.
 
 **3. Go.**
 
 ```bash
-docker run --rm --init -i --network host \
-  --memory=1g --cpus=8.0 --pids-limit=128 \
-  --read-only --tmpfs /tmp:rw,noexec,nosuid,size=512m \
-  --user "$(id -u):$(id -g)" \
-  --cap-drop ALL --security-opt no-new-privileges:true \
-  --env-file .env \
-  -e XDG_RUNTIME_DIR=/pipewire-runtime \
-  -v "$XDG_RUNTIME_DIR:/pipewire-runtime:ro" \
-  psyb0t/2xbrainz live \
-    --mic-node <your-mic-node> \
-    --system-node <your-system-node>
+make run
 ```
+
+On the first launch, the Textual app opens Audio Setup: select the microphone,
+then the system audio source with the arrow keys, Enter, or the mouse. On later
+launches it reuses the saved pair and opens the dashboard directly. Press `F3`
+at any time to return to Audio Setup; a change made while a call is running is
+saved for the next live session so current capture is not interrupted. The web
+console exposes the same controls in its **Audio setup** panel. A missing or
+stale saved pair opens setup automatically.
 
 `--network host` is the default because it just works: it reaches AIGate on the
 port it already publishes, and resolves tailnet names the same way your shell
 does. No hunting for which Docker network the gateway is on. If you'd rather join
-one explicitly, drop `--network host`, add `--network <name>`, and swap
-`localhost` for the gateway's service name in `.env`.
+one explicitly for the TUI or benchmark targets, set `LIVE_NETWORK=<name>` and
+swap `localhost` for the gateway's service name in `.env`. Named-network mode
+uses the repository's small host-side Python helper to validate an optional
+hostname mapping. The loopback-only web console intentionally requires the
+default host network.
 
-Swap `live` for `doctor` if something's wrong — same command, and it prints your
-resolved config with the secrets masked, so it's safe to paste.
+Run `make doctor` if something's wrong — it prints the resolved configuration with
+secrets masked, so it is safe to paste.
 
 Those resource limits are a ceiling, not a requirement. This container doesn't
-transcribe anything — it runs two `pw-cat` captures, normalizes the PCM, and
+transcribe anything — it runs two `pw-record` captures, normalizes the PCM, and
 pushes it down a WebSocket. The transcription cost lives in Talkies, in its own
 container, where these flags have exactly zero effect. If the ASR is lagging,
 give **Talkies** more (or use its CUDA variant); raising this number will not
@@ -164,44 +157,68 @@ help.
 
 ## Driving it while it runs
 
-It reads commands on stdin — that's what the `-i` is for. Type and hit enter:
+`make run` opens an interactive Textual operator console. `make run-web` opens
+the same live session in a responsive Svelte browser console at
+`http://127.0.0.1:7860` (override with `WEB_PORT=9000 make run-web`). A compact status bar
+shows the session state, active operation (for example, `Calling reply LLM`),
+and elapsed timers. Below it, MIC INPUT and SYSTEM AUDIO show the selected
+friendly names and independent live levels. The browser console keeps
+Conversation, Reply suggestion, Private coach, and Story so far in separate
+scrollable, collapsible, resizable panels instead of collapsing them into one
+feed. Panel state and split sizes persist in browser-local storage. Source
+selection lives in a modal with a live meter beside every microphone and
+system-audio candidate. Sink candidates are captured through PipeWire monitor
+ports, so their meters represent playback routed to that output rather than a
+fallback microphone. The browser exposes Sources, Pause, and Resume; session
+shutdown remains in the owning terminal so stopping the process cannot strand a
+broken browser page. The terminal conversation and guidance panes retain independent
+scrolling and focused views; click a pane or move focus to it, then use the
+mouse wheel or Up/Down, Page Up/Down, Home, and End to read it. New content
+auto-follows only while that pane remains at its bottom. Press `F2` to cycle
+split, full-conversation, and full-guidance views, or `F3` to change the saved
+audio pair. Type a command in the input area and press Enter:
 
 | Command | What happens |
 |---|---|
 | `pause` / `resume` | Stop and restart capture |
-| `stop` | Shut down cleanly |
-| `accept` | Mark the current draft accepted — emits a JSON line, sends nothing |
-| `dismiss` | Bin it |
-| `regenerate` | Ask for a different draft |
-| `edit <text>` | Replace the draft text |
+| `stop` | Shut down the terminal session cleanly |
 
-Draft actions only apply while their transcript revision is still current. If the
-conversation moved on, the action is rejected instead of acting on stale text.
+`Ctrl+P`, `Ctrl+R`, `Ctrl+X`, and `Ctrl+Q` pause, resume, stop, and quit
+cleanly; `Ctrl+C` follows the same clean stop path while the terminal UI has
+focus. Guidance is advisory: it is never sent or spoken, requires no
+accept/dismiss step, and is not supplied back to the model. Each new generation
+uses the current transcript and rolling story only.
 
-## Deployment shapes
-
-**AIGate with Talkies** (the default) — one host, one token. Both URLs point at
-the gateway, and since they share a host and port the gateway token is reused for
-Talkies automatically. You never set `TWOXBRAINZ_TALKIES_TOKEN`.
-
-**Standalone Talkies, drafts from anywhere else** — point each at its own thing:
+The dashboard stays clean. Every runtime event goes to a rotating local JSON log
+instead, which you can follow in another terminal:
 
 ```bash
-TWOXBRAINZ_AIGATE_URL=https://api.openai.com/v1     # or https://api.groq.com/openai/v1
-TWOXBRAINZ_AIGATE_TOKEN=your-provider-key
-TWOXBRAINZ_TALKIES_WS_URL=ws://talkies:8000/v1/audio/transcriptions/stream
-TWOXBRAINZ_TALKIES_TOKEN=your-talkies-token
+make logs
 ```
 
-Different hosts, so nothing is shared — your provider key never gets sent to
-Talkies and the Talkies token never gets sent to your provider. Shipping
-transcript text to a hosted provider also needs
-`TWOXBRAINZ_AIGATE_MODE=remote` **and** `TWOXBRAINZ_REMOTE_TEXT_ENABLED=true`.
-Set only one and it refuses to start, on purpose, before a single word leaves the
-machine.
+See [Data handling](#data-handling) before sharing that file.
 
-The URL is an OpenAI-compatible API root and includes the version prefix — `/v1`
-for AIGate, OpenAI and Groq alike.
+## AIGate integration
+
+2xbrainz is intentionally AIGate-only. `TWOXBRAINZ_AIGATE_TOKEN` is the sole
+credential and is sent to AIGate's chat, Talkies proxy, model inventory, and
+allowlisted MCP endpoints. The application derives
+`ws(s)://<aigate-host>[/prefix]/talkies/v1/audio/transcriptions/stream` from
+`TWOXBRAINZ_AIGATE_URL`, which must end in `/v1`.
+
+For optional current-context help, set `TWOXBRAINZ_WEB_RESEARCH_ENABLED=true`
+and enable AIGate's SearXNG MCP service. The model sees only `search_web` and a
+bounded arithmetic-only `execute_code` tool; it never receives AIGate's full
+tool catalog. It may make up to three independent tool calls concurrently, then
+uses the returned bounded results to produce its final spoken draft. AIGate's
+SearXNG configuration controls which public search engines receive a query.
+Obvious structured private identifiers are rejected before a query leaves the
+app; do not enable research for conversations whose unfamiliar terms are
+themselves private.
+
+Set `TWOXBRAINZ_SESSION_BRIEF` to optional trusted context such as the purpose
+of the call and the local user's role. The bounded brief frames replies,
+coaching, and the running story without becoming transcript or log content.
 
 Full reference: [configuration](docs/configuration.md).
 
@@ -210,7 +227,8 @@ Full reference: [configuration](docs/configuration.md).
 ```text
 PipeWire microphone ─┐                         ┌─ text draft
                      ├─ Talkies native WS ─────┤
-PipeWire system ─────┘     (same ASR model)    └─ CLI JSON lines
+PipeWire system ─────┘     (same ASR model)    └─ TUI or local web console
+                                                   └─ rotating JSON log
 ```
 
 - **Talkies** is the ASR boundary. Its native WebSocket streams revisioned
@@ -218,22 +236,34 @@ PipeWire system ─────┘     (same ASR model)    └─ CLI JSON lines
 - **The coordinator** owns reconciliation, turn state, cancellation, and throwing
   away stale results. It writes one timeline entry per finalized turn, puts the
   reply draft first, and only runs commentary or the rolling summary when nothing
-  more important is pending. Every provider call has a hard 15-second deadline, so
+  more important is pending. Every provider call has a hard 60-second deadline, so
   a wedged model can't hold the session hostage.
 - **The text provider** only ever sees a minimized speaker-tagged transcript.
-- **The CLI** is line-oriented and terminal-first by design. Records are
-  schema-versioned with opaque turn/generation IDs that mean nothing outside your
-  own session.
+- **The CLI** is terminal-first by design. Its interactive dashboard stays
+  human-readable; the parallel reconstruction log carries schema-versioned
+  records with opaque turn/generation IDs.
 
-More detail in [docs/architecture.md](docs/architecture.md). The MVP platform and
-retention boundaries are recorded in
-[ADR-0001](docs/decisions/0001-mvp-launch-profile.md).
+More detail in [docs/architecture.md](docs/architecture.md). The MVP platform
+boundary is recorded in [ADR-0001](docs/decisions/0001-mvp-launch-profile.md);
+the bounded reconstruction-log retention decision is in
+[ADR-0002](docs/decisions/0002-persistent-reconstruction-log.md).
 
 ## Data handling
 
-Raw audio is never written to disk. Logs are structured JSON and redact fields
-whose names look like credentials — and the config object drops its tokens from
-its own `repr`, so dumping it whole can't leak them either.
+Raw audio is never written to disk. Each `make run` session writes a structured
+JSON event log such as [`logs/20260804T211408123456Z_2xbrainz.log`](logs/.gitkeep)
+beside the directory where you ran it, so a session can be reconstructed after
+it stops. Each session file rotates at 5 MB and retains at most three numbered
+backups. `make logs` follows the newest session; set `LOG_FILE=<filename>` to
+select another one. Use
+`LOG_DIRECTORY=/absolute/host/path make run` to mount another host directory.
+
+That log contains transcript text, timeline entries, reply drafts, commentary,
+summaries, and runtime diagnostics. Treat it as sensitive conversation data;
+do not paste it into tickets or share it casually. It never contains raw PCM.
+Credential-shaped fields are redacted, and the config object drops its tokens
+and session brief from its own `repr`. `make run` forces the mounted `logs/`
+directory to mode `0700`, and active plus rotated log files are mode `0600`.
 
 The one thing that does get written is a redacted trace from the real-service test
 fixtures, under the gitignored `.testing/fixture-traces/`. It holds fixed
@@ -253,8 +283,9 @@ make replay        # the bundled fixture
 ```
 
 `make test` never loads `.env` and never calls Talkies or AIGate — the providers
-and audio boundaries are mocked or local protocol fixtures. The targets that do
-hit real services (`make live-fixture`, `make test-real`,
+and audio boundaries are mocked or local protocol fixtures. Every `test*`
+target removes the exact local Docker image tags it builds, on success or
+failure. The targets that do hit real services (`make live-fixture`, `make test-real`,
 `make live-product-fixture`, `make benchmark`) are deliberately separate, need a
 real `.env`, and are not part of `make test` or CI.
 
@@ -277,7 +308,8 @@ scripts/           — development tooling
 
 ## License
 
-WTFPL. See [LICENSE](LICENSE). Do what the fuck you want to.
+WTFPL. See [LICENSE](LICENSE). Do what the fuck you want to. Runtime and
+frontend dependency notices are documented in [THIRD_PARTY.md](THIRD_PARTY.md).
 
 ## Changelog
 

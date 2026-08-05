@@ -7,7 +7,6 @@ from unittest.mock import patch
 
 from two_x_brainz.aigate import DraftProvider, InsightProvider
 from two_x_brainz.contracts import (
-    DraftOutcomeAction,
     DraftRequest,
     DraftResult,
     GenerationStatus,
@@ -50,6 +49,21 @@ class ImmediateProvider(DraftProvider):
             context_revision=request.context_revision,
             status=GenerationStatus.COMPLETED,
             text="draft",
+        )
+
+
+class RecordingProvider(ImmediateProvider):
+    def __init__(self) -> None:
+        self.requests: list[DraftRequest] = []
+
+    async def draft(self, request: DraftRequest) -> DraftResult:
+        self.requests.append(request)
+        return DraftResult(
+            generation_id=request.generation_id,
+            trigger_turn_id=request.trigger_turn_id,
+            context_revision=request.context_revision,
+            status=GenerationStatus.COMPLETED,
+            text="prior advisory guidance",
         )
 
 
@@ -268,14 +282,8 @@ class ConversationCoordinatorTests(unittest.TestCase):
     def test_stale_summary_cannot_replace_current_context(self) -> None:
         asyncio.run(self._assert_stale_summary_is_not_accepted())
 
-    def test_draft_outcome_is_retained_after_later_transcript_changes(self) -> None:
-        asyncio.run(self._assert_draft_outcome_is_retained())
-
-    def test_current_draft_can_be_edited_and_regenerated(self) -> None:
-        asyncio.run(self._assert_draft_can_be_edited_and_regenerated())
-
-    def test_stale_draft_cannot_be_actioned(self) -> None:
-        asyncio.run(self._assert_stale_draft_cannot_be_actioned())
+    def test_new_reply_request_excludes_prior_advisory_guidance(self) -> None:
+        asyncio.run(self._assert_prior_guidance_is_not_provider_context())
 
     def test_draft_deadline_publishes_a_failed_result(self) -> None:
         asyncio.run(self._assert_draft_deadline_publishes_failed_result())
@@ -442,64 +450,30 @@ class ConversationCoordinatorTests(unittest.TestCase):
         )
         self.assertEqual(coordinator.transcript_snapshot().running_summary, "")
 
-    async def _assert_draft_outcome_is_retained(self) -> None:
-        coordinator = ConversationCoordinator(ImmediateProvider())
+    async def _assert_prior_guidance_is_not_provider_context(self) -> None:
+        provider = RecordingProvider()
+        coordinator = ConversationCoordinator(provider)
         await coordinator.ingest(
             _event(SpeakerRole.REMOTE, TranscriptEventType.FINAL, 1)
         )
         await coordinator.wait_for_idle()
-
-        outcome = coordinator.record_draft_outcome(DraftOutcomeAction.ACCEPTED)
-
-        self.assertIsNotNone(outcome)
-        assert outcome is not None
-        self.assertEqual(outcome.action, DraftOutcomeAction.ACCEPTED)
-        self.assertEqual(outcome.draft.text, "draft")
-        self.assertIsNone(
-            coordinator.record_draft_outcome(DraftOutcomeAction.DISMISSED)
-        )
+        await coordinator.ingest(_event(SpeakerRole.USER, TranscriptEventType.FINAL, 1))
         await coordinator.ingest(
-            _event(SpeakerRole.USER, TranscriptEventType.PARTIAL, 1)
-        )
-        self.assertEqual(coordinator.draft_outcomes(), (outcome,))
-
-    async def _assert_draft_can_be_edited_and_regenerated(self) -> None:
-        coordinator = ConversationCoordinator(ImmediateProvider())
-        await coordinator.ingest(
-            _event(SpeakerRole.REMOTE, TranscriptEventType.FINAL, 1)
+            _event(SpeakerRole.REMOTE, TranscriptEventType.FINAL, 2)
         )
         await coordinator.wait_for_idle()
-        original = coordinator.current_draft()
-        self.assertIsNotNone(original)
-        assert original is not None
 
-        edited = coordinator.edit_current_draft("  revised reply  ")
-        regenerated = await coordinator.regenerate_current_draft()
-        await coordinator.wait_for_idle()
-        current = coordinator.current_draft()
-
-        self.assertIsNotNone(edited)
-        assert edited is not None
-        self.assertEqual(edited.text, "revised reply")
-        self.assertTrue(regenerated)
-        self.assertIsNotNone(current)
-        assert current is not None
-        self.assertNotEqual(current.generation_id, original.generation_id)
-        self.assertEqual(current.text, "draft")
-
-    async def _assert_stale_draft_cannot_be_actioned(self) -> None:
-        coordinator = ConversationCoordinator(ImmediateProvider())
-        await coordinator.ingest(
-            _event(SpeakerRole.REMOTE, TranscriptEventType.FINAL, 1)
+        self.assertEqual(len(provider.requests), 2)
+        second_request = provider.requests[1]
+        self.assertNotIn(
+            "prior advisory guidance", second_request.transcript.running_summary
         )
-        await coordinator.wait_for_idle()
-        await coordinator.ingest(
-            _event(SpeakerRole.USER, TranscriptEventType.PARTIAL, 2)
+        self.assertTrue(
+            all(
+                "prior advisory guidance" not in line.text
+                for line in second_request.transcript.lines
+            )
         )
-
-        self.assertIsNone(coordinator.record_draft_outcome(DraftOutcomeAction.ACCEPTED))
-        self.assertIsNone(coordinator.edit_current_draft("revised reply"))
-        self.assertFalse(await coordinator.regenerate_current_draft())
 
     async def _assert_draft_deadline_publishes_failed_result(self) -> None:
         provider = DeadlineProvider()

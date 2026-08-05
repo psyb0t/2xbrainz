@@ -123,17 +123,15 @@ class CLIReplayIntegrationTests(unittest.TestCase):
         self.assertEqual(records[5]["turn_id"], records[6]["turn_id"])
         self.assertEqual(records[5]["turn_id"], records[7]["trigger_turn_id"])
 
-    def test_doctor_reports_remote_mode_without_tokens(self) -> None:
+    def test_doctor_reports_aigate_configuration_without_tokens(self) -> None:
         environment = os.environ.copy()
         environment.update(
             {
-                "TWOXBRAINZ_AIGATE_MODE": "remote",
-                "TWOXBRAINZ_REMOTE_TEXT_ENABLED": "true",
                 "TWOXBRAINZ_AIGATE_MODEL": "configured-model",
+                "TWOXBRAINZ_SESSION_BRIEF": "Private local framing text.",
             }
         )
         environment.pop("TWOXBRAINZ_AIGATE_TOKEN", None)
-        environment.pop("TWOXBRAINZ_TALKIES_TOKEN", None)
         result = subprocess.run(
             ["2xbrainz", "doctor"],
             check=False,
@@ -144,9 +142,10 @@ class CLIReplayIntegrationTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         status = json.loads(result.stdout)
-        self.assertEqual(status["aigate_mode"], "remote")
         self.assertEqual(status["aigate_model"], "configured-model")
         self.assertFalse(status["aigate_token_configured"])
+        self.assertTrue(status["session_brief_configured"])
+        self.assertNotIn("Private local framing text.", result.stdout)
 
     def test_overlap_replay_suppresses_remote_reply_draft(self) -> None:
         repository_root = Path(__file__).parents[2]

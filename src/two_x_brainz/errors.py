@@ -15,6 +15,10 @@ class ProtocolError(TwoXBrainzError):
     """Raised when an upstream protocol payload violates its contract."""
 
 
+class EmptyProviderContentError(ProtocolError):
+    """Raised when a completion contains no operator-visible text."""
+
+
 class RemoteServiceError(TwoXBrainzError):
     """Raised when a configured upstream service cannot complete a request."""
 
@@ -25,6 +29,10 @@ class CaptureError(TwoXBrainzError):
 
 class AudioFixtureError(TwoXBrainzError):
     """Raised when a finite ASR benchmark fixture is unsafe or unsupported."""
+
+
+class WebConsoleError(TwoXBrainzError):
+    """Raised when the local web presentation cannot start or stop safely."""
 
 
 class ReplayError(TwoXBrainzError):

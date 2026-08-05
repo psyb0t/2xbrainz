@@ -5,19 +5,20 @@ import json
 import unittest
 from collections.abc import AsyncIterable, AsyncIterator
 from pathlib import Path
+from typing import cast
 from unittest.mock import AsyncMock, Mock, patch
 
-from two_x_brainz.capture import CaptureStats, InterStreamDriftStats
-from two_x_brainz.config import AIGateMode, Settings
-from two_x_brainz.constants import (
-    DEFAULT_FRAME_BYTES,
-    SPEECH_ACTIVITY_SAMPLE_THRESHOLD,
+from two_x_brainz.audio_selection import (
+    AudioSelection,
+    AudioSelectionSetup,
+    AudioSelectionStore,
 )
+from two_x_brainz.capture import CaptureStats, InterStreamDriftStats
+from two_x_brainz.config import Settings
+from two_x_brainz.constants import DEFAULT_FRAME_BYTES
 from two_x_brainz.contracts import (
     ASRStreamStats,
     AudioFrame,
-    DraftOutcome,
-    DraftOutcomeAction,
     DraftRequest,
     DraftResult,
     GenerationStatus,
@@ -36,25 +37,57 @@ from two_x_brainz.errors import (
 )
 from two_x_brainz.runtime import (
     asr_segment_stream_id,
+    handle_control_line,
+    presentation_for_output,
     run_live,
     session_error_reason,
     write_asr_segment_event,
     write_asr_stats_event,
     write_capture_drift_event,
     write_capture_stats_event,
-    write_draft_action_event,
     write_draft_event,
     write_session_error_event,
 )
-from two_x_brainz.session_controls import DraftAction, SessionController
+from two_x_brainz.session_controls import SessionController
+from two_x_brainz.terminal import LiveTerminal
+from two_x_brainz.web import WebConsole
 
-_AUDIBLE_PCM_SAMPLE = SPEECH_ACTIVITY_SAMPLE_THRESHOLD + 1
-_AUDIBLE_FRAME = _AUDIBLE_PCM_SAMPLE.to_bytes(2, "little", signed=True) * (
-    DEFAULT_FRAME_BYTES // 2
-)
+_FIXTURE_FRAME = bytes(DEFAULT_FRAME_BYTES)
 
 
 class RuntimeOutputTests(unittest.TestCase):
+    def test_web_output_constructs_the_gradio_presentation_adapter(self) -> None:
+        terminal = LiveTerminal(log_file="/tmp/2xbrainz-web.log")
+
+        presentation = presentation_for_output("web", terminal, 9000)
+
+        self.assertIsInstance(presentation, WebConsole)
+        web_console = cast(WebConsole, presentation)
+        self.assertIs(web_console.state, terminal)
+        self.assertEqual(web_console.port, 9000)
+
+    def test_unknown_output_mode_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unsupported live output mode"):
+            presentation_for_output(
+                "unknown",
+                LiveTerminal(log_file="/tmp/log"),
+                9000,
+            )
+
+    def test_live_closes_the_terminal_when_setup_is_interrupted(self) -> None:
+        settings = _settings(aigate_model="draft-model")
+        terminal = _TerminalAudit(_selection("mic", "system"))
+        terminal.open = AsyncMock(side_effect=asyncio.CancelledError())
+        terminal.close = AsyncMock()
+
+        with (
+            self.assertRaises(asyncio.CancelledError),
+            patch("two_x_brainz.runtime.LiveTerminal", return_value=terminal),
+        ):
+            asyncio.run(run_live(settings, _audio_setup("mic", "system")))
+
+        terminal.close.assert_awaited_once()
+
     def test_live_requires_an_aigate_model_before_constructing_capture(self) -> None:
         settings = _settings(aigate_model=None)
 
@@ -63,7 +96,7 @@ class RuntimeOutputTests(unittest.TestCase):
             patch("two_x_brainz.runtime.PipeWireSource") as capture_source,
             patch("two_x_brainz.runtime.TalkiesClient") as talkies_client,
         ):
-            asyncio.run(run_live(settings, "mic", "system"))
+            asyncio.run(run_live(settings, _audio_setup("mic", "system")))
 
         capture_source.assert_not_called()
         talkies_client.assert_not_called()
@@ -89,7 +122,7 @@ class RuntimeOutputTests(unittest.TestCase):
             ) as aigate_client,
             patch("two_x_brainz.runtime.PipeWireSource") as capture_source,
         ):
-            asyncio.run(run_live(settings, "mic", "system"))
+            asyncio.run(run_live(settings, _audio_setup("mic", "system")))
 
         aigate_client.assert_called_once()
         aigate_preflight.verify_configured_model.assert_awaited_once()
@@ -115,7 +148,7 @@ class RuntimeOutputTests(unittest.TestCase):
             patch("two_x_brainz.runtime.TalkiesClient") as talkies_client,
             patch("two_x_brainz.runtime.PipeWireSource") as capture_source,
         ):
-            asyncio.run(run_live(settings, "mic", "system"))
+            asyncio.run(run_live(settings, _audio_setup("mic", "system")))
 
         aigate_client.assert_called_once()
         aigate_preflight.verify_configured_model.assert_awaited_once()
@@ -146,7 +179,7 @@ class RuntimeOutputTests(unittest.TestCase):
             ) as capture_source,
             patch("two_x_brainz.runtime.print"),
         ):
-            asyncio.run(run_live(settings, "mic", "system"))
+            asyncio.run(run_live(settings, _audio_setup("mic", "system")))
 
         self.assertIsInstance(error_context.exception.exceptions[0], CaptureError)
         aigate_client.assert_called_once()
@@ -178,7 +211,7 @@ class RuntimeOutputTests(unittest.TestCase):
             ),
             patch("two_x_brainz.runtime.PipeWireSource") as capture_source,
         ):
-            asyncio.run(run_live(settings, "mic", "system"))
+            asyncio.run(run_live(settings, _audio_setup("mic", "system")))
 
         preflight_client.verify_configured_model.assert_awaited_once()
         preflight_client.warm_configured_model.assert_awaited_once()
@@ -187,6 +220,7 @@ class RuntimeOutputTests(unittest.TestCase):
     def test_live_capture_failures_emit_one_fixed_session_error(self) -> None:
         settings = _settings(aigate_model="draft-model")
         client = _FrameDrainingTalkiesClient()
+        terminal = _TerminalAudit(_selection("mic", "system"))
 
         with (
             self.assertRaises(ExceptionGroup),
@@ -197,15 +231,14 @@ class RuntimeOutputTests(unittest.TestCase):
                 "two_x_brainz.runtime._read_session_controls",
                 _wait_for_cancellation,
             ),
-            patch("builtins.print") as print_mock,
+            patch("two_x_brainz.runtime.LiveTerminal", return_value=terminal),
         ):
-            asyncio.run(run_live(settings, "mic", "system"))
+            asyncio.run(run_live(settings, _audio_setup("mic", "system")))
 
-        records = [
-            json.loads(call.args[0]) for call in print_mock.call_args_list if call.args
-        ]
         session_errors = [
-            record for record in records if record.get("kind") == "session_error"
+            record
+            for record in terminal.records
+            if record.get("kind") == "session_error"
         ]
         self.assertEqual(
             session_errors,
@@ -223,6 +256,7 @@ class RuntimeOutputTests(unittest.TestCase):
         harness = _LiveHarness()
         provider = _LiveProvider()
         talkies_client = _LiveTalkiesClient(harness)
+        terminal = _TerminalAudit(_selection("mic-node", "system-node"))
 
         with (
             patch("two_x_brainz.runtime.AIGateClient", return_value=provider),
@@ -238,19 +272,26 @@ class RuntimeOutputTests(unittest.TestCase):
                 "two_x_brainz.runtime._read_session_controls",
                 harness.stop_after_completion,
             ),
-            patch("builtins.print") as print_mock,
+            patch(
+                "two_x_brainz.capture.StreamingVoiceActivityDetector",
+                _AlwaysSpeechDetector,
+            ),
+            patch("two_x_brainz.runtime.LiveTerminal", return_value=terminal),
         ):
-            asyncio.run(run_live(settings, "mic-node", "system-node"))
+            asyncio.run(run_live(settings, _audio_setup("mic-node", "system-node")))
 
         self.assertEqual(talkies_constructor.call_count, 3)
         self.assertEqual(capture_source.call_count, 2)
-        records = [
-            json.loads(call.args[0]) for call in print_mock.call_args_list if call.args
-        ]
+        capture_source.assert_any_call("mic-node")
+        capture_source.assert_any_call("system-node", capture_sink=True)
+        self.assertEqual(
+            {speaker_role for speaker_role, _percent in terminal.audio_levels},
+            {"user", "remote"},
+        )
         self.assertEqual(
             {
                 record["speaker_role"]
-                for record in records
+                for record in terminal.records
                 if record.get("kind") == "transcript"
             },
             {"user", "remote"},
@@ -258,7 +299,7 @@ class RuntimeOutputTests(unittest.TestCase):
         self.assertEqual(
             {
                 record["speaker_role"]
-                for record in records
+                for record in terminal.records
                 if record.get("kind") == "asr_stats"
             },
             {"user", "remote"},
@@ -266,7 +307,7 @@ class RuntimeOutputTests(unittest.TestCase):
         self.assertEqual(
             {
                 record["speaker_role"]
-                for record in records
+                for record in terminal.records
                 if record.get("kind") == "capture_stats"
             },
             {"user", "remote"},
@@ -274,12 +315,14 @@ class RuntimeOutputTests(unittest.TestCase):
         self.assertTrue(
             any(
                 record.get("kind") == "draft" and record.get("status") == "completed"
-                for record in records
+                for record in terminal.records
             )
         )
-        self.assertTrue(any(record.get("kind") == "summary" for record in records))
+        self.assertTrue(
+            any(record.get("kind") == "summary" for record in terminal.records)
+        )
         self.assertEqual(
-            sum(record.get("kind") == "capture_drift" for record in records),
+            sum(record.get("kind") == "capture_drift" for record in terminal.records),
             1,
         )
 
@@ -335,45 +378,26 @@ class RuntimeOutputTests(unittest.TestCase):
             "asr_unavailable",
         )
 
-    def test_draft_outcome_record_has_a_fixed_safe_shape(self) -> None:
-        outcome = DraftOutcome(
-            action=DraftOutcomeAction.ACCEPTED,
-            draft=DraftResult(
-                generation_id="generation-id",
-                trigger_turn_id="turn-id",
-                context_revision=3,
-                status=GenerationStatus.COMPLETED,
-                text="private draft text",
-            ),
-        )
+    def test_removed_reply_action_emits_only_fixed_control_error(self) -> None:
+        controller = SessionController()
+        coordinator = ConversationCoordinator(_LiveProvider())
 
         with patch("builtins.print") as print_mock:
-            write_draft_action_event(DraftAction.ACCEPT, True, outcome)
+            stopped = asyncio.run(
+                handle_control_line("accept", controller, coordinator)
+            )
 
+        self.assertFalse(stopped)
+        self.assertEqual(controller.state.value, "running")
         record = json.loads(print_mock.call_args.args[0])
         self.assertEqual(
             record,
             {
                 "schema_version": 1,
-                "kind": "draft_action",
-                "action": "accept",
-                "changed": True,
-                "outcome": "accepted",
-                "generation_id": "generation-id",
-                "trigger_turn_id": "turn-id",
-                "context_revision": 3,
+                "kind": "control_error",
+                "message": "use pause, resume, or stop",
             },
         )
-
-    def test_non_outcome_record_has_null_identifiers(self) -> None:
-        with patch("builtins.print") as print_mock:
-            write_draft_action_event(DraftAction.EDIT, True, None)
-
-        record = json.loads(print_mock.call_args.args[0])
-        self.assertEqual(record["outcome"], None)
-        self.assertEqual(record["generation_id"], None)
-        self.assertEqual(record["trigger_turn_id"], None)
-        self.assertEqual(record["context_revision"], None)
 
     def test_asr_statistics_record_has_a_fixed_safe_shape(self) -> None:
         event = ASRStreamStats(
@@ -483,7 +507,6 @@ def _settings(aigate_model: str | None) -> Settings:
         talkies_model="fixture-model",
         talkies_token=None,
         aigate_url="http://aigate:4000/v1",
-        aigate_mode=AIGateMode.LOCAL,
         aigate_model=aigate_model,
         aigate_token=None,
         log_level="INFO",
@@ -491,8 +514,50 @@ def _settings(aigate_model: str | None) -> Settings:
     )
 
 
+def _selection(mic_node: str, system_node: str) -> AudioSelection:
+    return AudioSelection(
+        mic_node=mic_node,
+        system_node=system_node,
+        mic_label=mic_node,
+        system_label=system_node,
+        system_capture_sink=True,
+    )
+
+
+def _audio_setup(mic_node: str, system_node: str) -> AudioSelectionSetup:
+    return AudioSelectionSetup(
+        store=AudioSelectionStore(Path("/tmp/2xbrainz-runtime-audio.json")),
+        microphones=(),
+        system_monitors=(),
+        selection=_selection(mic_node, system_node),
+    )
+
+
+class _TerminalAudit:
+    def __init__(self, selection: AudioSelection) -> None:
+        self.records: list[dict[str, object]] = []
+        self.audio_levels: list[tuple[str, int]] = []
+        self._selection = selection
+
+    async def open(self) -> AudioSelection:
+        return self._selection
+
+    def consume(self, record: dict[str, object]) -> None:
+        self.records.append(record)
+
+    def refresh(self) -> None:
+        return None
+
+    def set_audio_level(self, speaker_role: str, percent: int) -> None:
+        self.audio_levels.append((speaker_role, percent))
+
+    async def close(self) -> None:
+        return None
+
+
 class _CaptureFailingSource:
-    def __init__(self, node_id: str) -> None:
+    def __init__(self, node_id: str, *, capture_sink: bool = False) -> None:
+        del capture_sink
         self._node_id = node_id
 
     async def frames(self) -> AsyncIterator[bytes]:
@@ -581,13 +646,20 @@ class _LiveProvider:
 
 
 class _LiveCaptureSource:
-    def __init__(self, node_id: str) -> None:
+    def __init__(self, node_id: str, *, capture_sink: bool = False) -> None:
+        del capture_sink
         self._node_id = node_id
 
     async def frames(self) -> AsyncIterator[bytes]:
         if not self._node_id:
             return
-        yield _AUDIBLE_FRAME
+        yield _FIXTURE_FRAME
+
+
+class _AlwaysSpeechDetector:
+    def observe(self, pcm: bytes) -> tuple[float, ...]:
+        del pcm
+        return (1.0, 1.0)
 
 
 class _LiveTalkiesClient:

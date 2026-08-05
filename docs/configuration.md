@@ -6,11 +6,23 @@ and relative log paths before it opens any network connection.
 
 Use [`.env.example`](../.env.example) as the field reference. Keep the actual
 `.env` file outside version control and provide it only to explicit real
-targets such as `make live`, `make benchmark`, `make test-real`, or a live
+targets such as `make run`, `make benchmark`, `make test-real`, or a live
 fixture. `TWOXBRAINZ_AIGATE_MODEL` is additionally required by the optional
 `make benchmark-with-draft` target.
 
-`make live` validates its configured AIGate model against AIGate's model
+## Contents
+
+- [Audio device selection](#audio-device-selection)
+- [Live terminal and persistent log](#live-terminal-and-persistent-log)
+- [AIGate-only deployment](#aigate-only-deployment)
+- [Talkies TTS fixture capture](#talkies-tts-fixture-capture)
+- [Real provider test tiers](#real-provider-test-tiers)
+- [Data boundary and optional tools](#data-boundary-and-optional-tools)
+- [Network and PipeWire boundary](#network-and-pipewire-boundary)
+- [Live-session controls](#live-session-controls)
+- [Health checks](#health-checks)
+
+`make run` validates its configured AIGate model against AIGate's model
 inventory before it opens PipeWire capture or Talkies streams. A missing or
 unavailable model therefore fails before it can produce a capture-only session
 that cannot draft replies. It also verifies that the selected Talkies model is
@@ -23,63 +35,136 @@ captured stream begins; no captured audio is used for the warm-up.
 
 | Variable | Required for live capture | Purpose |
 |---|---:|---|
-| `TWOXBRAINZ_TALKIES_WS_URL` | yes | Native Talkies stream URL using `ws` or `wss`. |
 | `TWOXBRAINZ_TALKIES_MODEL` | yes | One Talkies streaming model slug shared by both streams. |
-| `TWOXBRAINZ_TALKIES_TOKEN` | if Talkies auth is enabled | Dedicated bearer token sent to Talkies' native stream, model inventory, and file-transcription routes. When omitted, the app reuses `TWOXBRAINZ_AIGATE_TOKEN` only if the Talkies and AIGate URLs have the same host and effective port. |
-| `TWOXBRAINZ_AIGATE_URL` | yes | OpenAI-compatible API root using `http` or `https`, including the provider's version prefix (`/v1` for AIGate, OpenAI and Groq). |
-| `TWOXBRAINZ_AIGATE_MODE` | no | `local` (default) or `remote`; remote requires an explicit opt-in. |
+| `TWOXBRAINZ_AIGATE_URL` | yes | AIGate API root using `http` or `https` and ending in `/v1`. 2xbrainz derives the Talkies WebSocket proxy route from it. |
 | `TWOXBRAINZ_AIGATE_MODEL` | yes | Model name configured by the AIGate gateway. |
-| `TWOXBRAINZ_AIGATE_TOKEN` | if AIGate requires it | Bearer token used only for draft requests. |
-| `TWOXBRAINZ_REMOTE_TEXT_ENABLED` | when mode is `remote` | Must be exactly `true` before transcript text can reach a remote provider. |
+| `TWOXBRAINZ_AIGATE_TOKEN` | if AIGate requires it | The single bearer token used for AIGate chat, Talkies proxy, model inventory, and the two allowlisted MCP tools. |
+| `TWOXBRAINZ_SESSION_BRIEF` | no | Trusted local context, up to 4000 characters, appended to every generation prompt to frame the call. It is neither transcript data nor status/log output. |
+| `TWOXBRAINZ_WEB_RESEARCH_ENABLED` | no | Exactly `true` enables reply-draft web search and bounded arithmetic through AIGate MCP. It requires AIGate SearXNG; calculation additionally requires Piston. |
 | `TWOXBRAINZ_LOG_LEVEL` | no | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. |
-| `TWOXBRAINZ_LOG_FILE` | no | Absolute temporary log file path. |
+| `TWOXBRAINZ_LOG_DIRECTORY` | no | Absolute in-container directory for UTC-prefixed rotating session logs. It wins over `TWOXBRAINZ_LOG_FILE`; direct Docker users must mount it themselves. |
+| `TWOXBRAINZ_LOG_FILE` | no | Absolute base JSON log filename for direct Docker use when `TWOXBRAINZ_LOG_DIRECTORY` is unset. `live` prefixes its basename with a UTC session timestamp. |
+| `TWOXBRAINZ_AUDIO_CONFIG_FILE` | no | Absolute in-container path for the local microphone/system-output selection. `make run` mounts this at `/audio-config/audio-selection.json`. |
 
-`TWOXBRAINZ_TALKIES_WS_URL` must end in
-`/v1/audio/transcriptions/stream`. The CLI derives the matching model
-inventory and file-transcription routes from that URL while retaining any
-path prefix.
+2xbrainz derives `ws(s)://<aigate-host>[/prefix]/talkies/v1/audio/transcriptions/stream`
+from `TWOXBRAINZ_AIGATE_URL`. It does not support a separate Talkies endpoint or
+credential.
 
-## Deployment shapes
+## Audio device selection
 
-**AIGate with Talkies enabled** — the default. AIGate keeps Talkies on its
-private network with no host port binding and publishes it at `/talkies/`, so
-both URLs point at the gateway and `talkies:8000` is not reachable from outside
-the compose stack:
+`make run` mounts the desktop PipeWire runtime directory read-only and opens
+the Textual Audio Setup view when there is no usable saved pair. `make run-web`
+starts the equivalent Svelte view at `http://127.0.0.1:7860`. Both views offer
+non-monitor `Audio/Source` microphone nodes and a system-audio source: either
+an `Audio/Source` monitor node (`*.monitor`) or a directly capturable
+`Audio/Sink`; application-stream nodes are excluded. Audio Setup shows a
+friendly PipeWire description when available, marks the configured default
+source and default output as `[DEFAULT]`, and sorts them first. Default is a
+fallback recommendation rather than proof of a particular application's current
+route. Audio Setup starts one temporary, presentation-only probe for **every
+displayed candidate**. Speak and play audio while the list is visible; each
+candidate row has its own meter, so the active microphone and system-audio
+route can be identified before selection. The dashboard then keeps its own live
+MIC INPUT and SYSTEM AUDIO meters for the active capture pair. It
+saves stable node names—not ephemeral numeric IDs—to the host's
+`$XDG_CONFIG_HOME/2xbrainz/audio-selection.json` (or
+`~/.config/2xbrainz/audio-selection.json`) with mode `0600`.
+
+The stored pair is checked against the currently visible PipeWire nodes before
+each session. A missing, malformed, or stale file, or a device that disappeared,
+opens Audio Setup. `F3` opens Audio Setup from the running dashboard; the web
+console has the equivalent **Audio setup** panel. A pair saved there applies to
+the next live session, so active capture is never replaced mid-utterance.
+The selection file contains only the two node names; it has no audio, transcript,
+endpoint, or credential data.
+
+## Live terminal and persistent log
+
+`make run` allocates a Textual operator console instead of printing JSON events.
+`make run-web` serves the compiled Svelte console through FastAPI/Uvicorn at
+`127.0.0.1` only. Its same-origin `/ws` connection carries bounded snapshots
+and strict pause, resume, audio-metering, and audio-selection commands. Web mode
+is stopped from its owning terminal with `Ctrl+C`; it intentionally has no Stop
+button that could terminate its own server and strand the open page.
+It does not enable sharing, monitoring, MCP, public APIs, or arbitrary file
+paths.
+Its fixed status bar shows capture/session state, the active operation, and both
+session and operation elapsed timers. A source strip shows selected friendly
+capture labels and two derived presentation-only PCM level meters. System-output
+meters explicitly capture PipeWire sink monitor ports; a sink target is never
+allowed to fall back to the default microphone. In the
+browser, Conversation, Reply suggestion, Private coach, and Story so far are
+separate scrollable, collapsible, and resizable panels. Their presentation
+preferences are validated and stored in browser-local storage. Source settings
+use a modal with a live meter for every candidate; selected source identity is
+kept in the application audio-selection file. Terminal conversation and guidance panes scroll
+independently and auto-follow only when already at their own bottom.
+Mouse-wheel and keyboard scrolling work in the focused pane; `F2` cycles split,
+full-conversation, and full-guidance views. Level updates are never written to
+the reconstruction log and retain no PCM. `F3` opens Audio Setup. `Ctrl+C`
+follows the same clean stop path as the terminal quit command while the UI owns
+the terminal. The console restores the calling terminal when the session stops
+or fails.
+
+Each `make run` session writes runtime events to a separate file below
+`./logs/`, named `<UTC timestamp>_2xbrainz.log`. The session file rolls at 5 MB
+and retains at most three numbered backups. Follow the newest session with:
+
+```bash
+make logs
+```
+
+Set `LOG_TAIL_LINES=<count>` when invoking that target to change its initial
+tail length, or `LOG_FILE=<filename>` to follow a specific session. Set
+`LOG_DIRECTORY=/absolute/host/path` on both `make run` and `make logs` to use a
+different mounted host directory. The log records transcript text, timelines, drafts, commentary,
+summaries, lifecycle actions, and diagnostics to make a completed session
+reconstructable. It is local but sensitive conversation data. It never records
+raw PCM or credential values; credential-shaped fields are redacted.
+`make run` forces its host log directory to mode `0700`; direct Docker callers
+must supply a mode-`0700` mount. Active and rotated log files are always forced
+to mode `0600`, even when the caller has a permissive umask.
+
+## AIGate-only deployment
+
+AIGate keeps Talkies on its private network with no host port binding and
+publishes it at `/talkies/`. 2xbrainz uses one gateway URL and one token:
 
 ```
 TWOXBRAINZ_AIGATE_URL=http://localhost:4000/v1
-TWOXBRAINZ_TALKIES_WS_URL=ws://localhost:4000/talkies/v1/audio/transcriptions/stream
 TWOXBRAINZ_AIGATE_TOKEN=<gateway token>
 ```
 
-Both carry the same host and effective port, so the gateway token is reused for
-Talkies and `TWOXBRAINZ_TALKIES_TOKEN` can stay unset.
+That token is reused by all application requests. Provider selection, remote
+access, and any further privacy boundary are AIGate configuration, not a second
+2xbrainz provider mode.
 
 `localhost` here assumes the default `LIVE_NETWORK=host`, which reaches the
 gateway on the port it already publishes and resolves tailnet names exactly as
-the host shell does. Set `LIVE_NETWORK=<name>` to join a specific Docker network
-instead, and replace `localhost` with the gateway's service name on that
-network.
+the host shell does. Set `LIVE_NETWORK=<name>` for TUI, benchmark, or fixture
+targets to join a specific Docker network, and replace `localhost` with the
+gateway's service name on that network. This optional mode uses a host-side
+`python3` helper from the repository to validate a hostname mapping. `make
+run-web` is loopback-only and therefore requires `LIVE_NETWORK=host`.
 
-**Standalone Talkies with text generation elsewhere** — point each at its own
-provider. Any OpenAI-compatible endpoint works for drafts:
-
-```
-TWOXBRAINZ_AIGATE_URL=https://api.openai.com/v1
-TWOXBRAINZ_TALKIES_WS_URL=ws://talkies:8000/v1/audio/transcriptions/stream
-TWOXBRAINZ_AIGATE_TOKEN=<provider key>
-TWOXBRAINZ_TALKIES_TOKEN=<talkies token>
-```
-
-The authorities differ here, so nothing is shared: the provider key is never
-sent to Talkies and the Talkies token is never sent to the provider. Sending
-transcript text to a hosted provider also requires
-`TWOXBRAINZ_AIGATE_MODE=remote` and `TWOXBRAINZ_REMOTE_TEXT_ENABLED=true`.
+When `TWOXBRAINZ_WEB_RESEARCH_ENABLED=true`, the reply path exposes only two
+application-owned tools to the model: `search_web` and `execute_code`. The app
+executes at most three requested calls concurrently through AIGate MCP, bounds
+the returned data, then calls the LLM once more for the spoken draft. Commentary
+and rolling summaries are transcript-only and never receive tools. `search_web`
+requires AIGate SearXNG; `execute_code` accepts only application-validated,
+bounded numeric arithmetic and requires the AIGate Piston service. If either
+MCP service is unavailable, the model gets a generic
+tool-unavailable result and the draft still completes without it.
+Before a search leaves the process, the application rejects obvious structured
+private identifiers including email addresses, URLs, social handles, and
+phone/account-like digit runs. Operators must still avoid placing private names
+or other unstructured personal details in search-enabled conversations.
 
 ## Talkies TTS fixture capture
 
 `make live-fixture` is an explicit external integration target. It derives
-the direct Talkies TTS route from `TWOXBRAINZ_TALKIES_WS_URL`, creates two
+the direct Talkies TTS route from the configured AIGate URL, creates two
 ephemeral WAV fixtures with `kokoro-82m-nvidia` by default, and runs the real
 `live` command against two harness-owned `pw-record` fixture devices. It does
 not mount the host PipeWire runtime directory, require audio hardware, retain
@@ -94,8 +179,8 @@ harness-owned fixture node labels may appear so the playback path is auditable.
 
 Fixture WAV synthesis has its own bounded 60-second startup allowance because
 Talkies may need to materialize a cold TTS backend before the actual capture
-test starts. The live application's 15-second AIGate and ASR deadlines are not
-changed by this harness allowance.
+test starts. The live application's 60-second text-generation deadline and
+15-second ASR/network deadlines are not changed by this harness allowance.
 
 Talkies may return HTTP 409 while handing a TTS model between requests. The
 fixture retries that status twice with a short bounded delay; it does not retry
@@ -120,28 +205,26 @@ the final draft tied to the final interviewer turn, and a final summary that
 retains the commitment, deadline, risk, mitigation, staging evidence, and
 unresolved question. When a selected native ASR backend produces a final only
 after `end`, the runtime keeps PipeWire capture open but rotates its Talkies
-segment after detected speech is followed by bounded silence. Each new segment
-waits for its first audible frame and has a distinct logical ASR identity, so
-the configured Nemotron backend can produce independent multi-turn finals
-without holding an idle connection or recreating either capture process.
+segment after the local Silero detector observes sustained speech followed by
+sustained silence. Hysteresis rejects transient background noise, and a
+60-second maximum rotates a segment even when silence never arrives. Each new
+segment waits for neural speech detection and has a distinct logical ASR
+identity, so the configured Nemotron backend can produce independent
+multi-turn finals without holding an idle connection or recreating either
+capture process.
 
-The target requires `TWOXBRAINZ_TALKIES_WS_URL`,
-`TWOXBRAINZ_TALKIES_MODEL`, and the shared `TWOXBRAINZ_AIGATE_TOKEN` on the
-same gateway host and port. A separate `TWOXBRAINZ_TALKIES_TOKEN` remains an
-optional override only for deployments that intentionally use different
-provider authorities.
+The target requires `TWOXBRAINZ_AIGATE_URL`, `TWOXBRAINZ_TALKIES_MODEL`, and
+the single `TWOXBRAINZ_AIGATE_TOKEN`.
 `FIXTURE_TTS_MODEL` and `FIXTURE_TTS_VOICE` are Make variables, not application
 configuration; use them only to select an available Talkies TTS model and voice
 for this test. Because it reaches the configured Talkies service,
 `live-fixture` is intentionally excluded from the ordinary offline test suite.
-For a one-off direct AIGate test without editing `.env`, pass the AIGate base
-URL and native Talkies stream URL as Make variables. Their host and effective
-port must match for AIGate-token reuse to apply:
+For a one-off direct AIGate test without editing `.env`, pass only the AIGate
+base URL as a Make variable:
 
 ```bash
 make live-fixture LIVE_NETWORK=<network> \
-  AIGATE_URL=http://aigate.example.test \
-  TALKIES_WS_URL=ws://aigate.example.test/talkies/v1/audio/transcriptions/stream
+  AIGATE_URL=http://aigate.example.test/v1
 ```
 
 The target validates and maps each fully-qualified override through the same
@@ -171,17 +254,15 @@ when the runtime closes a bounded utterance segment; otherwise the retained
 trace records the failure instead of claiming a completed interview.
 
 Both targets require a gitignored `.env` containing
-`TWOXBRAINZ_AIGATE_TOKEN`, plus reachable endpoints. A token-only `.env` can
-be used by passing the AIGate and Talkies URLs as Make variables; token reuse
-for Talkies is still limited to matching endpoint authority:
+`TWOXBRAINZ_AIGATE_TOKEN`, plus a reachable AIGate endpoint. A token-only
+`.env` can be used by passing the AIGate URL as a Make variable:
 
 ```bash
 make test-real LIVE_NETWORK=<network> \
-  AIGATE_URL=http://aigate.example.test
+  AIGATE_URL=http://aigate.example.test/v1
 
 make live-product-fixture LIVE_NETWORK=<network> \
-  AIGATE_URL=http://aigate.example.test \
-  TALKIES_WS_URL=ws://aigate.example.test/talkies/v1/audio/transcriptions/stream
+  AIGATE_URL=http://aigate.example.test/v1
 ```
 
 Every real fixture creates a new append-only JSONL trace in the gitignored
@@ -195,28 +276,20 @@ text. It is required for a successful real fixture run, so a missing or
 unwritable trace directory fails the target rather than producing unverifiable
 success.
 
-## Local and remote text generation
+## Data boundary and optional tools
 
-`TWOXBRAINZ_AIGATE_MODE=local` is the default. It is intended for an AIGate
-endpoint running on the operator-controlled machine or network. Remote mode is
-an explicit privacy boundary: it requires both values below at process start.
-
-```dotenv
-TWOXBRAINZ_AIGATE_MODE=remote
-TWOXBRAINZ_REMOTE_TEXT_ENABLED=true
-```
-
-Remote mode sends speaker-tagged transcript text to the configured AIGate
-endpoint; it never sends raw audio. `2xbrainz doctor`, `2xbrainz status`, and
-the initial live-session JSON record report the selected mode and model, but
-never print token values.
+2xbrainz sends speaker-tagged transcript text, never raw audio, to its one
+configured AIGate. `2xbrainz doctor`, `2xbrainz status`, and the initial
+live-session record report the AIGate model but never token values. Configure
+the upstream model provider and transcript egress policy in AIGate itself.
 
 Reply drafts, commentary, and summaries use fixed application-owned token and
 text-length budgets. AIGate content that exceeds the matching budget is
 rejected before the CLI can render it; the budgets are not provider-controlled
-configuration. The reply budget is 512 completion tokens so reasoning-capable
-models have room to return visible spoken text; the separate character limit
-still bounds what the CLI accepts.
+configuration. The reply budget is 1,024 completion tokens so reasoning-capable
+models have room to return visible spoken text. Commentary and summary also
+receive 1,024 completion tokens so hidden reasoning does not consume their whole
+budget; separate character limits still bound what the CLI accepts.
 
 Reply-draft content is also a strict display boundary: it must be one line of
 plain spoken prose. The provider boundary parses CommonMark without rendering
@@ -227,90 +300,78 @@ reply becomes a failed draft record with no provider text rendered. Commentary
 and summaries may contain multiple sentences, but they use the same text-only
 parser boundary before entering CLI state.
 
-Each provider job also has a fixed 15-second application deadline, matching
-the outbound HTTP timeout. A deadline expiry produces an empty failed result
+Each text-generation job also has a fixed 60-second application deadline. The
+shorter outbound HTTP timeout remains 15 seconds for non-generation requests.
+A generation deadline expiry produces an empty failed result
 for the current transcript revision and leaves capture plus later turns
 running. The deadline is not an environment setting: changing it requires a
 code change and matching operational measurement.
 
+Reply guidance may offer a relevant mechanism as a clearly tentative proposal.
+It cannot describe that proposal as implemented, tested, or committed, and it
+cannot invent a date, deadline, evidence, result, or status.
+
+Some reasoning providers occasionally return a successful completion with no
+visible text. The client retries that narrow condition once within the same
+generation deadline. A second blank completion, malformed response, or
+transport failure remains a typed failure; tool execution is never repeated.
+
 ## Network and PipeWire boundary
 
-`make live` does not publish any TCP port. It joins the `LIVE_NETWORK` chosen
+`make run` does not publish any TCP port. It joins the `LIVE_NETWORK` chosen
 by the operator so the app can resolve Talkies and AIGate by their service
 names. The container drops all Linux capabilities, runs read-only apart from a
 temporary filesystem, defaults to an eight-CPU, 1 GiB, 128-process cgroup
 budget, and mounts the host PipeWire runtime directory read-only.
 
 That budget is a ceiling, not a measured requirement. No transcription runs in
-this container: it starts two `pw-cat` captures, normalizes the PCM, and writes
+this container: it starts two `pw-record` captures, normalizes the PCM, and writes
 it to a WebSocket, so `RUNTIME_CPUS`, `RUNTIME_MEMORY`, and `RUNTIME_PIDS` have
 no bearing on ASR latency. The transcription cost belongs to Talkies, in its own
 container, and is where `make benchmark` measurements apply.
 
 For a fully-qualified AIGate or Talkies hostname that resolves on the host but
-not inside Docker, such as a tailnet-only name, `make live` and `make benchmark`
+not inside Docker, such as a tailnet-only name, `make run` and `make benchmark`
 resolve its IPv4 address on the host and pass one validated Docker host mapping.
 That helper derives the mapping from the endpoint hostname only; it never reads
 token settings or emits URL paths. If the hostname cannot be resolved by the
 host, attach the CLI to an explicit bridge network with the required DNS
 instead.
 
-Under the default `LIVE_NETWORK=host` this mapping is redundant — the container
-shares the host's resolver, so tailnet and other host-only names already
-resolve. It stays in place because it costs nothing there (a `--add-host` entry
-is still accepted under host networking) and is what makes a named Docker
-network work when one is chosen instead.
+Under the default `LIVE_NETWORK=host`, no mapping helper or host Python is used:
+the container shares the host's resolver, so tailnet and other host-only names
+already resolve. The validated mapping helper runs only when a named Docker
+network is explicitly selected.
 
 The mounted PipeWire socket is only usable when the container runs with the
-same UID as the host desktop session. `make live` does that automatically.
-
-## Choosing MIC_NODE and SYSTEM_NODE
-
-`make devices` prints every PipeWire node as JSON — one `id`, `name`, and
-`media_class` per entry. Two of them matter:
-
-- `MIC_NODE` — the `Audio/Source` that is the actual microphone. Names ending in
-  `.monitor` are sink monitors, not inputs; skip them.
-- `SYSTEM_NODE` — the `Audio/Sink` currently being listened through, named
-  directly rather than by its monitor. Capture runs
-  `pw-record --target <node>`, which for a sink records what that sink is
-  playing.
-
-Pick the sink actually in use: a `bluez_output.*` or USB device while on
-headphones, not the built-in analog one. `Stream/*` entries are individual
-applications rather than devices and are not valid targets.
-
-Both fields accept either the node `name` or its numeric `id`
-(`^[A-Za-z0-9_.:-]{1,128}$`). Names survive a reboot; ids do not.
+same UID as the host desktop session. `make run` does that automatically.
 
 ## Live-session controls
 
-`make live` keeps standard input open for exact, case-insensitive lifecycle
-and draft-control lines:
+`make run` exposes exact, case-insensitive lifecycle lines through its Textual
+command input and fixed keyboard shortcuts:
 
 - `pause` — blocks future audio frames before the Talkies boundary and cancels
   active drafting, commentary, and summary work.
 - `resume` — resumes forwarding frames to the existing Talkies streams.
 - `stop` — cancels generation, ends both capture streams, and exits the CLI.
-- `accept` or `dismiss` — consume the current completed reply draft without
-  sending, speaking, or persisting it.
-- `edit <replacement text>` — replace the current completed reply text locally.
-- `regenerate` — request a fresh reply only when the previous draft still has
-  the current transcript revision.
 
-Each action produces a `session` JSON record with `state`, `action`, and
-`changed` fields or a `draft_action` JSON record with `action`, `changed`,
-`outcome`, `generation_id`, and `context_revision` fields. Outcome identifiers
-are `null` for edits, regeneration, failed actions, and non-outcome actions.
-Accepted and dismissed drafts are retained only in a bounded in-memory record
-until the CLI exits. Invalid or oversized lines produce a fixed `control_error`
-record and do not echo the input. EOF alone leaves the session running.
+Use `Ctrl+P`, `Ctrl+R`, or `Ctrl+X` for pause, resume, or stop; `Ctrl+Q` is an
+equivalent clean quit. Press `:` to focus the command input. The same strict
+parser validates typed commands and shortcuts.
+
+Each lifecycle change updates the dashboard and writes a structured `session`
+record with `state`, `action`, and `changed` to the rotating log. Guidance is
+display-only: it is never sent or spoken, has no accept/dismiss/edit/regenerate
+state, and is never included in later provider requests. Invalid or oversized
+lines show fixed control help, log a fixed `control_error` record, and do not
+echo the input. EOF alone leaves the session running.
 
 The ordinary `draft` record is a lifecycle record. A remote final first emits
 `status: "running"` with empty text, followed by exactly one terminal status:
 `completed` with text, or `failed`, `cancelled`, or `superseded` with empty
-text. Only a completed draft can be accepted, dismissed, edited, or
-regenerated.
+text. A completed draft remains visible only until a later current-state draft
+replaces it.
 
 When a capture stream closes, the CLI emits one `capture_stats` record with its
 speaker role, frame count, accepted PCM duration, and aggregate gap count/max.
@@ -327,10 +388,10 @@ metadata.
 
 ## Health checks
 
-`make run` executes `2xbrainz doctor`, which prints a sanitized JSON view of
-the selected AIGate mode/model, configured endpoints, and whether credentials
-are present. It never prints token values. `2xbrainz status` produces the same
-safe configuration view.
+`make doctor` executes `2xbrainz doctor`, which prints a sanitized JSON view of
+the selected AIGate model, configured endpoints, and whether credentials are
+present. It never prints token values. `2xbrainz status` produces the same safe
+configuration view.
 
 The replay route needs no external service:
 
