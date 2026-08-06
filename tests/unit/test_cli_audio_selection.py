@@ -90,7 +90,7 @@ def _settings() -> Settings:
         talkies_model="fixture-model",
         talkies_token=None,
         aigate_url="http://aigate:4000/v1",
-        aigate_model=None,
+        aigate_reply_model=None,
         aigate_token=None,
         log_level="INFO",
         log_file=Path("/tmp/2xbrainz-test.log"),

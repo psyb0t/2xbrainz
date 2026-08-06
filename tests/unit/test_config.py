@@ -9,7 +9,6 @@ from two_x_brainz.config import Settings
 from two_x_brainz.constants import (
     ENV_AIGATE_COACH_MODEL,
     ENV_AIGATE_COACH_REASONING_EFFORT,
-    ENV_AIGATE_REASONING_EFFORT,
     ENV_AIGATE_REPLY_MODEL,
     ENV_AIGATE_REPLY_REASONING_EFFORT,
     ENV_AIGATE_SUMMARY_MODEL,
@@ -31,7 +30,9 @@ class SettingsTests(unittest.TestCase):
 
         self.assertEqual(settings.talkies_model, "nemotron-3.5-asr-0.6b")
         self.assertIsNone(settings.aigate_token)
-        self.assertEqual(settings.aigate_reasoning_effort, "none")
+        self.assertEqual(settings.aigate_reply_reasoning_effort, "none")
+        self.assertEqual(settings.aigate_coach_reasoning_effort, "none")
+        self.assertEqual(settings.aigate_summary_reasoning_effort, "none")
         self.assertEqual(
             settings.talkies_ws_url,
             "ws://localhost:4000/talkies/v1/audio/transcriptions/stream",
@@ -106,14 +107,17 @@ class SettingsTests(unittest.TestCase):
         ):
             Settings.from_environment()
 
-    def test_rejects_invalid_reasoning_effort(self) -> None:
+    def test_rejects_invalid_reply_reasoning_effort(self) -> None:
         with (
             patch.dict(
                 os.environ,
-                {ENV_AIGATE_REASONING_EFFORT: "maximum-ish"},
+                {ENV_AIGATE_REPLY_REASONING_EFFORT: "maximum-ish"},
                 clear=True,
             ),
-            self.assertRaisesRegex(ConfigurationError, "AIGATE_REASONING_EFFORT"),
+            self.assertRaisesRegex(
+                ConfigurationError,
+                "AIGATE_REPLY_REASONING_EFFORT",
+            ),
         ):
             Settings.from_environment()
 

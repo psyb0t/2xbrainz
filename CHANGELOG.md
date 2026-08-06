@@ -3,6 +3,26 @@
 All notable changes per release. Versions follow
 [semantic versioning](https://semver.org).
 
+## v2.0.0 — 2026-08-06
+
+Remove pre-release compatibility layers and require explicit configuration for
+each live guidance flow.
+
+- **Breaking.** Replace `TWOXBRAINZ_AIGATE_MODEL` with all three explicit
+  `TWOXBRAINZ_AIGATE_REPLY_MODEL`, `TWOXBRAINZ_AIGATE_COACH_MODEL`, and
+  `TWOXBRAINZ_AIGATE_SUMMARY_MODEL` variables. First-run startup now rejects
+  incomplete flow assignments instead of expanding a shared model.
+- **Breaking.** Replace `TWOXBRAINZ_AIGATE_REASONING_EFFORT` with the dedicated
+  `TWOXBRAINZ_AIGATE_REPLY_REASONING_EFFORT`,
+  `TWOXBRAINZ_AIGATE_COACH_REASONING_EFFORT`, and
+  `TWOXBRAINZ_AIGATE_SUMMARY_REASONING_EFFORT` variables.
+- **Breaking.** Stop migrating schema-v1 `provider-selection.json` files. Open
+  Settings and save the three flow assignments again to write the schema-v2
+  format.
+- **Breaking.** Remove the `make run-web` alias; use `make run`.
+- Remove the launch-profile decision records now that the current runtime and
+  configuration documentation describe the supported application directly.
+
 ## v1.1.0 — 2026-08-06
 
 Make live guidance faster, observable, independently routed, and resilient to

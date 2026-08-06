@@ -24,10 +24,6 @@ _SCHEMA_VERSION_KEY = "schema_version"
 _FLOWS_KEY = "flows"
 _MODEL_KEY = "model"
 _REASONING_EFFORT_KEY = "reasoning_effort"
-_LEGACY_SCHEMA_VERSION = 1
-_LEGACY_CONFIG_KEYS = frozenset(
-    {_SCHEMA_VERSION_KEY, _MODEL_KEY, _REASONING_EFFORT_KEY}
-)
 _CONFIG_KEYS = frozenset({_SCHEMA_VERSION_KEY, _FLOWS_KEY})
 _ASSIGNMENT_KEYS = frozenset({_MODEL_KEY, _REASONING_EFFORT_KEY})
 _CONFIG_FILE_MODE = 0o600
@@ -182,8 +178,6 @@ def _selection_from_payload(payload: object) -> ProviderSelection | None:
     if not isinstance(payload, dict):
         return None
     config = cast(dict[str, object], payload)
-    if config.get(_SCHEMA_VERSION_KEY) == _LEGACY_SCHEMA_VERSION:
-        return _legacy_selection_from_payload(config)
     if (
         frozenset(config) != _CONFIG_KEYS
         or config.get(_SCHEMA_VERSION_KEY) != PROVIDER_SELECTION_CONFIG_SCHEMA_VERSION
@@ -208,22 +202,6 @@ def _selection_from_payload(payload: object) -> ProviderSelection | None:
         ),
         summary=cast(ProviderAssignment, assignments[ProviderFlow.SUMMARY]),
     )
-
-
-def _legacy_selection_from_payload(
-    config: dict[str, object],
-) -> ProviderSelection | None:
-    if frozenset(config) != _LEGACY_CONFIG_KEYS:
-        return None
-    assignment = _assignment_from_payload(
-        {
-            _MODEL_KEY: config.get(_MODEL_KEY),
-            _REASONING_EFFORT_KEY: config.get(_REASONING_EFFORT_KEY),
-        }
-    )
-    if assignment is None:
-        return None
-    return ProviderSelection(assignment, assignment, assignment)
 
 
 def _assignment_from_payload(payload: object) -> ProviderAssignment | None:

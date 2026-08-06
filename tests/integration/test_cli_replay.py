@@ -131,7 +131,9 @@ class CLIReplayIntegrationTests(unittest.TestCase):
         environment = os.environ.copy()
         environment.update(
             {
-                "TWOXBRAINZ_AIGATE_MODEL": "configured-model",
+                "TWOXBRAINZ_AIGATE_REPLY_MODEL": "reply-model",
+                "TWOXBRAINZ_AIGATE_COACH_MODEL": "coach-model",
+                "TWOXBRAINZ_AIGATE_SUMMARY_MODEL": "summary-model",
                 "TWOXBRAINZ_SESSION_BRIEF": "Private local framing text.",
             }
         )
@@ -146,7 +148,9 @@ class CLIReplayIntegrationTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         status = json.loads(result.stdout)
-        self.assertEqual(status["aigate_model"], "configured-model")
+        self.assertEqual(status["aigate_reply_model"], "reply-model")
+        self.assertEqual(status["aigate_coach_model"], "coach-model")
+        self.assertEqual(status["aigate_summary_model"], "summary-model")
         self.assertFalse(status["aigate_token_configured"])
         self.assertTrue(status["session_brief_configured"])
         self.assertNotIn("Private local framing text.", result.stdout)

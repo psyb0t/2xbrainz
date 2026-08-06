@@ -16,15 +16,8 @@ class MakefileIntegrationTests(unittest.TestCase):
         self.assertIn("live --web-port 7860", result.stdout)
         self.assertNotIn("--output", result.stdout)
 
-    def test_run_web_is_a_loopback_compatibility_alias(self) -> None:
-        result = _dry_run("run-web", "WEB_PORT=9000")
-
-        self.assertIn("live --web-port 9000", result.stdout)
-        self.assertNotIn("--output", result.stdout)
-        self.assertIn("run requires LIVE_NETWORK=host", result.stdout)
-
     def test_default_host_network_does_not_require_host_python(self) -> None:
-        for target in ("run", "run-web", "benchmark", "test-real", "live-fixture"):
+        for target in ("run", "benchmark", "test-real", "live-fixture"):
             with self.subTest(target=target):
                 result = _dry_run(target)
                 self.assertNotIn("python3 -m two_x_brainz.docker_hosts", result.stdout)
@@ -36,7 +29,7 @@ class MakefileIntegrationTests(unittest.TestCase):
                 self.assertIn("python3 -m two_x_brainz.docker_hosts", result.stdout)
 
     def test_named_network_web_mode_is_rejected_before_docker_run(self) -> None:
-        result = _dry_run("run-web", "LIVE_NETWORK=app-network")
+        result = _dry_run("run", "LIVE_NETWORK=app-network")
         guard_position = result.stdout.index("run requires LIVE_NETWORK=host")
         run_position = result.stdout.index("docker run", guard_position)
         self.assertLess(guard_position, run_position)

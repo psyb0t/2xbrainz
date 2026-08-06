@@ -401,9 +401,7 @@ class AIGateClient:
     def require_model(self) -> None:
         """Fail before work starts when text generation has no configured model."""
         if self.model is None:
-            raise ConfigurationError(
-                "TWOXBRAINZ_AIGATE_MODEL is required for text generation"
-            )
+            raise ConfigurationError("an AIGate model is required for text generation")
 
     async def verify_configured_model(self) -> None:
         """Reject a configured model that the current AIGate does not expose."""

@@ -5,12 +5,8 @@ audio capture,
 live ASR, turn state, and text drafting as replaceable boundaries rather than
 creating a distributed control plane.
 
-The current MVP launch profile is Linux PipeWire with CPU-native ASR and
-ephemeral in-memory session state. See
-[ADR-0001](decisions/0001-mvp-launch-profile.md) for the platform, resource,
-and provider boundary, and
-[ADR-0002](decisions/0002-persistent-reconstruction-log.md) for bounded local
-event-log retention.
+The current launch profile is Linux PipeWire with CPU-native ASR, ephemeral
+in-memory session state, and bounded local event-log retention.
 
 ## Contents
 
@@ -92,8 +88,8 @@ explicit real fixture leaves an ordered, redacted JSONL reconstruction trace und
 record plus structured runtime diagnostics and terminal assertion outcome for
 its synthetic session. This makes prompt/provider failures distinct from
 capture/ASR timing failures while keeping both scenarios fully reproducible
-without host audio hardware. The scenario also exercises the native-ASR
-compatibility path: when a backend finalizes only after `end`, the runtime keeps
+without host audio hardware. The scenario also exercises backend finalization
+after `end`: the runtime keeps
 PipeWire capture open while a local Silero model independently bounds each
 Talkies segment. Speech start requires consecutive positive model windows;
 speech end uses a lower probability threshold and sustained silence, providing

@@ -125,7 +125,7 @@ async def run_live(
         await terminal.open()
         inventory_client = AIGateClient(
             base_url=settings.aigate_url,
-            model=settings.aigate_model,
+            model=None,
             token=settings.aigate_token,
         )
         models = await inventory_client.list_models()
@@ -227,7 +227,7 @@ async def run_live(
                 state=controller.state,
                 action=_SESSION_STARTED_ACTION,
                 changed=True,
-                aigate_model=selection.draft.model,
+                reply_model=selection.draft.model,
             )
             async with asyncio.TaskGroup() as group:
                 group.create_task(
@@ -283,14 +283,12 @@ def _initial_provider_selection(
     ):
         return saved_selection
     configured_models = (
-        settings.aigate_reply_model or settings.aigate_model,
-        settings.aigate_coach_model or settings.aigate_model,
-        settings.aigate_summary_model or settings.aigate_model,
+        settings.aigate_reply_model,
+        settings.aigate_coach_model,
+        settings.aigate_summary_model,
     )
     if any(model is None for model in configured_models):
-        raise ConfigurationError(
-            "configure all three AIGate flow models or TWOXBRAINZ_AIGATE_MODEL"
-        )
+        raise ConfigurationError("configure all three AIGate flow models")
     reply_model, coach_model, summary_model = configured_models
     assert reply_model is not None
     assert coach_model is not None
@@ -302,16 +300,15 @@ def _initial_provider_selection(
     return ProviderSelection(
         draft=ProviderAssignment(
             reply_model,
-            settings.aigate_reply_reasoning_effort or settings.aigate_reasoning_effort,
+            settings.aigate_reply_reasoning_effort,
         ),
         commentary=ProviderAssignment(
             coach_model,
-            settings.aigate_coach_reasoning_effort or settings.aigate_reasoning_effort,
+            settings.aigate_coach_reasoning_effort,
         ),
         summary=ProviderAssignment(
             summary_model,
-            settings.aigate_summary_reasoning_effort
-            or settings.aigate_reasoning_effort,
+            settings.aigate_summary_reasoning_effort,
         ),
     )
 
@@ -577,7 +574,7 @@ def _write_session_event(
     state: SessionState,
     action: str,
     changed: bool,
-    aigate_model: str | None = None,
+    reply_model: str | None = None,
 ) -> None:
     record: dict[str, object] = {
         "schema_version": JSON_RECORD_SCHEMA_VERSION,
@@ -586,8 +583,8 @@ def _write_session_event(
         "action": action,
         "changed": changed,
     }
-    if aigate_model is not None:
-        record["aigate_model"] = aigate_model
+    if reply_model is not None:
+        record["reply_model"] = reply_model
     _emit_event(record)
 
 

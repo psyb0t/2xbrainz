@@ -35,29 +35,6 @@ class ProviderSelectionStoreTests(unittest.TestCase):
             self.assertEqual(store.load(), selection)
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
 
-    def test_legacy_single_model_config_expands_to_every_flow(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            path = Path(temporary_directory) / "provider.json"
-            path.write_text(
-                json.dumps(
-                    {
-                        "schema_version": 1,
-                        "model": "legacy-model",
-                        "reasoning_effort": "medium",
-                    }
-                ),
-                encoding="utf-8",
-            )
-
-            selection = ProviderSelectionStore(path).load()
-
-        self.assertIsNotNone(selection)
-        assert selection is not None
-        self.assertEqual(
-            [selection.assignment(flow).model for flow in ProviderFlow],
-            ["legacy-model", "legacy-model", "legacy-model"],
-        )
-
     def test_malformed_extra_and_symlinked_configs_are_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

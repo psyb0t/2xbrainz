@@ -7,8 +7,8 @@ and relative log paths before it opens any network connection.
 Use [`.env.example`](../.env.example) as the field reference. Keep the actual
 `.env` file outside version control and provide it only to explicit real
 targets such as `make run`, `make benchmark`, `make test-real`, or a live
-fixture. `TWOXBRAINZ_AIGATE_MODEL` is additionally required by the optional
-`make benchmark-with-draft` target.
+fixture. `TWOXBRAINZ_AIGATE_REPLY_MODEL` is additionally required by the
+optional `make benchmark-with-draft` target.
 
 ## Contents
 
@@ -37,11 +37,9 @@ captured stream begins; no captured audio is used for the warm-up.
 |---|---:|---|
 | `TWOXBRAINZ_TALKIES_MODEL` | yes | One Talkies streaming model slug shared by both streams. |
 | `TWOXBRAINZ_AIGATE_URL` | yes | AIGate API root using `http` or `https` and ending in `/v1`. 2xbrainz derives the Talkies WebSocket proxy route from it. |
-| `TWOXBRAINZ_AIGATE_MODEL` | conditionally | Legacy first-run fallback for any flow without an explicit model below. A saved browser selection replaces environment defaults on later runs when every saved model remains available. |
 | `TWOXBRAINZ_AIGATE_REPLY_MODEL` | conditionally | First-run Reply model. This is the only flow with research and arithmetic tools, so select a fast model with reliable tool calling. |
 | `TWOXBRAINZ_AIGATE_COACH_MODEL` | conditionally | First-run Private coach model. Tools remain disabled. |
 | `TWOXBRAINZ_AIGATE_SUMMARY_MODEL` | conditionally | First-run Story-so-far model. Tools remain disabled. |
-| `TWOXBRAINZ_AIGATE_REASONING_EFFORT` | no | Legacy first-run reasoning fallback for any flow without a dedicated value below. |
 | `TWOXBRAINZ_AIGATE_REPLY_REASONING_EFFORT` | no | First-run Reply reasoning: `none`, `minimal`, `low`, `medium`, or `high`. |
 | `TWOXBRAINZ_AIGATE_COACH_REASONING_EFFORT` | no | First-run Private coach reasoning, using the same allowed values. |
 | `TWOXBRAINZ_AIGATE_SUMMARY_REASONING_EFFORT` | no | First-run Story-so-far reasoning, using the same allowed values. The browser persists every flow's model/effort pair independently. |
@@ -90,16 +88,14 @@ endpoint, or credential data. Runtime model and reasoning choices are stored in
 the same host directory as `provider-selection.json`, also mode `0600`. That
 exact-schema file contains separate model and reasoning assignments for Reply,
 Private coach, and Story so far. A missing, malformed, symlinked, oversized, or
-partly unavailable saved selection falls back as one unit to the environment
-flow assignments. Each model and reasoning effort has a dedicated first-run
-variable and falls back independently to the corresponding legacy shared value.
-Version 1 single-model files migrate by assigning the saved pair to all three
-flows.
+partly unavailable saved selection falls back as one unit to the three explicit
+environment flow assignments. Each model and reasoning effort has its own
+first-run variable. Only the current schema-v2 file shape is accepted.
 
 ## Web console and persistent log
 
 `make run` serves the compiled Svelte console through FastAPI/Uvicorn at
-`127.0.0.1` only; `make run-web` is a compatibility alias. Its same-origin
+`127.0.0.1` only. Its same-origin
 `/ws` connection carries bounded snapshots and strict start, pause,
 audio-metering, audio-redetection, audio-selection, model, and reasoning-effort
 commands. The app opens idle and does not start either PipeWire capture until
@@ -184,8 +180,8 @@ gateway on the port it already publishes and resolves tailnet names exactly as
 the host shell does. Set `LIVE_NETWORK=<name>` for benchmark or fixture
 targets to join a specific Docker network, and replace `localhost` with the
 gateway's service name on that network. This optional mode uses a host-side
-`python3` helper from the repository to validate a hostname mapping. `make
-run-web` is loopback-only and therefore requires `LIVE_NETWORK=host`.
+`python3` helper from the repository to validate a hostname mapping. Live web
+capture through `make run` requires `LIVE_NETWORK=host`.
 
 When `TWOXBRAINZ_WEB_RESEARCH_ENABLED=true`, the reply path exposes only two
 application-owned tools to the model: `research_web` and `execute_code`. The app
@@ -311,7 +307,7 @@ only after the required preceding provider result completes, so the production
 coordinator must preserve the whole story, supersede the first draft after the
 local mitigation, and create a final current draft and summary. It uses the
 same default PIBOX GLM model and accepts the same `FIXTURE_AIGATE_MODEL`
-override. It is a compatibility gate: a backend must produce a terminal final
+override. It is a contract check: a backend must produce a terminal final
 when the runtime closes a bounded utterance segment; otherwise the retained
 trace records the failure instead of claiming a completed interview.
 

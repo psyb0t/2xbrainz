@@ -126,7 +126,7 @@ class CLIBenchmarkTests(unittest.TestCase):
             verbose_segment_count=1,
             verbose_word_count=1,
         )
-        settings = _settings(aigate_model="draft-model")
+        settings = _settings(reply_model="draft-model")
         with (
             patch.object(
                 sys,
@@ -217,7 +217,7 @@ class CLIBenchmarkTests(unittest.TestCase):
         )
         self.assertNotIn("reference", output.getvalue())
 
-    def test_benchmark_with_draft_requires_an_aigate_model(self) -> None:
+    def test_benchmark_with_draft_requires_a_reply_model(self) -> None:
         settings = _settings()
         stderr = io.StringIO()
         with (
@@ -246,7 +246,7 @@ class CLIBenchmarkTests(unittest.TestCase):
             exit_code = main()
 
         self.assertEqual(exit_code, 1)
-        self.assertIn("TWOXBRAINZ_AIGATE_MODEL", stderr.getvalue())
+        self.assertIn("AIGate model", stderr.getvalue())
         benchmark_mock.assert_not_awaited()
 
 
@@ -323,13 +323,13 @@ class CLIErrorTests(unittest.TestCase):
         )
 
 
-def _settings(aigate_model: str | None = None) -> Settings:
+def _settings(reply_model: str | None = None) -> Settings:
     return Settings(
         talkies_ws_url="ws://talkies:8000/v1/audio/transcriptions/stream",
         talkies_model="fixture-model",
         talkies_token=None,
         aigate_url="http://aigate:4000/v1",
-        aigate_model=aigate_model,
+        aigate_reply_model=reply_model,
         aigate_token=None,
         log_level="INFO",
         log_file=Path("/tmp/2xbrainz-test.log"),

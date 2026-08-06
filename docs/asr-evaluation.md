@@ -27,8 +27,7 @@ streams, and with the configured drafting path active. Record capture-to-
 partial, endpoint, and final latencies as well as sustained CPU and memory use.
 
 For the full design and the distinction between transport verification and a
-model-quality decision, see [the architecture overview](architecture.md) and
-[the launch profile](decisions/0001-mvp-launch-profile.md).
+model-quality decision, see [the architecture overview](architecture.md).
 
 ## Contract command
 
@@ -60,7 +59,7 @@ run `make benchmark-candidates LIVE_NETWORK=<network>`. This is a transport and
 resource measurement loop, not an automatic model-selection decision.
 
 To add the configured drafting path to the same concurrent check, set
-`TWOXBRAINZ_AIGATE_MODEL` and run:
+`TWOXBRAINZ_AIGATE_REPLY_MODEL` and run:
 
 ```bash
 make benchmark-with-draft LIVE_NETWORK=<network>

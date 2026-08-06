@@ -247,8 +247,8 @@ async def _run_with_trace(
     use_real_aigate = _real_aigate_enabled()
     if use_real_aigate and settings.aigate_token is None:
         raise FixtureError("real AIGate fixture requires TWOXBRAINZ_AIGATE_TOKEN")
-    if use_real_aigate and settings.aigate_model is None:
-        raise FixtureError("real AIGate fixture requires TWOXBRAINZ_AIGATE_MODEL")
+    if use_real_aigate and settings.aigate_reply_model is None:
+        raise FixtureError("real AIGate fixture requires TWOXBRAINZ_AIGATE_REPLY_MODEL")
     with tempfile.TemporaryDirectory(
         prefix="2xbrainz-live-fixture-", dir=work_directory
     ) as name:
@@ -262,7 +262,9 @@ async def _run_with_trace(
             scenario=scenario,
             real_aigate=use_real_aigate,
             talkies_model=settings.talkies_model,
-            aigate_model=settings.aigate_model if use_real_aigate else _AIGATE_MODEL,
+            reply_model=(
+                settings.aigate_reply_model if use_real_aigate else _AIGATE_MODEL
+            ),
         )
         user_texts, remote_texts = _scenario_texts(scenario)
         _synthesize_wav(settings, user_texts[0], user_wav, SpeakerRole.USER, trace)
@@ -312,10 +314,10 @@ async def _run_with_trace(
         )
         if use_real_aigate:
             assert settings.aigate_token is not None
-            assert settings.aigate_model is not None
+            assert settings.aigate_reply_model is not None
             records = await _run_live(
                 aigate_url=settings.aigate_url,
-                aigate_model=settings.aigate_model,
+                reply_model=settings.aigate_reply_model,
                 aigate_token=settings.aigate_token,
                 command=command,
                 user_wav=user_wav,
@@ -335,7 +337,7 @@ async def _run_with_trace(
             with _fixture_aigate() as aigate_url:
                 records = await _run_live(
                     aigate_url=aigate_url,
-                    aigate_model=_AIGATE_MODEL,
+                    reply_model=_AIGATE_MODEL,
                     aigate_token=talkies_token,
                     command=command,
                     user_wav=user_wav,
@@ -539,7 +541,7 @@ def _write_fixture_pw_record(directory: Path) -> Path:
 async def _run_live(
     *,
     aigate_url: str,
-    aigate_model: str,
+    reply_model: str,
     aigate_token: str,
     command: Path,
     user_wav: Path,
@@ -558,7 +560,9 @@ async def _run_live(
         {
             "PATH": f"{command.parent}:{environment['PATH']}",
             "TWOXBRAINZ_AIGATE_URL": aigate_url,
-            "TWOXBRAINZ_AIGATE_MODEL": aigate_model,
+            "TWOXBRAINZ_AIGATE_REPLY_MODEL": reply_model,
+            "TWOXBRAINZ_AIGATE_COACH_MODEL": reply_model,
+            "TWOXBRAINZ_AIGATE_SUMMARY_MODEL": reply_model,
             "TWOXBRAINZ_AIGATE_TOKEN": aigate_token,
             _USER_WAV_ENV: str(user_wav),
             _REMOTE_WAV_ENV: str(remote_wav),

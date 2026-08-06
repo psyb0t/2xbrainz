@@ -41,7 +41,7 @@ class AIGateClientTests(unittest.TestCase):
             token=None,
         )
 
-        with self.assertRaisesRegex(ConfigurationError, "AIGATE_MODEL"):
+        with self.assertRaisesRegex(ConfigurationError, "AIGate model"):
             client.require_model()
 
     def test_preflight_accepts_configured_model_and_sends_bearer_auth(self) -> None:

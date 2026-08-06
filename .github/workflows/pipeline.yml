@@ -31,7 +31,7 @@ jobs:
     uses: psyb0t/reusable-github-workflows/.github/workflows/docker-image-workflow.yml@master
     with:
       repository_name: psyb0t/2xbrainz
-      # ADR-0001 supports x86_64 Linux only for the MVP.
+      # Live PipeWire capture currently supports x86_64 Linux.
       target_platforms: "linux/amd64"
       # The reusable workflow scans after publishing, so release preparation
       # also runs this gate locally before the release script is generated.

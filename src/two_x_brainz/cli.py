@@ -162,7 +162,7 @@ async def _run(arguments: argparse.Namespace, settings: Settings) -> int:
         if arguments.with_draft:
             draft_provider = AIGateClient(
                 base_url=settings.aigate_url,
-                model=settings.aigate_model,
+                model=settings.aigate_reply_model,
                 token=settings.aigate_token,
                 web_research_enabled=settings.web_research_enabled,
                 session_brief=settings.session_brief,
@@ -311,7 +311,9 @@ def _write_status(settings: Settings) -> None:
                 "talkies_model": settings.talkies_model,
                 "talkies_token_configured": settings.talkies_token is not None,
                 "aigate_url": settings.aigate_url,
-                "aigate_model": settings.aigate_model,
+                "aigate_reply_model": settings.aigate_reply_model,
+                "aigate_coach_model": settings.aigate_coach_model,
+                "aigate_summary_model": settings.aigate_summary_model,
                 "aigate_token_configured": settings.aigate_token is not None,
                 "web_research_enabled": settings.web_research_enabled,
                 "session_brief_configured": settings.session_brief is not None,

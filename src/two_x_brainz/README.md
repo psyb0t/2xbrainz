@@ -58,7 +58,7 @@ continuous ASR to Talkies.
   summary-to-reply context handoff using fixed synthetic text.
 - `provider_selection.py` — no-follow, bounded, exact-schema persistence for
   separate Reply, Coach, and Story AIGate model/reasoning assignments beside the
-  audio-selection file, including migration from the legacy single assignment.
+  audio-selection file.
 - `fixture_trace.py` — append-only, redacted JSONL evidence for explicit real
   fixtures; it records synthetic fixture inputs, CLI output, structured runtime
   diagnostics, and terminal outcomes without tokens or PCM data.

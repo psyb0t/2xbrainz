@@ -65,7 +65,7 @@ class ReadyBarrierTests(unittest.TestCase):
                     talkies_model="fixture-model",
                     talkies_token="test-token",
                     aigate_url="http://aigate.example/v1",
-                    aigate_model=None,
+                    aigate_reply_model=None,
                     aigate_token="test-token",
                     log_level="INFO",
                     log_file=directory_path / "test.log",

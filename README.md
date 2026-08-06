@@ -163,7 +163,6 @@ help.
 
 `make run` builds the production image and serves the Svelte operator console at
 `http://127.0.0.1:7860` (override with `WEB_PORT=9000 make run`).
-`make run-web` remains only as a compatibility alias.
 
 The app opens **idle**. It does not open either PipeWire capture process or send
 audio to Talkies until you press **Start listening**. **Stop listening** pauses
@@ -280,10 +279,7 @@ PipeWire system ─────┘     (same ASR model)    └─ local web cons
   bidirectional channel. The parallel reconstruction log carries
   schema-versioned records with opaque turn/generation IDs.
 
-More detail in [docs/architecture.md](docs/architecture.md). The MVP platform
-boundary is recorded in [ADR-0001](docs/decisions/0001-mvp-launch-profile.md);
-the bounded reconstruction-log retention decision is in
-[ADR-0002](docs/decisions/0002-persistent-reconstruction-log.md).
+More detail in [docs/architecture.md](docs/architecture.md).
 
 ## Data handling
 

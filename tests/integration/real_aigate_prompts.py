@@ -345,11 +345,16 @@ def _trace_directory() -> Path:
 
 
 def _fixture_models(settings: Settings) -> tuple[str, str, str]:
-    fallback = settings.aigate_model or ""
     models = (
-        os.environ.get(_DRAFT_MODEL_ENV, fallback).strip(),
-        os.environ.get(_COMMENTARY_MODEL_ENV, fallback).strip(),
-        os.environ.get(_SUMMARY_MODEL_ENV, fallback).strip(),
+        os.environ.get(_DRAFT_MODEL_ENV, settings.aigate_reply_model or "").strip(),
+        os.environ.get(
+            _COMMENTARY_MODEL_ENV,
+            settings.aigate_coach_model or "",
+        ).strip(),
+        os.environ.get(
+            _SUMMARY_MODEL_ENV,
+            settings.aigate_summary_model or "",
+        ).strip(),
     )
     if any(not model for model in models):
         raise PromptFixtureError("three fixture AIGate models are required")

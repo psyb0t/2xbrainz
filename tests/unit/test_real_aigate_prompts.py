@@ -37,13 +37,15 @@ def _load_prompt_module() -> Any:
 _PROMPTS = _load_prompt_module()
 
 
-def _settings(aigate_model: str | None) -> Settings:
+def _settings(flow_model: str | None) -> Settings:
     return Settings(
         talkies_ws_url="ws://aigate.test/talkies/v1/audio/transcriptions/stream",
         talkies_model="test-asr-model",
         talkies_token=None,
         aigate_url="https://aigate.test/v1",
-        aigate_model=aigate_model,
+        aigate_reply_model=flow_model,
+        aigate_coach_model=flow_model,
+        aigate_summary_model=flow_model,
         aigate_token=None,
         log_level="INFO",
         log_file=Path("/tmp/2xbrainz-real-prompt-test.log"),

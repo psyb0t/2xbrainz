@@ -19,8 +19,6 @@ from two_x_brainz.constants import (
     DEFAULT_WEB_RESEARCH_ENABLED,
     ENV_AIGATE_COACH_MODEL,
     ENV_AIGATE_COACH_REASONING_EFFORT,
-    ENV_AIGATE_MODEL,
-    ENV_AIGATE_REASONING_EFFORT,
     ENV_AIGATE_REPLY_MODEL,
     ENV_AIGATE_REPLY_REASONING_EFFORT,
     ENV_AIGATE_SUMMARY_MODEL,
@@ -60,20 +58,18 @@ class Settings:
     # tokens from it closes that path at the source.
     talkies_token: str | None = field(repr=False)
     aigate_url: str
-    aigate_model: str | None
     aigate_token: str | None = field(repr=False)
     log_level: str
     log_file: Path
     session_brief: str | None = field(default=None, repr=False)
     audio_config_file: Path = Path(DEFAULT_AUDIO_CONFIG_FILE)
     web_research_enabled: bool = DEFAULT_WEB_RESEARCH_ENABLED
-    aigate_reasoning_effort: str = DEFAULT_AIGATE_REASONING_EFFORT
     aigate_reply_model: str | None = None
     aigate_coach_model: str | None = None
     aigate_summary_model: str | None = None
-    aigate_reply_reasoning_effort: str | None = None
-    aigate_coach_reasoning_effort: str | None = None
-    aigate_summary_reasoning_effort: str | None = None
+    aigate_reply_reasoning_effort: str = DEFAULT_AIGATE_REASONING_EFFORT
+    aigate_coach_reasoning_effort: str = DEFAULT_AIGATE_REASONING_EFFORT
+    aigate_summary_reasoning_effort: str = DEFAULT_AIGATE_REASONING_EFFORT
 
     @classmethod
     def from_environment(cls) -> Settings:
@@ -81,22 +77,16 @@ class Settings:
         aigate_url = _read_aigate_url()
         talkies_ws_url = _talkies_stream_url(aigate_url)
         talkies_model = _read_required_text(ENV_TALKIES_MODEL, DEFAULT_TALKIES_MODEL)
-        aigate_model = _read_optional_text(ENV_AIGATE_MODEL)
         aigate_reply_model = _read_optional_text(ENV_AIGATE_REPLY_MODEL)
         aigate_coach_model = _read_optional_text(ENV_AIGATE_COACH_MODEL)
         aigate_summary_model = _read_optional_text(ENV_AIGATE_SUMMARY_MODEL)
-        aigate_reasoning_effort = _read_required_text(
-            ENV_AIGATE_REASONING_EFFORT,
-            DEFAULT_AIGATE_REASONING_EFFORT,
-        ).lower()
-        _validate_reasoning_effort(ENV_AIGATE_REASONING_EFFORT, aigate_reasoning_effort)
-        aigate_reply_reasoning_effort = _read_optional_reasoning_effort(
+        aigate_reply_reasoning_effort = _read_reasoning_effort(
             ENV_AIGATE_REPLY_REASONING_EFFORT
         )
-        aigate_coach_reasoning_effort = _read_optional_reasoning_effort(
+        aigate_coach_reasoning_effort = _read_reasoning_effort(
             ENV_AIGATE_COACH_REASONING_EFFORT
         )
-        aigate_summary_reasoning_effort = _read_optional_reasoning_effort(
+        aigate_summary_reasoning_effort = _read_reasoning_effort(
             ENV_AIGATE_SUMMARY_REASONING_EFFORT
         )
         aigate_token = _read_optional_text(ENV_AIGATE_TOKEN)
@@ -123,14 +113,12 @@ class Settings:
             talkies_model=talkies_model,
             talkies_token=aigate_token,
             aigate_url=aigate_url,
-            aigate_model=aigate_model,
             aigate_reply_model=aigate_reply_model,
             aigate_coach_model=aigate_coach_model,
             aigate_summary_model=aigate_summary_model,
             aigate_reply_reasoning_effort=aigate_reply_reasoning_effort,
             aigate_coach_reasoning_effort=aigate_coach_reasoning_effort,
             aigate_summary_reasoning_effort=aigate_summary_reasoning_effort,
-            aigate_reasoning_effort=aigate_reasoning_effort,
             aigate_token=aigate_token,
             session_brief=session_brief,
             log_level=log_level,
@@ -187,11 +175,8 @@ def _read_optional_text(name: str) -> str | None:
     return value or None
 
 
-def _read_optional_reasoning_effort(name: str) -> str | None:
-    value = _read_optional_text(name)
-    if value is None:
-        return None
-    normalized = value.lower()
+def _read_reasoning_effort(name: str) -> str:
+    normalized = _read_required_text(name, DEFAULT_AIGATE_REASONING_EFFORT).lower()
     _validate_reasoning_effort(name, normalized)
     return normalized
 

@@ -481,7 +481,7 @@ def _selection(mic_node: str, system_node: str) -> AudioSelection:
 
 
 def _settings(
-    aigate_model: str | None,
+    flow_model: str | None,
     *,
     web_research_enabled: bool = False,
 ) -> Settings:
@@ -490,11 +490,15 @@ def _settings(
         talkies_model="test-asr-model",
         talkies_token=None,
         aigate_url="https://aigate.test/v1",
-        aigate_model=aigate_model,
+        aigate_reply_model=flow_model,
+        aigate_coach_model=flow_model,
+        aigate_summary_model=flow_model,
         aigate_token=None,
         log_level="INFO",
         log_file=Path("/tmp/2xbrainz-test.log"),
-        aigate_reasoning_effort="medium",
+        aigate_reply_reasoning_effort="medium",
+        aigate_coach_reasoning_effort="medium",
+        aigate_summary_reasoning_effort="medium",
         web_research_enabled=web_research_enabled,
     )
 
