@@ -99,6 +99,28 @@ class BlockingInsightProvider(ImmediateSessionProvider):
         return await super().insight(request)
 
 
+class ConcurrentSessionProvider(ImmediateSessionProvider):
+    def __init__(self) -> None:
+        self.started: set[str] = set()
+        self.all_started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def draft(self, request: DraftRequest) -> DraftResult:
+        self._mark_started("draft")
+        await self.release.wait()
+        return await super().draft(request)
+
+    async def insight(self, request: InsightRequest) -> InsightResult:
+        self._mark_started(request.kind.value)
+        await self.release.wait()
+        return await super().insight(request)
+
+    def _mark_started(self, kind: str) -> None:
+        self.started.add(kind)
+        if self.started == {"draft", "commentary", "summary"}:
+            self.all_started.set()
+
+
 class CancellationIgnoringSummaryProvider(ImmediateSessionProvider):
     def __init__(self) -> None:
         self.summary_started = asyncio.Event()
@@ -146,6 +168,20 @@ class FirstDeadlineThenImmediateProvider(ImmediateProvider):
         return await super().draft(request)
 
 
+class FirstCancelledThenRecordingProvider(ImmediateProvider):
+    def __init__(self) -> None:
+        self.requests: list[DraftRequest] = []
+        self.first_started = asyncio.Event()
+
+    async def draft(self, request: DraftRequest) -> DraftResult:
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            self.first_started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable after cancellation")
+        return await super().draft(request)
+
+
 class FailingProvider(DraftProvider):
     async def draft(self, request: DraftRequest) -> DraftResult:
         raise ProtocolError("invalid provider response")
@@ -154,6 +190,25 @@ class FailingProvider(DraftProvider):
 class FailingInsightProvider(ImmediateSessionProvider):
     async def insight(self, request: InsightRequest) -> InsightResult:
         raise ProtocolError("invalid provider response")
+
+
+class RecordingInsightProvider(InsightProvider):
+    def __init__(self, expected_kind: InsightKind) -> None:
+        self.expected_kind = expected_kind
+        self.requests: list[InsightRequest] = []
+
+    async def insight(self, request: InsightRequest) -> InsightResult:
+        self.requests.append(request)
+        if request.kind is not self.expected_kind:
+            raise AssertionError("insight reached the wrong provider")
+        return InsightResult(
+            generation_id=request.generation_id,
+            kind=request.kind,
+            trigger_turn_id=request.trigger_turn_id,
+            context_revision=request.context_revision,
+            status=GenerationStatus.COMPLETED,
+            text=request.kind.value,
+        )
 
 
 class ConversationCoordinatorTests(unittest.TestCase):
@@ -165,6 +220,9 @@ class ConversationCoordinatorTests(unittest.TestCase):
 
     def test_new_remote_speech_supersedes_an_active_draft(self) -> None:
         asyncio.run(self._assert_new_remote_speech_supersedes_draft())
+
+    def test_replacement_draft_contains_all_transcript_after_cancellation(self) -> None:
+        asyncio.run(self._assert_replacement_draft_keeps_transcript())
 
     def test_remote_endpoint_supersedes_an_active_draft(self) -> None:
         asyncio.run(self._assert_remote_endpoint_supersedes_draft())
@@ -223,6 +281,47 @@ class ConversationCoordinatorTests(unittest.TestCase):
         self.assertEqual(update.turn.state, TurnState.SPEAKING)
         self.assertIsNone(await coordinator.wait_for_idle())
 
+    async def _assert_replacement_draft_keeps_transcript(self) -> None:
+        provider = FirstCancelledThenRecordingProvider()
+        coordinator = ConversationCoordinator(provider)
+        await coordinator.ingest(
+            _event_with_text(
+                SpeakerRole.REMOTE,
+                TranscriptEventType.FINAL,
+                revision=1,
+                stream_id="remote-segment-1",
+                text="First complete statement.",
+            )
+        )
+        await provider.first_started.wait()
+
+        await coordinator.ingest(
+            _event_with_text(
+                SpeakerRole.REMOTE,
+                TranscriptEventType.PARTIAL,
+                revision=1,
+                stream_id="remote-segment-2",
+                text="Second statement",
+            )
+        )
+        await coordinator.ingest(
+            _event_with_text(
+                SpeakerRole.REMOTE,
+                TranscriptEventType.FINAL,
+                revision=2,
+                stream_id="remote-segment-2",
+                text="Second statement completed.",
+            )
+        )
+        await coordinator.wait_for_idle()
+
+        self.assertEqual(len(provider.requests), 2)
+        replacement_lines = provider.requests[1].transcript.lines
+        self.assertEqual(
+            [line.text for line in replacement_lines],
+            ["First complete statement.", "Second statement completed."],
+        )
+
     async def _assert_remote_endpoint_supersedes_draft(self) -> None:
         provider = BlockingProvider()
         coordinator = ConversationCoordinator(provider)
@@ -269,6 +368,12 @@ class ConversationCoordinatorTests(unittest.TestCase):
 
     def test_user_turn_emits_timeline_commentary_and_summary(self) -> None:
         asyncio.run(self._assert_user_turn_background_outputs())
+
+    def test_remote_final_runs_reply_coach_and_story_in_parallel(self) -> None:
+        asyncio.run(self._assert_remote_final_runs_provider_flows_in_parallel())
+
+    def test_each_flow_uses_its_assigned_provider(self) -> None:
+        asyncio.run(self._assert_each_flow_uses_its_assigned_provider())
 
     def test_remote_speech_preempts_background_work(self) -> None:
         asyncio.run(self._assert_remote_speech_preempts_background_work())
@@ -388,6 +493,37 @@ class ConversationCoordinatorTests(unittest.TestCase):
             coordinator.transcript_snapshot().running_summary,
             InsightKind.SUMMARY.value,
         )
+
+    async def _assert_remote_final_runs_provider_flows_in_parallel(self) -> None:
+        provider = ConcurrentSessionProvider()
+        coordinator = ConversationCoordinator(provider, provider)
+        await coordinator.ingest(
+            _event(SpeakerRole.REMOTE, TranscriptEventType.FINAL, 1)
+        )
+
+        await asyncio.wait_for(provider.all_started.wait(), timeout=0.5)
+        self.assertEqual(provider.started, {"draft", "commentary", "summary"})
+        provider.release.set()
+        await coordinator.wait_for_idle()
+
+    async def _assert_each_flow_uses_its_assigned_provider(self) -> None:
+        draft_provider = RecordingProvider()
+        commentary_provider = RecordingInsightProvider(InsightKind.COMMENTARY)
+        summary_provider = RecordingInsightProvider(InsightKind.SUMMARY)
+        coordinator = ConversationCoordinator(
+            draft_provider=draft_provider,
+            commentary_provider=commentary_provider,
+            summary_provider=summary_provider,
+        )
+
+        await coordinator.ingest(
+            _event(SpeakerRole.REMOTE, TranscriptEventType.FINAL, 1)
+        )
+        await coordinator.wait_for_idle()
+
+        self.assertEqual(len(draft_provider.requests), 1)
+        self.assertEqual(len(commentary_provider.requests), 1)
+        self.assertEqual(len(summary_provider.requests), 1)
 
     async def _assert_remote_speech_preempts_background_work(self) -> None:
         provider = BlockingInsightProvider()
@@ -596,6 +732,28 @@ def _event(
         source_event_type=event_type,
         asr_model="nemotron-3.5-asr-0.6b",
         text="synthetic test transcript",
+        is_final=event_type is TranscriptEventType.FINAL,
+        audio_seconds=1.0,
+        words=(),
+    )
+
+
+def _event_with_text(
+    speaker_role: SpeakerRole,
+    event_type: TranscriptEventType,
+    revision: int,
+    stream_id: str,
+    text: str,
+) -> TranscriptEvent:
+    return TranscriptEvent(
+        session_id="session",
+        stream_id=stream_id,
+        utterance_id=f"{stream_id}:{revision}",
+        revision=revision,
+        speaker_role=speaker_role,
+        source_event_type=event_type,
+        asr_model="nemotron-3.5-asr-0.6b",
+        text=text,
         is_final=event_type is TranscriptEventType.FINAL,
         audio_seconds=1.0,
         words=(),

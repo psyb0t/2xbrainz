@@ -7,7 +7,9 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
+from unittest.mock import patch
 
+from two_x_brainz.config import Settings
 from two_x_brainz.contracts import (
     DraftRequest,
     GenerationStatus,
@@ -35,7 +37,75 @@ def _load_prompt_module() -> Any:
 _PROMPTS = _load_prompt_module()
 
 
+def _settings(aigate_model: str | None) -> Settings:
+    return Settings(
+        talkies_ws_url="ws://aigate.test/talkies/v1/audio/transcriptions/stream",
+        talkies_model="test-asr-model",
+        talkies_token=None,
+        aigate_url="https://aigate.test/v1",
+        aigate_model=aigate_model,
+        aigate_token=None,
+        log_level="INFO",
+        log_file=Path("/tmp/2xbrainz-real-prompt-test.log"),
+    )
+
+
 class RealAIGatePromptContractTests(unittest.TestCase):
+    def test_fixture_uses_three_explicit_distinct_models(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "TWOXBRAINZ_FIXTURE_DRAFT_MODEL": "groq-model",
+                "TWOXBRAINZ_FIXTURE_COMMENTARY_MODEL": "claudebox-model",
+                "TWOXBRAINZ_FIXTURE_SUMMARY_MODEL": "pibox-model",
+            },
+            clear=False,
+        ):
+            models = _PROMPTS._fixture_models(_settings("fallback-model"))
+
+        self.assertEqual(
+            models,
+            ("groq-model", "claudebox-model", "pibox-model"),
+        )
+
+    def test_fixture_rejects_duplicate_model_assignments(self) -> None:
+        with (
+            patch.dict(
+                "os.environ",
+                {
+                    "TWOXBRAINZ_FIXTURE_DRAFT_MODEL": "model-a",
+                    "TWOXBRAINZ_FIXTURE_COMMENTARY_MODEL": "model-a",
+                    "TWOXBRAINZ_FIXTURE_SUMMARY_MODEL": "model-b",
+                },
+                clear=False,
+            ),
+            self.assertRaisesRegex(_PROMPTS.PromptFixtureError, "must be distinct"),
+        ):
+            _PROMPTS._fixture_models(_settings("fallback-model"))
+
+    def test_reply_research_requires_completed_research_tool_activity(self) -> None:
+        _PROMPTS._assert_research_activity(
+            [
+                {"phase": "tool_started", "tool": "research_web"},
+                {"phase": "tool_completed", "tool": "research_web"},
+            ]
+        )
+
+        invalid_activities: tuple[list[dict[str, object]], ...] = (
+            [],
+            [{"phase": "tool_started", "tool": "research_web"}],
+            [{"phase": "tool_completed", "tool": "execute_code"}],
+        )
+        for activities in invalid_activities:
+            with (
+                self.subTest(activities=activities),
+                self.assertRaisesRegex(
+                    _PROMPTS.PromptFixtureError,
+                    "did not autonomously complete",
+                ),
+            ):
+                _PROMPTS._assert_research_activity(activities)
+
     def test_accepts_plain_completed_outputs(self) -> None:
         _PROMPTS._assert_completed_text(
             "generation-id",
@@ -148,4 +218,38 @@ class RealAIGatePromptContractTests(unittest.TestCase):
         self.assertEqual(
             records[-1]["error_message"],
             "AIGate content must not use Markdown structure",
+        )
+
+    def test_provider_activity_trace_preserves_stream_order(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            trace = FixtureTrace(Path(temporary_directory), "provider-stream")
+            _PROMPTS._trace_provider_activity(
+                trace,
+                {
+                    "kind": "ignored-wrapper-kind",
+                    "phase": "reasoning_streaming",
+                    "flow_id": "flow-a",
+                    "reasoning": "Synthetic reasoning",
+                },
+            )
+            _PROMPTS._trace_provider_activity(
+                trace,
+                {
+                    "phase": "output_streaming",
+                    "flow_id": "flow-a",
+                    "output": "Synthetic answer",
+                },
+            )
+            trace.close()
+            records = [
+                json.loads(line)
+                for line in trace.path.read_text(encoding="utf-8").splitlines()
+            ]
+
+        self.assertEqual(
+            [record["phase"] for record in records[1:]],
+            ["reasoning_streaming", "output_streaming"],
+        )
+        self.assertTrue(
+            all(record["kind"] == "provider_activity" for record in records[1:])
         )

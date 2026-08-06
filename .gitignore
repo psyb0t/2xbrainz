@@ -35,6 +35,7 @@ htmlcov/
 .venv/
 web/node_modules/
 web/dist/
+.pnpm-store/
 __pycache__/
 *.pyc
 .ruff_cache/

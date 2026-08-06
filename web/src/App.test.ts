@@ -48,11 +48,58 @@ Remote: Verify the release gates.`,
   sessionState: 'running',
   provider: {
     models: ['model-a', 'model-b'],
-    activeModel: 'model-a',
-    reasoningEffort: 'none',
+    assignments: {
+      draft: { model: 'model-a', reasoningEffort: 'none' },
+      commentary: { model: 'model-b', reasoningEffort: 'low' },
+      summary: { model: 'model-a', reasoningEffort: 'medium' }
+    },
     activity: [
-      { phase: 'request_started', output_kind: 'draft', model: 'model-a' },
-      { phase: 'tool_completed', output_kind: 'draft', model: 'model-a', tool: 'search_web' }
+      {
+        phase: 'request_started',
+        flow_id: 'draft-flow',
+        output_kind: 'draft',
+        model: 'model-a',
+        tools_enabled: true
+      },
+      {
+        phase: 'reasoning_streaming',
+        flow_id: 'draft-flow',
+        output_kind: 'draft',
+        model: 'model-a',
+        reasoning: 'Checking the release evidence.'
+      },
+      {
+        phase: 'tool_started',
+        flow_id: 'draft-flow',
+        output_kind: 'draft',
+        model: 'model-a',
+        tool_call_id: 'release-search',
+        tool: 'search_web',
+        tool_input: { query: 'release gates' }
+      },
+      {
+        phase: 'tool_completed',
+        flow_id: 'draft-flow',
+        output_kind: 'draft',
+        model: 'model-a',
+        tool_call_id: 'release-search',
+        tool: 'search_web',
+        tool_result: '{"results":[]}'
+      },
+      {
+        phase: 'reasoning_streaming',
+        flow_id: 'draft-flow',
+        output_kind: 'draft',
+        model: 'model-a',
+        reasoning: 'Turning the evidence into a concise reply.'
+      },
+      {
+        phase: 'request_completed',
+        flow_id: 'draft-flow',
+        output_kind: 'draft',
+        model: 'model-a',
+        output: 'Run the final checks before shipping.'
+      }
     ]
   },
   activeAudio: {
@@ -97,6 +144,7 @@ beforeEach(() => {
   HTMLDialogElement.prototype.close = function close(): void {
     this.removeAttribute('open');
   };
+  Element.prototype.scrollIntoView = vi.fn();
 });
 
 afterEach(() => {
@@ -127,7 +175,36 @@ describe('operator console', () => {
     expect(screen.getByText('Run the final checks before shipping.')).toBeTruthy();
     expect(screen.getByText('The team is preparing a release.')).toBeTruthy();
 
-    expect(screen.getByText('request started · draft')).toBeTruthy();
+    expect(screen.getByText('request started')).toBeTruthy();
+    expect(screen.getByText('tool completed')).toBeTruthy();
+    const replyItems = document.querySelectorAll('.reply-card .stream-item');
+    expect(Array.from(replyItems).map((item) => item.classList[0])).toEqual([
+      'stream-status',
+      'stream-event',
+      'stream-event',
+      'stream-event',
+      'stream-response'
+    ]);
+    expect(
+      Array.from(document.querySelectorAll<HTMLDetailsElement>('.reply-card details')).every(
+        (item) => !item.open
+      )
+    ).toBe(true);
+    const diagnostics = socket.sent.map((value) => JSON.parse(value));
+    expect(diagnostics).toContainEqual({ type: 'client_debug', event: 'websocket_opened' });
+    expect(diagnostics).toContainEqual({
+      type: 'client_debug',
+      event: 'snapshot_received',
+      activity_count: 6
+    });
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({
+        type: 'client_debug',
+        event: 'provider_feed_rendered',
+        output_kind: 'draft',
+        item_count: 5
+      })
+    );
     await fireEvent.click(screen.getByRole('button', { name: 'Stop listening' }));
     await publish(socket, { ...SNAPSHOT, sessionState: 'paused' });
     await fireEvent.click(screen.getByRole('button', { name: 'Start listening' }));
@@ -147,18 +224,32 @@ describe('operator console', () => {
     const socket = await connectedSocket();
     await publish(socket, SNAPSHOT);
 
-    await fireEvent.change(screen.getByRole('combobox', { name: 'Model' }), {
+    await fireEvent.click(screen.getByRole('button', { name: 'Models' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Reply model' }));
+    expect(screen.getByRole('textbox', { name: 'Filter models' })).toBeTruthy();
+    expect(screen.getByText('2 of 2')).toBeTruthy();
+    expect(screen.getByText('Current')).toBeTruthy();
+    await fireEvent.input(screen.getByRole('textbox', { name: 'Filter models' }), {
       target: { value: 'model-b' }
     });
-    await fireEvent.change(screen.getByRole('combobox', { name: 'Reasoning' }), {
+    await fireEvent.click(screen.getByRole('option', { name: 'model-b' }));
+    await fireEvent.change(screen.getByRole('combobox', { name: 'Reply reasoning' }), {
       target: { value: 'high' }
     });
 
     expect(socket.sent.map((value) => JSON.parse(value))).toContainEqual({
       type: 'provider_settings',
+      flow: 'draft',
+      model: 'model-b',
+      reasoning_effort: 'none'
+    });
+    expect(socket.sent.map((value) => JSON.parse(value))).toContainEqual({
+      type: 'provider_settings',
+      flow: 'draft',
       model: 'model-b',
       reasoning_effort: 'high'
     });
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
   });
 
   it('meters every setup candidate and submits the selected pair', async () => {

@@ -23,6 +23,7 @@ from two_x_brainz.talkies import (
     models_url,
     parse_batch_transcription,
     parse_model_inventory,
+    parse_model_max_concurrency,
     parse_talkies_event,
 )
 
@@ -312,6 +313,46 @@ class TalkiesModelInventoryTests(unittest.TestCase):
 
         self.assertEqual(model_ids, frozenset({"fixture-model", "other-model"}))
 
+    def test_selects_configured_model_concurrency_in_any_order(self) -> None:
+        max_concurrency = parse_model_max_concurrency(
+            {
+                "data": [
+                    {"id": "other-model", "max_concurrency": 1},
+                    {"id": "fixture-model", "max_concurrency": 3},
+                ]
+            },
+            "fixture-model",
+        )
+
+        self.assertEqual(max_concurrency, 3)
+
+    def test_rejects_invalid_model_concurrency_advertisements(self) -> None:
+        invalid_values: tuple[object, ...] = (None, True, "2", 0, -1)
+
+        for invalid_value in invalid_values:
+            with (
+                self.subTest(max_concurrency=invalid_value),
+                self.assertRaisesRegex(ProtocolError, "positive integer"),
+            ):
+                parse_model_max_concurrency(
+                    {
+                        "data": [
+                            {
+                                "id": "fixture-model",
+                                "max_concurrency": invalid_value,
+                            }
+                        ]
+                    },
+                    "fixture-model",
+                )
+
+    def test_rejects_missing_configured_model_concurrency(self) -> None:
+        with self.assertRaisesRegex(RemoteServiceError, "not available"):
+            parse_model_max_concurrency(
+                {"data": [{"id": "other-model", "max_concurrency": 2}]},
+                "fixture-model",
+            )
+
     def test_rejects_empty_duplicate_and_malformed_inventory_entries(self) -> None:
         invalid_payloads: tuple[dict[str, object], ...] = (
             {"data": []},
@@ -344,6 +385,23 @@ class TalkiesModelInventoryTests(unittest.TestCase):
             self.assertRaisesRegex(RemoteServiceError, "not available"),
         ):
             asyncio.run(_file_client().verify_configured_model())
+
+    def test_reads_configured_model_concurrency_with_bearer_auth(self) -> None:
+        response = _HTTPResponse(
+            b'{"data":[{"id":"fixture-model","max_concurrency":2}]}'
+        )
+        with patch(
+            "two_x_brainz.talkies.urlopen", return_value=response
+        ) as urlopen_mock:
+            max_concurrency = asyncio.run(
+                _file_client(token="test-token").configured_model_max_concurrency()
+            )
+
+        request = urlopen_mock.call_args.args[0]
+        self.assertEqual(max_concurrency, 2)
+        self.assertEqual(request.get_method(), "GET")
+        self.assertEqual(request.full_url, "http://talkies:8000/v1/models")
+        self.assertEqual(request.get_header("Authorization"), "Bearer test-token")
 
 
 class _HTTPResponse:

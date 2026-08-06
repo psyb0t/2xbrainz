@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
 from two_x_brainz.constants import (
+    AIGATE_REASONING_EFFORTS,
     DEFAULT_AIGATE_REASONING_EFFORT,
     DEFAULT_AIGATE_URL,
     DEFAULT_AUDIO_CONFIG_FILE,
@@ -16,8 +17,14 @@ from two_x_brainz.constants import (
     DEFAULT_LOG_LEVEL,
     DEFAULT_TALKIES_MODEL,
     DEFAULT_WEB_RESEARCH_ENABLED,
+    ENV_AIGATE_COACH_MODEL,
+    ENV_AIGATE_COACH_REASONING_EFFORT,
     ENV_AIGATE_MODEL,
     ENV_AIGATE_REASONING_EFFORT,
+    ENV_AIGATE_REPLY_MODEL,
+    ENV_AIGATE_REPLY_REASONING_EFFORT,
+    ENV_AIGATE_SUMMARY_MODEL,
+    ENV_AIGATE_SUMMARY_REASONING_EFFORT,
     ENV_AIGATE_TOKEN,
     ENV_AIGATE_URL,
     ENV_AUDIO_CONFIG_FILE,
@@ -38,7 +45,6 @@ _AIGATE_SCHEMES = frozenset({"http", "https"})
 _AIGATE_API_PATH_SUFFIX = "/v1"
 _TALKIES_GATEWAY_PREFIX = "/talkies"
 _WEBSOCKET_SCHEME_BY_HTTP_SCHEME = {"http": "ws", "https": "wss"}
-_VALID_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +68,12 @@ class Settings:
     audio_config_file: Path = Path(DEFAULT_AUDIO_CONFIG_FILE)
     web_research_enabled: bool = DEFAULT_WEB_RESEARCH_ENABLED
     aigate_reasoning_effort: str = DEFAULT_AIGATE_REASONING_EFFORT
+    aigate_reply_model: str | None = None
+    aigate_coach_model: str | None = None
+    aigate_summary_model: str | None = None
+    aigate_reply_reasoning_effort: str | None = None
+    aigate_coach_reasoning_effort: str | None = None
+    aigate_summary_reasoning_effort: str | None = None
 
     @classmethod
     def from_environment(cls) -> Settings:
@@ -70,15 +82,23 @@ class Settings:
         talkies_ws_url = _talkies_stream_url(aigate_url)
         talkies_model = _read_required_text(ENV_TALKIES_MODEL, DEFAULT_TALKIES_MODEL)
         aigate_model = _read_optional_text(ENV_AIGATE_MODEL)
+        aigate_reply_model = _read_optional_text(ENV_AIGATE_REPLY_MODEL)
+        aigate_coach_model = _read_optional_text(ENV_AIGATE_COACH_MODEL)
+        aigate_summary_model = _read_optional_text(ENV_AIGATE_SUMMARY_MODEL)
         aigate_reasoning_effort = _read_required_text(
             ENV_AIGATE_REASONING_EFFORT,
             DEFAULT_AIGATE_REASONING_EFFORT,
         ).lower()
-        if aigate_reasoning_effort not in _VALID_REASONING_EFFORTS:
-            raise ConfigurationError(
-                f"{ENV_AIGATE_REASONING_EFFORT} must be one of: "
-                + ", ".join(sorted(_VALID_REASONING_EFFORTS))
-            )
+        _validate_reasoning_effort(ENV_AIGATE_REASONING_EFFORT, aigate_reasoning_effort)
+        aigate_reply_reasoning_effort = _read_optional_reasoning_effort(
+            ENV_AIGATE_REPLY_REASONING_EFFORT
+        )
+        aigate_coach_reasoning_effort = _read_optional_reasoning_effort(
+            ENV_AIGATE_COACH_REASONING_EFFORT
+        )
+        aigate_summary_reasoning_effort = _read_optional_reasoning_effort(
+            ENV_AIGATE_SUMMARY_REASONING_EFFORT
+        )
         aigate_token = _read_optional_text(ENV_AIGATE_TOKEN)
         session_brief = _read_optional_bounded_text(
             ENV_SESSION_BRIEF,
@@ -104,6 +124,12 @@ class Settings:
             talkies_token=aigate_token,
             aigate_url=aigate_url,
             aigate_model=aigate_model,
+            aigate_reply_model=aigate_reply_model,
+            aigate_coach_model=aigate_coach_model,
+            aigate_summary_model=aigate_summary_model,
+            aigate_reply_reasoning_effort=aigate_reply_reasoning_effort,
+            aigate_coach_reasoning_effort=aigate_coach_reasoning_effort,
+            aigate_summary_reasoning_effort=aigate_summary_reasoning_effort,
             aigate_reasoning_effort=aigate_reasoning_effort,
             aigate_token=aigate_token,
             session_brief=session_brief,
@@ -159,6 +185,22 @@ def _read_required_text(name: str, default: str) -> str:
 def _read_optional_text(name: str) -> str | None:
     value = os.environ.get(name, "").strip()
     return value or None
+
+
+def _read_optional_reasoning_effort(name: str) -> str | None:
+    value = _read_optional_text(name)
+    if value is None:
+        return None
+    normalized = value.lower()
+    _validate_reasoning_effort(name, normalized)
+    return normalized
+
+
+def _validate_reasoning_effort(name: str, value: str) -> None:
+    if value not in AIGATE_REASONING_EFFORTS:
+        raise ConfigurationError(
+            f"{name} must be one of: " + ", ".join(sorted(AIGATE_REASONING_EFFORTS))
+        )
 
 
 def _read_optional_bounded_text(name: str, maximum_characters: int) -> str | None:

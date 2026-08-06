@@ -25,12 +25,19 @@ from starlette.staticfiles import StaticFiles
 from two_x_brainz.audio_selection import AudioDevice, AudioSelection
 from two_x_brainz.capture import list_pipewire_nodes
 from two_x_brainz.constants import (
+    AIGATE_REASONING_EFFORTS,
     DEFAULT_WEB_CONSOLE_PORT,
+    MAX_AIGATE_MODEL_ID_CHARACTERS,
     MAX_WEB_CONSOLE_PORT,
     MIN_WEB_CONSOLE_PORT,
     WEB_CONSOLE_HOST,
 )
 from two_x_brainz.errors import CaptureError, WebConsoleError
+from two_x_brainz.provider_selection import (
+    ProviderAssignment,
+    ProviderFlow,
+    ProviderSelection,
+)
 from two_x_brainz.terminal import LiveTerminal
 
 _SNAPSHOT_INTERVAL_SECONDS = 0.25
@@ -43,9 +50,9 @@ _STATIC_INDEX_FILENAME = "index.html"
 _USER_ROLE = "user"
 _REMOTE_ROLE = "remote"
 _CONTROL_COMMANDS = frozenset({"pause", "resume"})
-_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high"})
-_MAX_MODEL_ID_CHARACTERS = 200
 _MAX_PROVIDER_ACTIVITY_ENTRIES = 80
+_STREAMING_PROVIDER_PHASES = frozenset({"output_streaming", "reasoning_streaming"})
+_AUDIO_RESCAN_INTERVAL_SECONDS = 3
 _POLICY_VIOLATION_CLOSE_CODE = 1008
 _MESSAGE_TOO_LARGE_CLOSE_CODE = 1009
 _DEFAULT_STATIC_DIRECTORY = Path(__file__).resolve().parents[2] / "web" / "dist"
@@ -97,8 +104,26 @@ class _ProviderSettingsMessage(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     type: Literal["provider_settings"]
-    model: str = Field(min_length=1, max_length=_MAX_MODEL_ID_CHARACTERS)
+    flow: Literal["draft", "commentary", "summary"]
+    model: str = Field(min_length=1, max_length=MAX_AIGATE_MODEL_ID_CHARACTERS)
     reasoning_effort: Literal["none", "minimal", "low", "medium", "high"]
+
+
+class _ClientDebugMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    type: Literal["client_debug"]
+    event: Literal[
+        "websocket_opened",
+        "snapshot_received",
+        "snapshot_rejected",
+        "provider_feed_rendered",
+    ]
+    output_kind: Literal["draft", "commentary", "summary"] | None = None
+    activity_count: int | None = Field(default=None, ge=0, le=10_000)
+    item_count: int | None = Field(default=None, ge=0, le=1_000)
+    text_characters: int | None = Field(default=None, ge=0, le=1_000_000)
+    reason: Literal["invalid_json", "invalid_snapshot"] | None = None
 
 
 _ClientMessage = Annotated[
@@ -106,7 +131,8 @@ _ClientMessage = Annotated[
     | _AudioSelectionMessage
     | _AudioMeteringMessage
     | _AudioRescanMessage
-    | _ProviderSettingsMessage,
+    | _ProviderSettingsMessage
+    | _ClientDebugMessage,
     Field(discriminator="type"),
 ]
 _CLIENT_MESSAGE_ADAPTER: TypeAdapter[_ClientMessage] = TypeAdapter(_ClientMessage)
@@ -138,6 +164,21 @@ class WebAudioMeter:
         }
 
 
+def _provider_selection_payload(
+    selection: ProviderSelection | None,
+) -> dict[str, dict[str, str]]:
+    payload: dict[str, dict[str, str]] = {}
+    for flow in ProviderFlow:
+        assignment = selection.assignment(flow) if selection is not None else None
+        payload[flow.value] = {
+            "model": assignment.model if assignment is not None else "",
+            "reasoningEffort": (
+                assignment.reasoning_effort if assignment is not None else "none"
+            ),
+        }
+    return payload
+
+
 @dataclass(frozen=True, slots=True)
 class WebSnapshot:
     """Sanitized session state sent to browser clients."""
@@ -161,8 +202,7 @@ class WebSnapshot:
     system_monitors: tuple[WebAudioMeter, ...]
     session_state: str = "starting"
     models: tuple[str, ...] = ()
-    active_model: str = ""
-    reasoning_effort: str = "none"
+    provider_selection: ProviderSelection | None = None
     provider_activity: tuple[dict[str, object], ...] = ()
 
     def payload(self) -> dict[str, object]:
@@ -178,8 +218,7 @@ class WebSnapshot:
             "sessionState": self.session_state,
             "provider": {
                 "models": list(self.models),
-                "activeModel": self.active_model,
-                "reasoningEffort": self.reasoning_effort,
+                "assignments": _provider_selection_payload(self.provider_selection),
                 "activity": list(self.provider_activity),
             },
             "activeAudio": {
@@ -237,15 +276,19 @@ class WebConsole:
     _server_task: asyncio.Task[None] | None = field(default=None, init=False)
     _url: str | None = field(default=None, init=False)
     _models: tuple[str, ...] = field(default=(), init=False)
-    _active_model: str = field(default="", init=False)
-    _reasoning_effort: str = field(default="none", init=False)
+    _provider_selection: ProviderSelection | None = field(default=None, init=False)
     _provider_activity: deque[dict[str, object]] = field(
         default_factory=lambda: deque(maxlen=_MAX_PROVIDER_ACTIVITY_ENTRIES),
         init=False,
     )
-    _provider_settings_callback: Callable[[str, str], Awaitable[None]] | None = field(
-        default=None, init=False
-    )
+    _provider_settings_callback: (
+        Callable[[ProviderFlow, str, str], Awaitable[bool]] | None
+    ) = field(default=None, init=False)
+    _audio_rescan_task: asyncio.Task[None] | None = field(default=None, init=False)
+    _audio_rescan_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+    _provider_activity_revision: int = field(default=0, init=False)
+    _connected_clients: int = field(default=0, init=False)
+    _client_connected: asyncio.Event = field(default_factory=asyncio.Event, init=False)
 
     @property
     def interactive(self) -> bool:
@@ -289,6 +332,7 @@ class WebConsole:
 
     async def close(self) -> None:
         """Stop browser clients, capture previews, and the embedded server."""
+        self.stop_audio_metering()
         await self.state.close()
         server = self._server
         task = self._server_task
@@ -351,8 +395,7 @@ class WebConsole:
             ),
             session_state=self.state.session_state,
             models=self._models,
-            active_model=self._active_model,
-            reasoning_effort=self._reasoning_effort,
+            provider_selection=self._provider_selection,
             provider_activity=tuple(self._provider_activity),
         )
 
@@ -360,19 +403,67 @@ class WebConsole:
         self,
         *,
         models: tuple[str, ...],
-        active_model: str,
-        reasoning_effort: str,
-        callback: Callable[[str, str], Awaitable[None]],
+        selection: ProviderSelection,
+        callback: Callable[[ProviderFlow, str, str], Awaitable[bool]],
     ) -> None:
         """Publish validated provider options and install the runtime updater."""
         self._models = models
-        self._active_model = active_model
-        self._reasoning_effort = reasoning_effort
+        self._provider_selection = selection
         self._provider_settings_callback = callback
 
     def record_provider_activity(self, activity: Mapping[str, object]) -> None:
         """Retain a bounded, already-sanitized provider activity timeline."""
-        self._provider_activity.append(dict(activity))
+        retained = dict(activity)
+        phase = retained.get("phase")
+        flow_id = retained.get("flow_id")
+        if phase not in _STREAMING_PROVIDER_PHASES or not isinstance(flow_id, str):
+            self._provider_activity.append(retained)
+            self._provider_activity_revision += 1
+            logger.debug(
+                "provider activity retained",
+                extra={
+                    "phase": phase,
+                    "flow_id": flow_id,
+                    "output_kind": retained.get("output_kind"),
+                    "activity_revision": self._provider_activity_revision,
+                },
+            )
+            return
+        for offset, previous in enumerate(reversed(self._provider_activity)):
+            if previous.get("flow_id") != flow_id:
+                continue
+            previous_phase = previous.get("phase")
+            if previous_phase == phase:
+                previous_index = len(self._provider_activity) - offset - 1
+                self._provider_activity[previous_index] = retained
+                self._provider_activity_revision += 1
+                logger.debug(
+                    "provider stream activity coalesced",
+                    extra={
+                        "phase": phase,
+                        "flow_id": flow_id,
+                        "output_kind": retained.get("output_kind"),
+                        "activity_revision": self._provider_activity_revision,
+                    },
+                )
+                return
+            if previous_phase not in _STREAMING_PROVIDER_PHASES:
+                break
+        self._provider_activity.append(retained)
+        self._provider_activity_revision += 1
+        logger.debug(
+            "provider stream activity retained",
+            extra={
+                "phase": phase,
+                "flow_id": flow_id,
+                "output_kind": retained.get("output_kind"),
+                "activity_revision": self._provider_activity_revision,
+            },
+        )
+
+    async def wait_for_client(self) -> None:
+        """Wait until at least one browser has joined the live stream."""
+        await self._client_connected.wait()
 
     def start_audio_metering(self) -> None:
         """Start all candidate probes while the source modal is visible."""
@@ -380,9 +471,19 @@ class WebConsole:
             self._microphones(),
             self._system_monitors(),
         )
+        if self._audio_rescan_task is None:
+            self._audio_rescan_task = asyncio.create_task(
+                self._auto_rescan_audio(),
+                name="audio-device-auto-rescan",
+                context=contextvars.copy_context(),
+            )
 
     def stop_audio_metering(self) -> None:
         """Release setup-only probes while the source modal is closed."""
+        task = self._audio_rescan_task
+        self._audio_rescan_task = None
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
         self.state.cancel_setup_audio_preview()
 
     def pause(self) -> None:
@@ -401,6 +502,12 @@ class WebConsole:
             await websocket.close(code=_POLICY_VIOLATION_CLOSE_CODE)
             return
         await websocket.accept()
+        self._connected_clients += 1
+        self._client_connected.set()
+        logger.debug(
+            "web console client connected",
+            extra={"connected_clients": self._connected_clients},
+        )
         sender = asyncio.create_task(
             self._send_snapshots(websocket),
             name="web-console-snapshot-sender",
@@ -411,15 +518,24 @@ class WebConsole:
             name="web-console-command-receiver",
             context=contextvars.copy_context(),
         )
-        done, pending = await asyncio.wait(
-            {sender, receiver},
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for task in pending:
-            task.cancel()
-        for task in (*done, *pending):
-            with contextlib.suppress(asyncio.CancelledError, WebSocketDisconnect):
-                await task
+        try:
+            done, pending = await asyncio.wait(
+                {sender, receiver},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            for task in (*done, *pending):
+                with contextlib.suppress(asyncio.CancelledError, WebSocketDisconnect):
+                    await task
+        finally:
+            self._connected_clients -= 1
+            if self._connected_clients == 0:
+                self._client_connected.clear()
+            logger.debug(
+                "web console client disconnected",
+                extra={"connected_clients": self._connected_clients},
+            )
 
     def _build_app(self) -> FastAPI:
         app = FastAPI(
@@ -442,8 +558,19 @@ class WebConsole:
         return app
 
     async def _send_snapshots(self, websocket: WebSocket) -> None:
+        logged_revision = -1
         while True:
-            await websocket.send_json(self.snapshot().payload())
+            snapshot = self.snapshot()
+            await websocket.send_json(snapshot.payload())
+            if logged_revision != self._provider_activity_revision:
+                logged_revision = self._provider_activity_revision
+                logger.debug(
+                    "web console snapshot streamed",
+                    extra={
+                        "activity_revision": logged_revision,
+                        "activity_count": len(snapshot.provider_activity),
+                    },
+                )
             await asyncio.sleep(_SNAPSHOT_INTERVAL_SECONDS)
 
     async def _receive_commands(self, websocket: WebSocket) -> None:
@@ -462,6 +589,19 @@ class WebConsole:
                 )
                 await websocket.close(code=_POLICY_VIOLATION_CLOSE_CODE)
                 return
+            if isinstance(message, _ClientDebugMessage):
+                logger.debug(
+                    "frontend stream diagnostic received",
+                    extra={
+                        "frontend_event": message.event,
+                        "output_kind": message.output_kind,
+                        "activity_count": message.activity_count,
+                        "item_count": message.item_count,
+                        "text_characters": message.text_characters,
+                        "reason": message.reason,
+                    },
+                )
+                continue
             if isinstance(message, _ControlMessage):
                 self._submit_control(message.command)
                 continue
@@ -476,6 +616,7 @@ class WebConsole:
                 continue
             if isinstance(message, _ProviderSettingsMessage):
                 await self._set_provider_settings(
+                    ProviderFlow(message.flow),
                     message.model,
                     message.reasoning_effort,
                 )
@@ -483,35 +624,66 @@ class WebConsole:
             self._select_audio(message.microphone_index, message.system_index)
 
     async def _rescan_audio(self) -> None:
+        async with self._audio_rescan_lock:
+            await self._rescan_audio_locked()
+
+    async def _rescan_audio_locked(self) -> None:
         setup = self.state.audio_setup
         if setup is None:
             return
+        await self.state.stop_setup_audio_preview()
         try:
             setup.refresh(await list_pipewire_nodes())
         except CaptureError:
             logger.warning(
                 "audio device rescan failed",
                 extra={"reason": "audio_device_rescan_failed"},
+                exc_info=True,
+            )
+            self.state.start_setup_audio_metering(
+                self._microphones(),
+                self._system_monitors(),
             )
             return
-        self.stop_audio_metering()
-        self.start_audio_metering()
+        self.state.start_setup_audio_metering(
+            self._microphones(),
+            self._system_monitors(),
+        )
 
-    async def _set_provider_settings(self, model: str, reasoning_effort: str) -> None:
+    async def _auto_rescan_audio(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(_AUDIO_RESCAN_INTERVAL_SECONDS)
+                await self._rescan_audio()
+        except asyncio.CancelledError:
+            raise
+
+    async def _set_provider_settings(
+        self,
+        flow: ProviderFlow,
+        model: str,
+        reasoning_effort: str,
+    ) -> None:
         callback = self._provider_settings_callback
         if (
             callback is None
             or model not in self._models
-            or reasoning_effort not in _REASONING_EFFORTS
+            or reasoning_effort not in AIGATE_REASONING_EFFORTS
         ):
             logger.warning(
                 "provider settings rejected",
                 extra={"reason": "provider_settings_invalid"},
             )
             return
-        await callback(model, reasoning_effort)
-        self._active_model = model
-        self._reasoning_effort = reasoning_effort
+        if not await callback(flow, model, reasoning_effort):
+            return
+        selection = self._provider_selection
+        if selection is None:
+            return
+        self._provider_selection = selection.replace(
+            flow,
+            ProviderAssignment(model, reasoning_effort),
+        )
 
     def _select_audio(self, microphone_index: int, system_index: int) -> None:
         microphones = self._microphones()

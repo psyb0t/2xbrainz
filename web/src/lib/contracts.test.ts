@@ -21,6 +21,16 @@ describe('web snapshot boundary', () => {
         microphones: [{ index: -1 }],
         systemMonitors: []
       }
+    },
+    {
+      ...EMPTY_SNAPSHOT,
+      provider: {
+        ...EMPTY_SNAPSHOT.provider,
+        assignments: {
+          ...EMPTY_SNAPSHOT.provider.assignments,
+          summary: { model: 'model-a' }
+        }
+      }
     }
   ])('rejects malformed nested state %#', (value) => {
     expect(isWebSnapshot(value)).toBe(false);

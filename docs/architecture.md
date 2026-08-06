@@ -46,9 +46,11 @@ selection when available; otherwise Sources asks for one non-monitor microphone
 source and one system-audio
 capture source: a monitor source when available, or a directly capturable sink.
 It persists only those names in the host-mounted per-user
-configuration file. Sources remains available throughout the run. Redetection
-refreshes candidates after hotplug, and a changed pair restarts only the affected
-capture channel. A missing channel retries independently while its peer continues.
+configuration file. Sources remains available throughout the run. While it is
+open, redetection serially stops the temporary meter probes, refreshes candidates
+every three seconds, and restarts probes for the new inventory. A manual refresh
+uses the same path. A changed pair restarts only the affected capture channel,
+and a missing channel retries independently while its peer continues.
 The
 PipeWire configured default source and default output are a first-choice
 recommendation, not a claim about an application's current route. While Audio
@@ -111,16 +113,18 @@ independent multi-turn finals without recreating either capture process.
 - Every finalized turn produces exactly one timeline record. Duplicate ASR
   finals do not add another entry.
 - A remote endpoint with non-empty text marks only a candidate end. Its stable
-  final starts one reply job, and a completed reply schedules a rolling
-  summary.
+  final starts reply, private commentary, and rolling-summary jobs concurrently
+  through three independently configured AIGate clients.
 - A remote final received while the local-user stream is `speaking` or at a
   `candidate_end` is overlap, not a reply opportunity. It keeps its timeline
   entry but suppresses the draft until a later remote final follows local-user
   finalization.
-- A finalized user turn starts private commentary; completed commentary
-  schedules a rolling summary.
+- A finalized user turn starts private commentary and a rolling summary.
 - Remote speech supersedes the active reply and cancels commentary and summary
   work. User speech cancels an active reply.
+- Cancellation discards only unfinished provider output, reasoning, and tool
+  work. Finalized transcript lines remain in coordinator state, so the next
+  silence-triggered request contains both earlier and newly finalized speech.
 - A result is visible only when its generation ID and transcript revision still
   match the coordinator's active state; a changed revision discards stale
   background output.
@@ -189,9 +193,19 @@ independent multi-turn finals without recreating either capture process.
 - [`aigate.py`](../src/two_x_brainz/aigate.py) is a narrow implementation of
   the OpenAI-compatible chat-completions contract used by AIGate. It applies
   application-owned token and text-length limits before provider output enters
-  CLI state, then parses CommonMark into a text-only subset. Safe inline
-  presentation becomes visible text; structural Markdown and HTML are rejected
-  without rendering provider-controlled markup.
+  application state, then parses CommonMark into a text-only subset. Production
+  requests consume bounded SSE and publish correlated activity for Reply,
+  Private coach, and Story-so-far flows: streamed output, explicitly exposed
+  provider reasoning, and bounded validated allowlisted-tool inputs/results.
+  Reply research is restricted to application-owned `research_web` and bounded
+  arithmetic. Research accepts a focused query or an exact discovered public
+  URL, preserves Markdown tables and links, and exposes resolved link targets so
+  a relevant documentation page can be read in the second bounded tool round.
+  Same-round tool calls run concurrently without exposing AIGate's full catalog.
+  Safe inline presentation becomes visible text; structural Markdown and HTML
+  are rejected without rendering provider-controlled markup. Providers that do
+  not send a visible reasoning field are reported as such; private hidden
+  chain-of-thought is neither requested nor fabricated.
 - [`terminal.py`](../src/two_x_brainz/terminal.py) retains the bounded,
   control-sequence-safe presentation state shared with the browser. It owns no
   terminal interface. Transcript and provider text remain literal, and audio
@@ -202,12 +216,28 @@ independent multi-turn finals without recreating either capture process.
   strict control queue; process shutdown remains with the owning terminal so
   the web console cannot terminate the server that serves its own page.
   Bounded structured snapshots update separate conversation, reply,
-  private-coach, story, and all-candidate setup-meter panels. Svelte renders
-  provider text literally and owns only browser-local layout preferences, not
-  session state.
+  private-coach, story, and all-candidate setup-meter panels. The bidirectional
+  WebSocket carries browser controls plus SSE-style append-only activity.
+  Streamdown incrementally renders incomplete provider Markdown in one flat
+  chronological feed per output kind. Status, visible reasoning, tool activity,
+  and output retain arrival order; every reasoning or tool row starts
+  independently collapsed rather than living in a grouped generation card.
+  Cumulative reasoning and output snapshots coalesce independently within each
+  flow across interleaved concurrent flows and across each other; a same-flow
+  tool or lifecycle event is the boundary that starts a new chronological row.
+  Svelte flexes expanded guidance into height released by collapsed panels and
+  owns only browser-local layout preferences, not session state. Reply, Coach,
+  and Story model/reasoning assignments are independently mutable and saved in
+  the validated owner-only application config beside the audio selection.
 - [`logging_config.py`](../src/two_x_brainz/logging_config.py) writes every
   runtime event to a credential-redacted rotating JSON log. It is the durable
-  reconstruction surface; it retains text events but never PCM.
+  reconstruction surface; it retains text events but never PCM. DEBUG mode also
+  traces the provider SSE parser, activity retention/coalescing, snapshot
+  delivery, frontend snapshot receipt, and feed rendering with bounded metadata.
+  Per-token cumulative snapshots use counts at DEBUG rather than full raw INFO
+  records; terminal stream completion retains the final reasoning and output.
+  The browser returns only allowlisted diagnostic event names and numeric counts
+  through the existing same-origin WebSocket.
 
 For module-level invariants and file ownership, see
 [`src/two_x_brainz/README.md`](../src/two_x_brainz/README.md).

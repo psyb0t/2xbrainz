@@ -51,16 +51,19 @@ class ConversationCoordinator:
     def __init__(
         self,
         draft_provider: DraftProvider,
-        insight_provider: InsightProvider | None = None,
+        commentary_provider: InsightProvider | None = None,
+        summary_provider: InsightProvider | None = None,
         generation_deadline: timedelta = DEFAULT_PROVIDER_GENERATION_DEADLINE,
     ) -> None:
         if generation_deadline <= timedelta():
             raise ValueError("generation_deadline must be positive")
         self._draft_provider = draft_provider
-        self._insight_provider = insight_provider
+        self._commentary_provider = commentary_provider
+        self._summary_provider = summary_provider or commentary_provider
         self._generation_deadline_seconds = generation_deadline.total_seconds()
         self._transcript = TranscriptStore()
         self._turns = TurnManager()
+        self._ingest_lock = asyncio.Lock()
         self._active_task: asyncio.Task[None] | None = None
         self._active_generation_id: str | None = None
         self._active_draft_request: DraftRequest | None = None
@@ -79,13 +82,19 @@ class ConversationCoordinator:
 
     async def ingest(self, event: TranscriptEvent) -> CoordinatorUpdate:
         """Apply ASR output and create/cancel draft work as session state changes."""
+        async with self._ingest_lock:
+            return await self._ingest(event)
+
+    async def _ingest(self, event: TranscriptEvent) -> CoordinatorUpdate:
         transcript = self._transcript.apply(event)
         turn = self._turns.apply(event)
         timeline = _timeline_entry(turn, transcript)
         if event.speaker_role is SpeakerRole.USER and turn is not None:
             await self._cancel_active(GenerationStatus.CANCELLED)
             if turn.state is TurnState.FINALIZED:
+                await self._cancel_insights(GenerationStatus.SUPERSEDED)
                 await self._start_commentary(turn, transcript)
+                await self._start_summary(turn.turn_id, transcript)
         elif turn is not None and turn.speaker_role is SpeakerRole.REMOTE:
             if turn.state in {
                 TurnState.SPEAKING,
@@ -107,6 +116,8 @@ class ConversationCoordinator:
                         timeline=timeline,
                     )
                 await self._start_draft(turn, transcript)
+                await self._start_commentary(turn, transcript)
+                await self._start_summary(turn.turn_id, transcript)
         return CoordinatorUpdate(
             transcript=transcript,
             turn=turn,
@@ -248,14 +259,13 @@ class ConversationCoordinator:
             "draft generation completed",
             extra={"generation_id": request.generation_id},
         )
-        await self._start_summary(request.trigger_turn_id, request.transcript)
 
     async def _start_commentary(
         self,
         turn: TurnEvent,
         transcript: TranscriptSnapshot,
     ) -> None:
-        await self._cancel_summary(GenerationStatus.SUPERSEDED)
+        await self._cancel_commentary(GenerationStatus.SUPERSEDED)
         await self._start_insight(InsightKind.COMMENTARY, turn.turn_id, transcript)
 
     async def _start_summary(
@@ -263,6 +273,7 @@ class ConversationCoordinator:
         turn_id: str,
         transcript: TranscriptSnapshot,
     ) -> None:
+        await self._cancel_summary(GenerationStatus.SUPERSEDED)
         await self._start_insight(InsightKind.SUMMARY, turn_id, transcript)
 
     async def _start_insight(
@@ -271,7 +282,8 @@ class ConversationCoordinator:
         turn_id: str,
         transcript: TranscriptSnapshot,
     ) -> None:
-        if self._insight_provider is None:
+        provider = self._insight_provider(request_kind=kind)
+        if provider is None:
             return
         request = InsightRequest(
             generation_id=str(uuid4()),
@@ -289,11 +301,12 @@ class ConversationCoordinator:
         self._summary_task = task
 
     async def _generate_insight(self, request: InsightRequest) -> None:
-        if self._insight_provider is None:
+        provider = self._insight_provider(request.kind)
+        if provider is None:
             return
         try:
             async with asyncio.timeout(request.deadline_seconds):
-                result = await self._insight_provider.insight(request)
+                result = await provider.insight(request)
         except TimeoutError:
             logger.warning(
                 "background generation exceeded deadline",
@@ -332,8 +345,14 @@ class ConversationCoordinator:
             "background generation completed",
             extra={"generation_id": request.generation_id, "kind": request.kind},
         )
-        if request.kind is InsightKind.COMMENTARY:
-            await self._start_summary(request.trigger_turn_id, request.transcript)
+
+    def _insight_provider(
+        self,
+        request_kind: InsightKind,
+    ) -> InsightProvider | None:
+        if request_kind is InsightKind.COMMENTARY:
+            return self._commentary_provider
+        return self._summary_provider
 
     def _handle_summary_result(
         self,

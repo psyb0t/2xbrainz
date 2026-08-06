@@ -7,7 +7,13 @@ from unittest.mock import patch
 
 from two_x_brainz.config import Settings
 from two_x_brainz.constants import (
+    ENV_AIGATE_COACH_MODEL,
+    ENV_AIGATE_COACH_REASONING_EFFORT,
     ENV_AIGATE_REASONING_EFFORT,
+    ENV_AIGATE_REPLY_MODEL,
+    ENV_AIGATE_REPLY_REASONING_EFFORT,
+    ENV_AIGATE_SUMMARY_MODEL,
+    ENV_AIGATE_SUMMARY_REASONING_EFFORT,
     ENV_AIGATE_TOKEN,
     ENV_AIGATE_URL,
     ENV_AUDIO_CONFIG_FILE,
@@ -108,6 +114,46 @@ class SettingsTests(unittest.TestCase):
                 clear=True,
             ),
             self.assertRaisesRegex(ConfigurationError, "AIGATE_REASONING_EFFORT"),
+        ):
+            Settings.from_environment()
+
+    def test_loads_independent_first_run_flow_models(self) -> None:
+        environment = {
+            ENV_AIGATE_REPLY_MODEL: "cerebras-model",
+            ENV_AIGATE_COACH_MODEL: "coach-model",
+            ENV_AIGATE_SUMMARY_MODEL: "summary-model",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            settings = Settings.from_environment()
+
+        self.assertEqual(settings.aigate_reply_model, "cerebras-model")
+        self.assertEqual(settings.aigate_coach_model, "coach-model")
+        self.assertEqual(settings.aigate_summary_model, "summary-model")
+
+    def test_loads_independent_first_run_reasoning_efforts(self) -> None:
+        environment = {
+            ENV_AIGATE_REPLY_REASONING_EFFORT: "minimal",
+            ENV_AIGATE_COACH_REASONING_EFFORT: "low",
+            ENV_AIGATE_SUMMARY_REASONING_EFFORT: "high",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            settings = Settings.from_environment()
+
+        self.assertEqual(settings.aigate_reply_reasoning_effort, "minimal")
+        self.assertEqual(settings.aigate_coach_reasoning_effort, "low")
+        self.assertEqual(settings.aigate_summary_reasoning_effort, "high")
+
+    def test_rejects_invalid_flow_reasoning_effort(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {ENV_AIGATE_REPLY_REASONING_EFFORT: "maximum-ish"},
+                clear=True,
+            ),
+            self.assertRaisesRegex(
+                ConfigurationError,
+                "AIGATE_REPLY_REASONING_EFFORT",
+            ),
         ):
             Settings.from_environment()
 

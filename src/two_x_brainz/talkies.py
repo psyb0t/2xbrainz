@@ -183,6 +183,15 @@ class TalkiesClient:
             return
         raise RemoteServiceError("configured Talkies model is not available")
 
+    async def configured_model_max_concurrency(self) -> int:
+        """Return the selected model's validated advertised request limit."""
+        return await asyncio.to_thread(
+            _get_model_max_concurrency,
+            models_url(self._config.url),
+            self._config.token,
+            self._config.model,
+        )
+
     async def warm_configured_model(self) -> None:
         """Materialize one backend with synthetic silence before live audio."""
         async for event in self.transcribe(
@@ -454,6 +463,24 @@ def _http_url_from_stream_url(stream_url: str, endpoint_path: str) -> str:
 
 
 def _get_model_ids(url: str, token: str | None) -> frozenset[str]:
+    return parse_model_inventory(_get_model_inventory_payload(url, token))
+
+
+def _get_model_max_concurrency(
+    url: str,
+    token: str | None,
+    model_id: str,
+) -> int:
+    return parse_model_max_concurrency(
+        _get_model_inventory_payload(url, token),
+        model_id,
+    )
+
+
+def _get_model_inventory_payload(
+    url: str,
+    token: str | None,
+) -> Mapping[str, object]:
     headers = _authorization_headers(token) or {}
     request = Request(url, headers=headers, method="GET")
     try:
@@ -481,11 +508,38 @@ def _get_model_ids(url: str, token: str | None) -> frozenset[str]:
         raise ProtocolError("Talkies model inventory returned invalid JSON") from error
     except ValueError as error:
         raise ProtocolError("Talkies model inventory must be a JSON object") from error
-    return parse_model_inventory(payload)
+    return payload
 
 
 def parse_model_inventory(payload: Mapping[str, object]) -> frozenset[str]:
     """Validate the minimal OpenAI-compatible model inventory contract."""
+    return frozenset(_model_inventory_entries(payload))
+
+
+def parse_model_max_concurrency(
+    payload: Mapping[str, object],
+    model_id: str,
+) -> int:
+    """Return one model's positive integer concurrency advertisement."""
+    models = _model_inventory_entries(payload)
+    model = models.get(model_id)
+    if model is None:
+        raise RemoteServiceError("configured Talkies model is not available")
+    max_concurrency = model.get("max_concurrency")
+    if (
+        isinstance(max_concurrency, bool)
+        or not isinstance(max_concurrency, int)
+        or max_concurrency < 1
+    ):
+        raise ProtocolError(
+            "Talkies model inventory max_concurrency must be a positive integer"
+        )
+    return max_concurrency
+
+
+def _model_inventory_entries(
+    payload: Mapping[str, object],
+) -> dict[str, Mapping[str, object]]:
     try:
         models = require_json_array(payload.get("data"))
     except ValueError as error:
@@ -493,7 +547,7 @@ def parse_model_inventory(payload: Mapping[str, object]) -> frozenset[str]:
     if not models:
         raise ProtocolError("Talkies model inventory must not be empty")
 
-    model_ids: set[str] = set()
+    model_by_id: dict[str, Mapping[str, object]] = {}
     for item in models:
         try:
             model = require_json_object(item)
@@ -504,12 +558,12 @@ def parse_model_inventory(payload: Mapping[str, object]) -> frozenset[str]:
         model_id = _require_text(model, "id")
         if not model_id.strip():
             raise ProtocolError("Talkies model inventory ID must not be empty")
-        if model_id in model_ids:
+        if model_id in model_by_id:
             raise ProtocolError(
                 "Talkies model inventory must not contain duplicate IDs"
             )
-        model_ids.add(model_id)
-    return frozenset(model_ids)
+        model_by_id[model_id] = model
+    return model_by_id
 
 
 def _post_file_transcription(

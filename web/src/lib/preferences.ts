@@ -4,6 +4,7 @@ export interface LayoutPreferences {
   mainSplitPercent: number;
   replyHeightPercent: number;
   coachHeightPercent: number;
+  storyHeightPercent: number;
   sourceBarCollapsed: boolean;
   replyCollapsed: boolean;
   coachCollapsed: boolean;
@@ -14,6 +15,7 @@ export const DEFAULT_PREFERENCES: LayoutPreferences = {
   mainSplitPercent: 62,
   replyHeightPercent: 34,
   coachHeightPercent: 33,
+  storyHeightPercent: 33,
   sourceBarCollapsed: false,
   replyCollapsed: false,
   coachCollapsed: false,
@@ -62,11 +64,52 @@ export function normalizePreferences(
       MIN_GUIDANCE_PERCENT,
       MAX_GUIDANCE_PERCENT
     ),
+    storyHeightPercent: clampNumber(
+      value.storyHeightPercent,
+      33,
+      MIN_GUIDANCE_PERCENT,
+      MAX_GUIDANCE_PERCENT
+    ),
     sourceBarCollapsed: booleanOrDefault(value.sourceBarCollapsed, false),
     replyCollapsed: booleanOrDefault(value.replyCollapsed, false),
     coachCollapsed: booleanOrDefault(value.coachCollapsed, false),
     storyCollapsed: booleanOrDefault(value.storyCollapsed, false)
   };
+}
+
+export function resizeAdjacentPanelWeights(
+  upperWeight: number,
+  lowerWeight: number,
+  upperStartPixels: number,
+  lowerStartPixels: number,
+  deltaPixels: number
+): [number, number] {
+  const pairPixels = upperStartPixels + lowerStartPixels;
+  const pairWeight = upperWeight + lowerWeight;
+  const values = [upperWeight, lowerWeight, upperStartPixels, lowerStartPixels, deltaPixels];
+  if (!values.every(Number.isFinite) || pairPixels <= 0 || pairWeight <= 0) {
+    return [upperWeight, lowerWeight];
+  }
+  const upperPixels = upperStartPixels + deltaPixels;
+  return adjacentWeights(pairWeight, (upperPixels / pairPixels) * pairWeight);
+}
+
+export function nudgeAdjacentPanelWeights(
+  upperWeight: number,
+  lowerWeight: number,
+  deltaWeight: number
+): [number, number] {
+  const pairWeight = upperWeight + lowerWeight;
+  if (![upperWeight, lowerWeight, deltaWeight].every(Number.isFinite) || pairWeight <= 0) {
+    return [upperWeight, lowerWeight];
+  }
+  return adjacentWeights(pairWeight, upperWeight + deltaWeight);
+}
+
+function adjacentWeights(pairWeight: number, requestedUpperWeight: number): [number, number] {
+  const minimum = Math.min(MIN_GUIDANCE_PERCENT, pairWeight / 2);
+  const upperWeight = Math.min(pairWeight - minimum, Math.max(minimum, requestedUpperWeight));
+  return [upperWeight, pairWeight - upperWeight];
 }
 
 function clampNumber(value: unknown, fallback: number, minimum: number, maximum: number): number {

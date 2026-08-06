@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import sys
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
-from two_x_brainz.aigate import AIGateClient
+from two_x_brainz.aigate import (
+    AIGateClient,
+    _AIGateToolCall,  # pyright: ignore[reportPrivateUsage]
+)
 from two_x_brainz.config import Settings
 from two_x_brainz.constants import DEFAULT_PROVIDER_GENERATION_DEADLINE
 from two_x_brainz.contracts import (
@@ -27,6 +32,7 @@ from two_x_brainz.contracts import (
 from two_x_brainz.coordinator import ConversationCoordinator
 from two_x_brainz.errors import ConfigurationError, ProtocolError, RemoteServiceError
 from two_x_brainz.fixture_trace import FixtureTrace, FixtureTraceError
+from two_x_brainz.json_support import require_json_object
 
 _DRAFT_GENERATION_ID = "synthetic-draft-generation"
 _COMMENTARY_GENERATION_ID = "synthetic-commentary-generation"
@@ -35,6 +41,9 @@ _REMOTE_TURN_ID = "synthetic-remote-turn"
 _USER_TURN_ID = "synthetic-user-turn"
 _TRANSCRIPT_REVISION = 2
 _TRACE_DIRECTORY_ENV = "TWOXBRAINZ_FIXTURE_TRACE_DIR"
+_DRAFT_MODEL_ENV = "TWOXBRAINZ_FIXTURE_DRAFT_MODEL"
+_COMMENTARY_MODEL_ENV = "TWOXBRAINZ_FIXTURE_COMMENTARY_MODEL"
+_SUMMARY_MODEL_ENV = "TWOXBRAINZ_FIXTURE_SUMMARY_MODEL"
 _TRACE_LABEL = "real-aigate-interview"
 _SYNTHETIC_SESSION_ID = "synthetic-interview-session"
 _USER_STREAM_ID = "synthetic-user-stream"
@@ -74,6 +83,13 @@ _WEEKDAY_PATTERN = re.compile(
 )
 _PLAIN_PROSE_PREFIXES = ("#", "-", "*", ">", "1.")
 _PLAIN_PROSE_MARKERS = ("```", "**", "__", "[`", "](")
+_RESEARCH_QUERY = "IANA Example Domain"
+_RESEARCH_DRAFT_GENERATION_ID = "synthetic-research-draft-generation"
+_RESEARCH_REMOTE_TURN_ID = "synthetic-research-remote-turn"
+_RESEARCH_REMOTE_TEXT = (
+    "Before suggesting what I should say, verify what the documentation at "
+    "https://www.iana.org/help/example-domains says example domains are reserved for."
+)
 
 
 class PromptFixtureError(RuntimeError):
@@ -116,49 +132,85 @@ async def _run() -> Path:
 async def _run_with_trace(settings: Settings, trace: FixtureTrace) -> Path:
     if settings.aigate_token is None:
         raise PromptFixtureError("AIGate token is required")
-    client = AIGateClient(
-        base_url=settings.aigate_url,
-        model=settings.aigate_model,
-        token=settings.aigate_token,
+    draft_model, commentary_model, summary_model = _fixture_models(settings)
+    provider_activities: dict[str, list[Mapping[str, object]]] = {
+        model: [] for model in (draft_model, commentary_model, summary_model)
+    }
+
+    def activity_sink(model: str) -> Callable[[Mapping[str, object]], None]:
+        def record(activity: Mapping[str, object]) -> None:
+            provider_activities[model].append(dict(activity))
+            _trace_provider_activity(trace, activity)
+
+        return record
+
+    clients = tuple(
+        AIGateClient(
+            base_url=settings.aigate_url,
+            model=model,
+            token=settings.aigate_token,
+            web_research_enabled=(model == draft_model),
+            activity_sink=activity_sink(model),
+            streaming_enabled=True,
+        )
+        for model in (draft_model, commentary_model, summary_model)
     )
+    draft_client, commentary_client, summary_client = clients
     trace.event(
         "fixture_started",
-        model=settings.aigate_model,
+        draft_model=draft_model,
+        commentary_model=commentary_model,
+        summary_model=summary_model,
         base_url=settings.aigate_url,
     )
-    await client.verify_configured_model()
-    trace.event("model_inventory_verified", model=settings.aigate_model)
-    provider = _TracingProvider(client, trace)
+    await asyncio.gather(*(client.verify_configured_model() for client in clients))
+    trace.event(
+        "model_inventory_verified",
+        draft_model=draft_model,
+        commentary_model=commentary_model,
+        summary_model=summary_model,
+    )
+    await _assert_real_research_tools(draft_client, trace)
+    await _assert_model_driven_research(
+        draft_client,
+        provider_activities[draft_model],
+        trace,
+    )
+    draft_provider = _TracingProvider(draft_client, trace)
+    commentary_provider = _TracingProvider(commentary_client, trace)
+    summary_provider = _TracingProvider(summary_client, trace)
     transcript = _synthetic_transcript()
     deadline_seconds = DEFAULT_PROVIDER_GENERATION_DEADLINE.total_seconds()
-    draft = await provider.draft(
-        DraftRequest(
-            generation_id=_DRAFT_GENERATION_ID,
-            trigger_turn_id=_REMOTE_TURN_ID,
-            context_revision=transcript.revision,
-            transcript=transcript,
-            deadline_seconds=deadline_seconds,
-        )
-    )
-    commentary = await provider.insight(
-        InsightRequest(
-            generation_id=_COMMENTARY_GENERATION_ID,
-            kind=InsightKind.COMMENTARY,
-            trigger_turn_id=_USER_TURN_ID,
-            context_revision=transcript.revision,
-            transcript=transcript,
-            deadline_seconds=deadline_seconds,
-        )
-    )
-    summary = await provider.insight(
-        InsightRequest(
-            generation_id=_SUMMARY_GENERATION_ID,
-            kind=InsightKind.SUMMARY,
-            trigger_turn_id=_REMOTE_TURN_ID,
-            context_revision=transcript.revision,
-            transcript=transcript,
-            deadline_seconds=deadline_seconds,
-        )
+    draft, commentary, summary = await asyncio.gather(
+        draft_provider.draft(
+            DraftRequest(
+                generation_id=_DRAFT_GENERATION_ID,
+                trigger_turn_id=_REMOTE_TURN_ID,
+                context_revision=transcript.revision,
+                transcript=transcript,
+                deadline_seconds=deadline_seconds,
+            )
+        ),
+        commentary_provider.insight(
+            InsightRequest(
+                generation_id=_COMMENTARY_GENERATION_ID,
+                kind=InsightKind.COMMENTARY,
+                trigger_turn_id=_USER_TURN_ID,
+                context_revision=transcript.revision,
+                transcript=transcript,
+                deadline_seconds=deadline_seconds,
+            )
+        ),
+        summary_provider.insight(
+            InsightRequest(
+                generation_id=_SUMMARY_GENERATION_ID,
+                kind=InsightKind.SUMMARY,
+                trigger_turn_id=_REMOTE_TURN_ID,
+                context_revision=transcript.revision,
+                transcript=transcript,
+                deadline_seconds=deadline_seconds,
+            )
+        ),
     )
     _assert_completed_text(
         draft.generation_id,
@@ -179,9 +231,110 @@ async def _run_with_trace(settings: Settings, trace: FixtureTrace) -> Path:
         requires_one_line=False,
     )
     trace.event("basic_prompt_contract_passed")
-    await _assert_interview_story(provider, trace)
+    await _assert_interview_story(
+        draft_provider,
+        commentary_provider,
+        summary_provider,
+        trace,
+    )
     trace.event("fixture_passed")
     return trace.path
+
+
+def _trace_provider_activity(
+    trace: FixtureTrace,
+    activity: Mapping[str, object],
+) -> None:
+    fields = dict(activity)
+    fields.pop("kind", None)
+    trace.event("provider_activity", **fields)
+
+
+async def _assert_real_research_tools(
+    client: AIGateClient,
+    trace: FixtureTrace,
+) -> None:
+    research_result = await client._run_tool_call(  # pyright: ignore[reportPrivateUsage]
+        _AIGateToolCall(
+            identifier="real-research",
+            name="research_web",
+            arguments={"query": _RESEARCH_QUERY, "num_results": 5},
+        )
+    )
+    try:
+        payload = require_json_object(json.loads(research_result))
+        page = require_json_object(payload.get("page"))
+    except (ValueError, json.JSONDecodeError) as error:
+        raise PromptFixtureError(
+            "real AIGate research did not return a fetched page"
+        ) from error
+    if payload.get("status") != "page_fetched":
+        raise PromptFixtureError("real AIGate research did not fetch a matching page")
+    page_content = page.get("content")
+    page_url = page.get("url")
+    if not isinstance(page_content, str) or not page_content.strip():
+        raise PromptFixtureError(
+            "real AIGate research returned no readable page content"
+        )
+    if not isinstance(page_url, str) or not page_url.startswith(
+        ("http://", "https://")
+    ):
+        raise PromptFixtureError("real AIGate research returned an invalid page URL")
+    trace.event(
+        "research_tool_verified",
+        fetched_content_characters=len(page_content),
+        page_url=page_url,
+    )
+
+
+async def _assert_model_driven_research(
+    client: AIGateClient,
+    activities: list[Mapping[str, object]],
+    trace: FixtureTrace,
+) -> None:
+    result = await client.draft(
+        DraftRequest(
+            generation_id=_RESEARCH_DRAFT_GENERATION_ID,
+            trigger_turn_id=_RESEARCH_REMOTE_TURN_ID,
+            context_revision=1,
+            transcript=TranscriptSnapshot(
+                revision=1,
+                lines=(
+                    TranscriptLine(
+                        stream_id=_REMOTE_STREAM_ID,
+                        speaker_role=SpeakerRole.REMOTE,
+                        revision=1,
+                        text=_RESEARCH_REMOTE_TEXT,
+                        is_final=True,
+                    ),
+                ),
+            ),
+            deadline_seconds=DEFAULT_PROVIDER_GENERATION_DEADLINE.total_seconds(),
+        )
+    )
+    _assert_completed_text(
+        result.generation_id,
+        result.status,
+        result.text,
+        requires_one_line=True,
+    )
+    _assert_research_activity(activities)
+    trace.event(
+        "model_driven_research_verified",
+        model=client.model,
+        reply=result.text,
+    )
+
+
+def _assert_research_activity(activities: list[Mapping[str, object]]) -> None:
+    if not any(
+        activity.get("phase") == "tool_completed"
+        and activity.get("tool") == "research_web"
+        for activity in activities
+    ):
+        raise PromptFixtureError(
+            "Reply model did not autonomously complete required web research"
+        )
 
 
 def _trace_directory() -> Path:
@@ -189,6 +342,20 @@ def _trace_directory() -> Path:
     if not value:
         raise PromptFixtureError("fixture trace directory is required")
     return Path(value)
+
+
+def _fixture_models(settings: Settings) -> tuple[str, str, str]:
+    fallback = settings.aigate_model or ""
+    models = (
+        os.environ.get(_DRAFT_MODEL_ENV, fallback).strip(),
+        os.environ.get(_COMMENTARY_MODEL_ENV, fallback).strip(),
+        os.environ.get(_SUMMARY_MODEL_ENV, fallback).strip(),
+    )
+    if any(not model for model in models):
+        raise PromptFixtureError("three fixture AIGate models are required")
+    if len(set(models)) != len(models):
+        raise PromptFixtureError("fixture AIGate models must be distinct")
+    return models
 
 
 class _TracingProvider:
@@ -261,10 +428,16 @@ class _TracingProvider:
 
 
 async def _assert_interview_story(
-    provider: _TracingProvider,
+    draft_provider: _TracingProvider,
+    commentary_provider: _TracingProvider,
+    summary_provider: _TracingProvider,
     trace: FixtureTrace,
 ) -> None:
-    coordinator = ConversationCoordinator(provider, provider)
+    coordinator = ConversationCoordinator(
+        draft_provider,
+        commentary_provider,
+        summary_provider,
+    )
     try:
         user_update = await coordinator.ingest(
             _interview_event(
@@ -335,7 +508,10 @@ async def _assert_interview_story(
             raise PromptFixtureError(
                 "reply draft did not address the interview context"
             )
-        _assert_draft_received_summary(provider.draft_requests, first_summary.text)
+        _assert_draft_received_summary(
+            draft_provider.draft_requests,
+            first_summary.text,
+        )
         remote_summary = _completed_summary(coordinator.drain_completed_insights())
         _assert_story_anchors(
             remote_summary.text,
@@ -443,7 +619,7 @@ async def _assert_interview_story(
         )
         _assert_final_draft_story(final_draft.text)
         _assert_draft_received_summary(
-            provider.draft_requests,
+            draft_provider.draft_requests,
             mitigation_summary.text,
         )
         final_summary = _completed_summary(coordinator.drain_completed_insights())

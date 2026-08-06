@@ -24,7 +24,11 @@ from two_x_brainz.capture import (
     audio_level_percent,
 )
 from two_x_brainz.config import Settings
-from two_x_brainz.constants import DEFAULT_WEB_CONSOLE_PORT, JSON_RECORD_SCHEMA_VERSION
+from two_x_brainz.constants import (
+    DEFAULT_PROVIDER_CONFIG_FILENAME,
+    DEFAULT_WEB_CONSOLE_PORT,
+    JSON_RECORD_SCHEMA_VERSION,
+)
 from two_x_brainz.contracts import (
     ASRStreamStats,
     AudioFrame,
@@ -35,7 +39,18 @@ from two_x_brainz.contracts import (
     TranscriptEvent,
 )
 from two_x_brainz.coordinator import ConversationCoordinator
-from two_x_brainz.errors import CaptureError, ProtocolError, RemoteServiceError
+from two_x_brainz.errors import (
+    CaptureError,
+    ConfigurationError,
+    ProtocolError,
+    RemoteServiceError,
+)
+from two_x_brainz.provider_selection import (
+    ProviderAssignment,
+    ProviderFlow,
+    ProviderSelection,
+    ProviderSelectionStore,
+)
 from two_x_brainz.session_controls import (
     SessionCommand,
     SessionController,
@@ -60,6 +75,9 @@ _ASR_SEGMENT_KIND = "asr_segment"
 _ASR_SEGMENT_OPENED = "opened"
 _ASR_SEGMENT_STREAM_LABEL = "segment"
 _RUNTIME_EVENT_LOG_MESSAGE = "live runtime event"
+_PROVIDER_ACTIVITY_KIND = "provider_activity"
+_PROVIDER_STREAM_EVENT_LOG_MESSAGE = "live provider stream event"
+_PROVIDER_STREAMING_PHASES = frozenset({"output_streaming", "reasoning_streaming"})
 _AUDIO_CHANNEL_KIND = "audio_channel"
 _AUDIO_CHANNEL_RETRY_SECONDS = 1.0
 
@@ -105,42 +123,83 @@ async def run_live(
     terminal_token: contextvars.Token[LivePresentation | None] | None = None
     try:
         await terminal.open()
-        provider = AIGateClient(
+        inventory_client = AIGateClient(
             base_url=settings.aigate_url,
             model=settings.aigate_model,
             token=settings.aigate_token,
-            web_research_enabled=settings.web_research_enabled,
-            session_brief=settings.session_brief,
-            reasoning_effort=settings.aigate_reasoning_effort,
-            activity_sink=_write_provider_activity_event,
         )
-        models = await provider.list_models()
-        provider.require_model()
-        assert provider.model is not None
-        if provider.model not in models:
-            raise RemoteServiceError(
-                "configured AIGate model is not available from the current inventory"
+        models = await inventory_client.list_models()
+        provider_store = ProviderSelectionStore(
+            settings.audio_config_file.with_name(DEFAULT_PROVIDER_CONFIG_FILENAME)
+        )
+        saved_provider = provider_store.load()
+        selection = _initial_provider_selection(settings, saved_provider, models)
+        providers = {
+            flow: _aigate_client(
+                settings,
+                selection.assignment(flow),
+                web_research_enabled=(flow is ProviderFlow.DRAFT),
             )
+            for flow in ProviderFlow
+        }
+        selection_lock = asyncio.Lock()
 
-        async def configure_provider(model: str, reasoning_effort: str) -> None:
+        async def configure_provider(
+            flow: ProviderFlow,
+            model: str,
+            reasoning_effort: str,
+        ) -> bool:
+            nonlocal selection
             if model not in models:
                 raise RemoteServiceError("selected AIGate model is unavailable")
-            provider.configure(model, reasoning_effort)
+            assignment = ProviderAssignment(
+                model=model,
+                reasoning_effort=reasoning_effort,
+            )
+            async with selection_lock:
+                updated_selection = selection.replace(flow, assignment)
+                try:
+                    provider_store.save(updated_selection)
+                except ConfigurationError:
+                    logger.warning(
+                        "provider settings were not persisted",
+                        extra={
+                            "reason": "provider_settings_persistence_failed",
+                            "output_kind": flow.value,
+                        },
+                        exc_info=True,
+                    )
+                    _write_provider_activity_event(
+                        {
+                            "phase": "settings_failed",
+                            "output_kind": flow.value,
+                            "model": model,
+                            "reasoning_effort": reasoning_effort,
+                        }
+                    )
+                    return False
+                providers[flow].configure(model, reasoning_effort)
+                selection = updated_selection
             _write_provider_activity_event(
                 {
                     "phase": "settings_changed",
+                    "output_kind": flow.value,
                     "model": model,
                     "reasoning_effort": reasoning_effort,
                 }
             )
+            return True
 
         terminal.configure_provider(
             models=models,
-            active_model=provider.model,
-            reasoning_effort=provider.reasoning_effort,
+            selection=selection,
             callback=configure_provider,
         )
-        coordinator = ConversationCoordinator(provider, provider)
+        coordinator = ConversationCoordinator(
+            draft_provider=providers[ProviderFlow.DRAFT],
+            commentary_provider=providers[ProviderFlow.COMMENTARY],
+            summary_provider=providers[ProviderFlow.SUMMARY],
+        )
         controller = SessionController(start_paused=True)
         session_id = str(uuid4())
         stream_config = TalkiesStreamConfig(
@@ -168,7 +227,7 @@ async def run_live(
                 state=controller.state,
                 action=_SESSION_STARTED_ACTION,
                 changed=True,
-                aigate_model=provider.model,
+                aigate_model=selection.draft.model,
             )
             async with asyncio.TaskGroup() as group:
                 group.create_task(
@@ -212,6 +271,67 @@ async def run_live(
         if terminal_token is not None:
             _ACTIVE_TERMINAL.reset(terminal_token)
         await terminal.close()
+
+
+def _initial_provider_selection(
+    settings: Settings,
+    saved_selection: ProviderSelection | None,
+    available_models: tuple[str, ...],
+) -> ProviderSelection:
+    if saved_selection is not None and all(
+        model in available_models for model in saved_selection.models()
+    ):
+        return saved_selection
+    configured_models = (
+        settings.aigate_reply_model or settings.aigate_model,
+        settings.aigate_coach_model or settings.aigate_model,
+        settings.aigate_summary_model or settings.aigate_model,
+    )
+    if any(model is None for model in configured_models):
+        raise ConfigurationError(
+            "configure all three AIGate flow models or TWOXBRAINZ_AIGATE_MODEL"
+        )
+    reply_model, coach_model, summary_model = configured_models
+    assert reply_model is not None
+    assert coach_model is not None
+    assert summary_model is not None
+    if any(model not in available_models for model in configured_models):
+        raise RemoteServiceError(
+            "a configured AIGate flow model is not available from the current inventory"
+        )
+    return ProviderSelection(
+        draft=ProviderAssignment(
+            reply_model,
+            settings.aigate_reply_reasoning_effort or settings.aigate_reasoning_effort,
+        ),
+        commentary=ProviderAssignment(
+            coach_model,
+            settings.aigate_coach_reasoning_effort or settings.aigate_reasoning_effort,
+        ),
+        summary=ProviderAssignment(
+            summary_model,
+            settings.aigate_summary_reasoning_effort
+            or settings.aigate_reasoning_effort,
+        ),
+    )
+
+
+def _aigate_client(
+    settings: Settings,
+    assignment: ProviderAssignment,
+    *,
+    web_research_enabled: bool,
+) -> AIGateClient:
+    return AIGateClient(
+        base_url=settings.aigate_url,
+        model=assignment.model,
+        token=settings.aigate_token,
+        web_research_enabled=(web_research_enabled and settings.web_research_enabled),
+        session_brief=settings.session_brief,
+        reasoning_effort=assignment.reasoning_effort,
+        activity_sink=_write_provider_activity_event,
+        streaming_enabled=True,
+    )
 
 
 async def _gated_frames(
@@ -337,7 +457,7 @@ def _write_audio_channel_event(speaker_role: SpeakerRole, state: str) -> None:
 def _write_provider_activity_event(activity: Mapping[str, object]) -> None:
     record = {
         "schema_version": JSON_RECORD_SCHEMA_VERSION,
-        "kind": "provider_activity",
+        "kind": _PROVIDER_ACTIVITY_KIND,
         **activity,
     }
     _emit_event(record)
@@ -424,7 +544,27 @@ def _apply_session_command(
 
 def _emit_event(record: dict[str, object]) -> None:
     """Log every runtime event and route it to the active human-facing terminal."""
-    logger.info(_RUNTIME_EVENT_LOG_MESSAGE, extra={"event": record})
+    if (
+        record.get("kind") == _PROVIDER_ACTIVITY_KIND
+        and record.get("phase") in _PROVIDER_STREAMING_PHASES
+    ):
+        reasoning = record.get("reasoning")
+        output = record.get("output")
+        logger.debug(
+            _PROVIDER_STREAM_EVENT_LOG_MESSAGE,
+            extra={
+                "phase": record.get("phase"),
+                "flow_id": record.get("flow_id"),
+                "output_kind": record.get("output_kind"),
+                "model": record.get("model"),
+                "reasoning_characters": len(reasoning)
+                if isinstance(reasoning, str)
+                else 0,
+                "output_characters": len(output) if isinstance(output, str) else 0,
+            },
+        )
+    else:
+        logger.info(_RUNTIME_EVENT_LOG_MESSAGE, extra={"event": record})
     terminal = _ACTIVE_TERMINAL.get()
     if terminal is not None:
         terminal.consume(record)

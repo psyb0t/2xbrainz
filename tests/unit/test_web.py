@@ -129,6 +129,151 @@ class WebConsoleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(activity[0]["model"], "model-20")
         self.assertEqual(activity[-1]["model"], "model-99")
 
+    async def test_adjacent_streaming_activity_updates_in_place(self) -> None:
+        console = WebConsole(
+            LiveTerminal(log_file="/tmp/2xbrainz-web.log", stream=io.StringIO())
+        )
+        with self.assertLogs("two_x_brainz.web", level="DEBUG") as captured:
+            console.record_provider_activity(
+                {
+                    "phase": "tool_completed",
+                    "flow_id": "flow-a",
+                    "tool_result": "result",
+                }
+            )
+            for output in ("A", "An", "Answer"):
+                console.record_provider_activity(
+                    {
+                        "phase": "output_streaming",
+                        "flow_id": "flow-a",
+                        "output": output,
+                    }
+                )
+
+        activity = console.snapshot().provider_activity
+
+        self.assertEqual(len(activity), 2)
+        self.assertEqual(activity[0]["tool_result"], "result")
+        self.assertEqual(activity[1]["output"], "Answer")
+        self.assertEqual(
+            [record.getMessage() for record in captured.records],
+            [
+                "provider activity retained",
+                "provider stream activity retained",
+                "provider stream activity coalesced",
+                "provider stream activity coalesced",
+            ],
+        )
+        self.assertEqual(captured.records[-1].__dict__["activity_revision"], 4)
+
+    async def test_intervening_activity_preserves_repeated_stream_phase_order(
+        self,
+    ) -> None:
+        console = WebConsole(
+            LiveTerminal(log_file="/tmp/2xbrainz-web.log", stream=io.StringIO())
+        )
+        for activity in (
+            {
+                "phase": "reasoning_streaming",
+                "flow_id": "flow-a",
+                "reasoning": "Reason before research",
+            },
+            {
+                "phase": "tool_completed",
+                "flow_id": "flow-a",
+                "tool_result": "result",
+            },
+            {
+                "phase": "reasoning_streaming",
+                "flow_id": "flow-a",
+                "reasoning": "Reason after research",
+            },
+        ):
+            console.record_provider_activity(activity)
+
+        retained = console.snapshot().provider_activity
+
+        self.assertEqual(
+            [entry["phase"] for entry in retained],
+            ["reasoning_streaming", "tool_completed", "reasoning_streaming"],
+        )
+        self.assertEqual(retained[0]["reasoning"], "Reason before research")
+        self.assertEqual(retained[2]["reasoning"], "Reason after research")
+
+    async def test_parallel_flows_coalesce_independently(self) -> None:
+        console = WebConsole(
+            LiveTerminal(log_file="/tmp/2xbrainz-web.log", stream=io.StringIO())
+        )
+        for activity in (
+            {
+                "phase": "reasoning_streaming",
+                "flow_id": "draft-flow",
+                "output_kind": "draft",
+                "reasoning": "Draft",
+            },
+            {
+                "phase": "reasoning_streaming",
+                "flow_id": "summary-flow",
+                "output_kind": "summary",
+                "reasoning": "Story",
+            },
+            {
+                "phase": "reasoning_streaming",
+                "flow_id": "draft-flow",
+                "output_kind": "draft",
+                "reasoning": "Draft reasoning complete",
+            },
+            {
+                "phase": "reasoning_streaming",
+                "flow_id": "summary-flow",
+                "output_kind": "summary",
+                "reasoning": "Story reasoning complete",
+            },
+        ):
+            console.record_provider_activity(activity)
+
+        retained = console.snapshot().provider_activity
+
+        self.assertEqual(len(retained), 2)
+        self.assertEqual(retained[0]["reasoning"], "Draft reasoning complete")
+        self.assertEqual(retained[1]["reasoning"], "Story reasoning complete")
+
+    async def test_reasoning_and_output_streams_coalesce_through_each_other(
+        self,
+    ) -> None:
+        console = WebConsole(
+            LiveTerminal(log_file="/tmp/2xbrainz-web.log", stream=io.StringIO())
+        )
+        for activity in (
+            {
+                "phase": "output_streaming",
+                "flow_id": "flow-a",
+                "output": "A",
+            },
+            {
+                "phase": "reasoning_streaming",
+                "flow_id": "flow-a",
+                "reasoning": "Think",
+            },
+            {
+                "phase": "output_streaming",
+                "flow_id": "flow-a",
+                "output": "Answer",
+            },
+            {
+                "phase": "reasoning_streaming",
+                "flow_id": "flow-a",
+                "reasoning": "Thinking complete",
+            },
+        ):
+            console.record_provider_activity(activity)
+
+        retained = console.snapshot().provider_activity
+
+        self.assertEqual(len(retained), 2)
+        self.assertEqual(retained[0]["output"], "Answer")
+        self.assertEqual(retained[1]["reasoning"], "Thinking complete")
+
     async def test_invalid_port_is_rejected_before_static_asset_check(self) -> None:
         console = WebConsole(
             LiveTerminal(log_file="/tmp/2xbrainz-web.log", stream=io.StringIO()),

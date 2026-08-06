@@ -37,11 +37,17 @@ captured stream begins; no captured audio is used for the warm-up.
 |---|---:|---|
 | `TWOXBRAINZ_TALKIES_MODEL` | yes | One Talkies streaming model slug shared by both streams. |
 | `TWOXBRAINZ_AIGATE_URL` | yes | AIGate API root using `http` or `https` and ending in `/v1`. 2xbrainz derives the Talkies WebSocket proxy route from it. |
-| `TWOXBRAINZ_AIGATE_MODEL` | yes | Model name configured by the AIGate gateway. |
-| `TWOXBRAINZ_AIGATE_REASONING_EFFORT` | no | Initial reasoning effort: `none`, `minimal`, `low`, `medium`, or `high`. It can be changed in the browser for future requests. |
-| `TWOXBRAINZ_AIGATE_TOKEN` | if AIGate requires it | The single bearer token used for AIGate chat, Talkies proxy, model inventory, and the two allowlisted MCP tools. |
+| `TWOXBRAINZ_AIGATE_MODEL` | conditionally | Legacy first-run fallback for any flow without an explicit model below. A saved browser selection replaces environment defaults on later runs when every saved model remains available. |
+| `TWOXBRAINZ_AIGATE_REPLY_MODEL` | conditionally | First-run Reply model. This is the only flow with research and arithmetic tools, so select a fast model with reliable tool calling. |
+| `TWOXBRAINZ_AIGATE_COACH_MODEL` | conditionally | First-run Private coach model. Tools remain disabled. |
+| `TWOXBRAINZ_AIGATE_SUMMARY_MODEL` | conditionally | First-run Story-so-far model. Tools remain disabled. |
+| `TWOXBRAINZ_AIGATE_REASONING_EFFORT` | no | Legacy first-run reasoning fallback for any flow without a dedicated value below. |
+| `TWOXBRAINZ_AIGATE_REPLY_REASONING_EFFORT` | no | First-run Reply reasoning: `none`, `minimal`, `low`, `medium`, or `high`. |
+| `TWOXBRAINZ_AIGATE_COACH_REASONING_EFFORT` | no | First-run Private coach reasoning, using the same allowed values. |
+| `TWOXBRAINZ_AIGATE_SUMMARY_REASONING_EFFORT` | no | First-run Story-so-far reasoning, using the same allowed values. The browser persists every flow's model/effort pair independently. |
+| `TWOXBRAINZ_AIGATE_TOKEN` | if AIGate requires it | The single bearer token used for AIGate chat, Talkies proxy, model inventory, and the three allowlisted MCP tools. |
 | `TWOXBRAINZ_SESSION_BRIEF` | no | Trusted local context, up to 4000 characters, appended to every generation prompt to frame the call. It is neither transcript data nor status/log output. |
-| `TWOXBRAINZ_WEB_RESEARCH_ENABLED` | no | Exactly `true` enables reply-draft web search and bounded arithmetic through AIGate MCP. It requires AIGate SearXNG; calculation additionally requires Piston. |
+| `TWOXBRAINZ_WEB_RESEARCH_ENABLED` | no | Exactly `true` enables reply-draft search, application-owned public-page reading, and bounded arithmetic. It requires AIGate `SEARXNG=1`; arithmetic additionally requires `PISTON=1`. |
 | `TWOXBRAINZ_LOG_LEVEL` | no | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. |
 | `TWOXBRAINZ_LOG_DIRECTORY` | no | Absolute in-container directory for UTC-prefixed rotating session logs. It wins over `TWOXBRAINZ_LOG_FILE`; direct Docker users must mount it themselves. |
 | `TWOXBRAINZ_LOG_FILE` | no | Absolute base JSON log filename for direct Docker use when `TWOXBRAINZ_LOG_DIRECTORY` is unset. `live` prefixes its basename with a UTC session timestamp. |
@@ -73,11 +79,22 @@ saves stable node names—not ephemeral numeric IDs—to the host's
 The stored pair is checked against the currently visible PipeWire nodes before
 each session. A missing or malformed file opens Sources. A temporarily absent
 device leaves only its channel waiting and retrying while the other channel
-continues. **Redetect devices** refreshes discovery after Bluetooth or USB
-changes. Saving a new pair switches each changed channel independently and
-immediately without restarting the web session.
+continues. The open Sources modal automatically refreshes discovery every three
+seconds; **Redetect devices** requests the same refresh immediately. Preview
+capture stops before discovery so a busy probe cannot leave disconnected
+Bluetooth or USB nodes stuck in the list. Saving a new pair switches each
+changed channel independently and immediately without restarting the web
+session.
 The selection file contains only the two node names; it has no audio, transcript,
-endpoint, or credential data.
+endpoint, or credential data. Runtime model and reasoning choices are stored in
+the same host directory as `provider-selection.json`, also mode `0600`. That
+exact-schema file contains separate model and reasoning assignments for Reply,
+Private coach, and Story so far. A missing, malformed, symlinked, oversized, or
+partly unavailable saved selection falls back as one unit to the environment
+flow assignments. Each model and reasoning effort has a dedicated first-run
+variable and falls back independently to the corresponding legacy shared value.
+Version 1 single-model files migrate by assigning the saved pair to all three
+flows.
 
 ## Web console and persistent log
 
@@ -97,15 +114,28 @@ capture labels and two derived presentation-only PCM level meters. System-output
 meters explicitly capture PipeWire sink monitor ports; a sink target is never
 allowed to fall back to the default microphone. In the
 browser, Conversation, Reply suggestion, Private coach, and Story so far are
-separate scrollable, collapsible, and resizable panels. Their presentation
+separate scrollable, collapsible, and resizable panels. Expanded guidance
+panels consume the full height released by collapsed siblings. Their presentation
 preferences are validated and stored in browser-local storage. Source settings
 use a modal with a live meter for every candidate; selected source identity is
 kept in the application audio-selection file. Panels scroll independently and
 auto-follow only when already at their own bottom. Level updates are never
-written to the reconstruction log and retain no PCM. The model selector and
-reasoning selector affect future requests only. The bounded provider activity
-trail reports request and allowlisted-tool phases without prompts, tool payloads,
-results, credentials, or private hidden reasoning.
+written to the reconstruction log and retain no PCM. The provider-routing panel
+has one searchable model picker and reasoning selector for each flow. Every
+picker shows an explicit result count, readable fixed-height rows, a visible
+scrollbar, and opens around its selected inventory item. Changes affect future
+requests for that flow only and persist in the application config directory.
+Reply, Private coach, and Story-so-far generation have independent clients and
+bounded activity histories. A remote final starts all three concurrently. The
+browser renders
+incomplete Markdown with Streamdown and keeps one chronological activity history
+in each scrollable feed. Status, visible reasoning, tool calls/results, and output
+sit inline in arrival order; each reasoning or tool row starts independently
+collapsed. Cumulative reasoning/output snapshots coalesce independently per flow
+through interleaved parallel generations; tool and lifecycle events remain real
+chronological boundaries. The feed auto-follows only while already at the bottom. Prompts,
+credentials, and hidden chain-of-thought are never exposed. These activity events are included in the
+reconstruction log because tool context can explain a result.
 
 Each `make run` session writes runtime events to a separate file below
 `./logs/`, named `<UTC timestamp>_2xbrainz.log`. The session file rolls at 5 MB
@@ -125,6 +155,15 @@ raw PCM or credential values; credential-shaped fields are redacted.
 `make run` forces its host log directory to mode `0700`; direct Docker callers
 must supply a mode-`0700` mount. Active and rotated log files are always forced
 to mode `0600`, even when the caller has a permissive umask.
+
+At `TWOXBRAINZ_LOG_LEVEL=DEBUG`, the same file includes bounded observability for
+every stream boundary: AIGate SSE open/event/close counts, provider activity
+retention and per-flow cumulative-chunk coalescing, WebSocket snapshot revisions, and
+strict browser acknowledgments for validated snapshots and rendered feeds.
+These diagnostics contain finite identifiers and byte/item/character counts,
+not authorization headers, prompts, transcript bodies, or arbitrary browser
+strings. INFO retains terminal provider results and lifecycle events, not every
+full cumulative token snapshot.
 
 ## AIGate-only deployment
 
@@ -149,14 +188,19 @@ gateway's service name on that network. This optional mode uses a host-side
 run-web` is loopback-only and therefore requires `LIVE_NETWORK=host`.
 
 When `TWOXBRAINZ_WEB_RESEARCH_ENABLED=true`, the reply path exposes only two
-application-owned tools to the model: `search_web` and `execute_code`. The app
-executes at most three requested calls concurrently through AIGate MCP, bounds
-the returned data, then calls the LLM once more for the spoken draft. Commentary
-and rolling summaries are transcript-only and never receive tools. `search_web`
-requires AIGate SearXNG; `execute_code` accepts only application-validated,
-bounded numeric arithmetic and requires the AIGate Piston service. If either
-MCP service is unavailable, the model gets a generic
-tool-unavailable result and the draft still completes without it.
+application-owned tools to the model: `research_web` and `execute_code`. The app
+permits two tool rounds with at most three calls per round; calls in one round
+execute concurrently. Commentary and rolling summaries are transcript-only and
+never receive tools. `research_web` requires AIGate `SEARXNG=1`; it accepts a
+focused query or an exact discovered URL, downloads public pages in 2xbrainz,
+and returns bounded link-preserving Markdown extracted with Trafilatura. Tables,
+lists, prose links, raw Markdown, and resolved relative URLs let the reply model
+follow a relevant documentation page in its second tool round. It does not
+require AIGate's browser MCP. Redirects, credential-bearing URLs, non-public DNS
+destinations, unsupported content, and oversized bodies are rejected.
+`execute_code` accepts only application-validated bounded numeric arithmetic and
+requires AIGate `PISTON=1`. Tool failures return a structured bounded reason and
+remain visible in the Reply activity stream; the draft may still complete.
 Before a search leaves the process, the application rejects obvious structured
 private identifiers including email addresses, URLs, social handles, and
 phone/account-like digit runs. Operators must still avoid placing private names
@@ -235,14 +279,31 @@ host-only Docker mapping helper used for configured endpoints.
 
 `make test` is fully deterministic and never reads `.env` or contacts a
 provider. The explicit `make test-real` target loads the gitignored `.env`,
-uses `FIXTURE_AIGATE_MODEL` (default: `pibox-zai-glm-5-turbo`), validates the
-configured model inventory, and sends only fixed synthetic text to the reply,
-commentary, and summary prompts. It asserts each non-empty result is completed
-and plain prose, then drives a four-turn interview through the production
-coordinator. The interview requires the running summary to retain a commitment,
-risk, mitigation, and unresolved interviewer question; it also requires the
-final reply request to contain the accepted mitigation summary and address the
-final question. It does not contact Talkies.
+validates three distinct models, and sends fixed synthetic text concurrently to
+the production Reply, Coach, and Story paths. Its defaults are
+`FIXTURE_AIGATE_DRAFT_MODEL=cerebras-glm-4.7`,
+`FIXTURE_AIGATE_COMMENTARY_MODEL=claudebox-sonnet`, and
+`FIXTURE_AIGATE_SUMMARY_MODEL=pibox-zai-glm-5-turbo`; each Make variable is
+independently overridable. It asserts each non-empty result is completed and
+plain prose. The Reply model must also autonomously call `research_web` for a
+synthetic public-documentation question, consume the fetched Markdown, and
+complete its spoken reply. The fixture then drives a four-turn interview through the production
+coordinator with the same assignments. The interview requires the running
+summary to retain a commitment, risk, mitigation, and unresolved interviewer
+question; it also requires the final reply request to contain the accepted
+mitigation summary and address the final question.
+
+After the prompt contract passes, the same target queries AIGate's Talkies
+`/v1/models` proxy for the selected `TWOXBRAINZ_TALKIES_MODEL`. The model must
+advertise an integer `max_concurrency` of at least two. The test then opens two
+native Talkies WebSockets with distinct stream identities and waits until both
+servers have replied `ready` before either stream sends audio. Both connections
+receive the bundled bounded CC0 WAV in real time and must return a non-empty
+final transcript plus exactly one non-cancelled terminal statistics event with
+the expected frame count. A fixed barrier and total deadline make serialized or
+stalled handling fail instead of hanging or reporting false concurrency.
+Run `make test-real-talkies` to execute this focused ASR concurrency proof
+without running the separate LLM prompt fixture first.
 
 `make live-product-fixture` runs the four-turn synthetic-audio interview with
 real AIGate rather than the fixture gateway. It releases each opposing turn

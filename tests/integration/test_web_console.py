@@ -20,6 +20,11 @@ from two_x_brainz.audio_selection import (
     AudioSelectionSetup,
     AudioSelectionStore,
 )
+from two_x_brainz.provider_selection import (
+    ProviderAssignment,
+    ProviderFlow,
+    ProviderSelection,
+)
 from two_x_brainz.terminal import LiveTerminal
 from two_x_brainz.web import WebConsole
 
@@ -88,6 +93,49 @@ class WebConsoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 await console.close()
 
+    async def test_frontend_stream_diagnostics_are_validated_and_logged(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            console = WebConsole(
+                _state_with_selection(Path(temporary_directory) / "audio.json"),
+                port=_free_port(),
+                static_directory=_static_app(Path(temporary_directory)),
+            )
+            await console.open()
+            try:
+                with self.assertLogs("two_x_brainz.web", level="DEBUG") as captured:
+                    async with connect(
+                        _websocket_url(console),
+                        origin=_origin(console),
+                        proxy=None,
+                    ) as websocket:
+                        await websocket.recv()
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    "type": "client_debug",
+                                    "event": "provider_feed_rendered",
+                                    "output_kind": "draft",
+                                    "item_count": 5,
+                                    "text_characters": 81,
+                                }
+                            )
+                        )
+                        await asyncio.sleep(0.05)
+            finally:
+                await console.close()
+
+        diagnostic = next(
+            record
+            for record in captured.records
+            if record.getMessage() == "frontend stream diagnostic received"
+        )
+        self.assertEqual(
+            diagnostic.__dict__["frontend_event"], "provider_feed_rendered"
+        )
+        self.assertEqual(diagnostic.__dict__["output_kind"], "draft")
+        self.assertEqual(diagnostic.__dict__["item_count"], 5)
+        self.assertEqual(diagnostic.__dict__["text_characters"], 81)
+
     async def test_websocket_rejects_cross_origin_and_malformed_commands(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             console = WebConsole(
@@ -126,6 +174,25 @@ class WebConsoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         await websocket.recv()
                     assert closed.exception.rcvd is not None
                     self.assertEqual(closed.exception.rcvd.code, 1009)
+                async with connect(
+                    _websocket_url(console),
+                    origin=_origin(console),
+                    proxy=None,
+                ) as websocket:
+                    await websocket.recv()
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "type": "client_debug",
+                                "event": "inject_arbitrary_log_message",
+                                "message": "untrusted text",
+                            }
+                        )
+                    )
+                    with self.assertRaises(ConnectionClosedError) as closed:
+                        await websocket.recv()
+                    assert closed.exception.rcvd is not None
+                    self.assertEqual(closed.exception.rcvd.code, 1008)
                 async with connect(
                     _websocket_url(console),
                     origin=_origin(console),
@@ -201,8 +268,7 @@ class WebConsoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
             callback = AsyncMock()
             console.configure_provider(
                 models=("model-a", "model-b"),
-                active_model="model-a",
-                reasoning_effort="none",
+                selection=ProviderSelection.uniform("model-a", "none"),
                 callback=callback,
             )
             with patch(
@@ -222,6 +288,7 @@ class WebConsoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                             json.dumps(
                                 {
                                     "type": "provider_settings",
+                                    "flow": "summary",
                                     "model": "model-not-in-inventory",
                                     "reasoning_effort": "high",
                                 }
@@ -231,6 +298,7 @@ class WebConsoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                             json.dumps(
                                 {
                                     "type": "provider_settings",
+                                    "flow": "summary",
                                     "model": "model-b",
                                     "reasoning_effort": "high",
                                 }
@@ -241,7 +309,15 @@ class WebConsoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     await console.close()
 
-        callback.assert_awaited_once_with("model-b", "high")
+        callback.assert_awaited_once_with(ProviderFlow.SUMMARY, "model-b", "high")
+        self.assertEqual(
+            console.snapshot().provider_selection,
+            ProviderSelection(
+                draft=ProviderAssignment("model-a", "none"),
+                commentary=ProviderAssignment("model-a", "none"),
+                summary=ProviderAssignment("model-b", "high"),
+            ),
+        )
         discover.assert_awaited_once_with()
         assert state.audio_setup is not None
         self.assertEqual(state.audio_setup.microphones, ())

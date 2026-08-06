@@ -1,0 +1,17 @@
+title = "2xbrainz secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Gitignored local state, caches, dependencies, and build output"
+paths = [
+  '''(^|/)\.env$''',
+  '''(^|/)\.env\.local$''',
+  '''(^|/)\.(?:anustimes|brutal_reviews|plan-and-delegate|research_files|secaudit|telemetry|testing)(?:/|$)''',
+  '''(^|/)\.(?:pnpm-store|pytest_cache|ruff_cache|venv)(?:/|$)''',
+  '''(^|/)__pycache__(?:/|$)''',
+  '''(^|/)web/(?:dist|node_modules)(?:/|$)''',
+  '''(^|/)logs/.*\.log(?:\.\d+)?$''',
+  '''(^|/)plan\.md$''',
+]

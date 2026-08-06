@@ -8,9 +8,14 @@ source distributions and lockfiles remain the authoritative dependency lists.
 
 | License | Runtime components |
 | --- | --- |
-| MIT | annotated-doc, annotated-types, anyio, fastapi, markdown-it-py, mdurl, pydantic, pydantic-core, pysilero-vad, rich, Svelte, typing-inspection |
-| BSD-3-Clause | click, h11, idna, starlette, uvicorn, websockets |
-| BSD-2-Clause | Pygments |
+| MIT | annotated-doc, annotated-types, anyio, charset-normalizer, fastapi, markdown-it-py, mdurl, pydantic, pydantic-core, pysilero-vad, pytz, rich, six, Svelte, svelte-streamdown, typing-inspection, tzlocal, urllib3 |
+| BSD-3-Clause | Babel, click, dateparser, h11, idna, lxml, lxml-html-clean, starlette, uvicorn, websockets |
+| BSD-2-Clause | justext, Pygments |
+| Apache-2.0 | courlan, htmldate, trafilatura |
+| Apache-2.0 OR BSD-3-Clause | python-dateutil |
+| Apache-2.0 AND CNRI-Python | regex |
+| MPL-2.0 | certifi |
+| MPL-1.1 OR GPL-2.0-only OR LGPL-2.1-or-later | tld |
 | PSF-2.0 | typing-extensions |
 
 The frontend build toolchain also contains packages under MIT, MIT-0,
@@ -41,6 +46,13 @@ Svelte 5.56.8 is distributed under the MIT License:
 > LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 > OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 > SOFTWARE.
+
+## svelte-streamdown notice
+
+svelte-streamdown 3.1.2 is distributed under the MIT License, copyright 2024
+Arnaud Derbey. Its license grants permission to use, copy, modify, merge,
+publish, distribute, sublicense, and sell the software, subject to retaining its
+copyright and permission notice. It is provided without warranty.
 
 ## Reproducing the inventory
 

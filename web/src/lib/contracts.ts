@@ -1,4 +1,10 @@
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected';
+export type ProviderOutputKind = 'draft' | 'commentary' | 'summary';
+
+export interface ProviderAssignment {
+  model: string;
+  reasoningEffort: string;
+}
 
 export interface AudioMeter {
   index: number;
@@ -30,8 +36,7 @@ export interface WebSnapshot {
   sessionState: string;
   provider: {
     models: string[];
-    activeModel: string;
-    reasoningEffort: string;
+    assignments: Record<ProviderOutputKind, ProviderAssignment>;
     activity: ProviderActivity[];
   };
   activeAudio: {
@@ -46,11 +51,31 @@ export interface WebSnapshot {
 
 export interface ProviderActivity {
   phase: string;
-  output_kind?: string;
+  flow_id?: string;
+  output_kind?: ProviderOutputKind;
   model?: string;
   reasoning_effort?: string;
   tool?: string;
+  tool_call_id?: string;
+  tool_input?: unknown;
+  tool_result?: string;
+  reasoning?: string;
+  reasoning_exposed?: boolean;
+  output?: string;
+  tools_enabled?: boolean;
+  error_type?: string;
+  error_message?: string;
 }
+
+export type FrontendDebugMessage = {
+  type: 'client_debug';
+  event: 'websocket_opened' | 'snapshot_received' | 'snapshot_rejected' | 'provider_feed_rendered';
+  output_kind?: ProviderOutputKind;
+  activity_count?: number;
+  item_count?: number;
+  text_characters?: number;
+  reason?: 'invalid_json' | 'invalid_snapshot';
+};
 
 export const EMPTY_SNAPSHOT: WebSnapshot = {
   type: 'snapshot',
@@ -64,8 +89,11 @@ export const EMPTY_SNAPSHOT: WebSnapshot = {
   sessionState: 'starting',
   provider: {
     models: [],
-    activeModel: '',
-    reasoningEffort: 'none',
+    assignments: {
+      draft: { model: '', reasoningEffort: 'none' },
+      commentary: { model: '', reasoningEffort: 'none' },
+      summary: { model: '', reasoningEffort: 'none' }
+    },
     activity: []
   },
   activeAudio: {
@@ -89,8 +117,7 @@ export function isWebSnapshot(value: unknown): value is WebSnapshot {
     isRecord(value.provider) &&
     Array.isArray(value.provider.models) &&
     value.provider.models.every((model) => typeof model === 'string') &&
-    typeof value.provider.activeModel === 'string' &&
-    typeof value.provider.reasoningEffort === 'string' &&
+    isProviderAssignments(value.provider.assignments) &&
     Array.isArray(value.provider.activity) &&
     value.provider.activity.every(isProviderActivity) &&
     isRecord(value.activeAudio) &&
@@ -101,6 +128,21 @@ export function isWebSnapshot(value: unknown): value is WebSnapshot {
     value.audioSetup.microphones.every(isAudioMeter) &&
     Array.isArray(value.audioSetup.systemMonitors) &&
     value.audioSetup.systemMonitors.every(isAudioMeter)
+  );
+}
+
+function isProviderAssignments(value: unknown): value is WebSnapshot['provider']['assignments'] {
+  if (!isRecord(value)) return false;
+  return (
+    isProviderAssignment(value.draft) &&
+    isProviderAssignment(value.commentary) &&
+    isProviderAssignment(value.summary)
+  );
+}
+
+function isProviderAssignment(value: unknown): value is ProviderAssignment {
+  return (
+    isRecord(value) && typeof value.model === 'string' && typeof value.reasoningEffort === 'string'
   );
 }
 

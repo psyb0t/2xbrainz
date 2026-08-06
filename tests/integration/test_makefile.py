@@ -80,9 +80,36 @@ class MakefileIntegrationTests(unittest.TestCase):
         result = _dry_run("test-real")
 
         self.assertIn("for image in 2xbrainz-test-real:local", result.stdout)
+        self.assertIn("real_aigate_prompts.py", result.stdout)
+        self.assertIn("real_talkies_concurrency.py", result.stdout)
+        self.assertIn("TWOXBRAINZ_CONCURRENCY_AUDIO=/fixture/audio.wav", result.stdout)
+        self.assertIn("commons-audio-cc0.wav:/fixture/audio.wav:ro", result.stdout)
         self.assertNotIn("for image in 2xbrainz:local", result.stdout)
         self.assertNotIn("docker image rm --force", result.stdout)
         self.assertNotIn("docker image prune", result.stdout)
+
+    def test_focused_real_talkies_test_uses_the_concurrency_fixture(self) -> None:
+        result = _dry_run(
+            "test-real-talkies",
+            "TALKIES_MODEL=nemotron-3.5-asr-0.6b",
+        )
+
+        self.assertIn("real_talkies_concurrency.py", result.stdout)
+        self.assertIn(
+            'TWOXBRAINZ_TALKIES_MODEL="nemotron-3.5-asr-0.6b"',
+            result.stdout,
+        )
+        self.assertIn("for image in 2xbrainz-test-real:local", result.stdout)
+
+    def test_browser_test_uses_the_cleanup_owned_runner(self) -> None:
+        result = _dry_run("test-browser")
+
+        self.assertIn("./scripts/browser_smoke.sh", result.stdout)
+        self.assertIn(
+            'BROWSER_TEST_APP_IMAGE="2xbrainz-browser-test:local"',
+            result.stdout,
+        )
+        self.assertIn("psyb0t/stealthy-auto-browse@sha256:", result.stdout)
 
 
 def _dry_run(target: str, *variables: str) -> subprocess.CompletedProcess[str]:

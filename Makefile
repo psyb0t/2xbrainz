@@ -4,6 +4,8 @@ comma := ,
 DEV_IMAGE := 2xbrainz-dev:local
 APP_IMAGE := 2xbrainz:local
 REAL_TEST_IMAGE := 2xbrainz-test-real:local
+BROWSER_TEST_APP_IMAGE := 2xbrainz-browser-test:local
+BROWSER_TEST_IMAGE := psyb0t/stealthy-auto-browse@sha256:0dab459e28c8872ea2f54048f91c2b3aae10b43b7e1ec44d9c56aca8d456169d
 WEB_TOOL_IMAGE := node:24-bookworm-slim@sha256:cd84903a12dbd26b46f1f3b8144a2568c41c5d37ddd0c7a80a34c7a19786b35f
 RELEASE_IMAGE ?= psyb0t/2xbrainz
 VERSION ?= $(shell awk -F'"' '/^version[[:space:]]*=[[:space:]]*"/ { print $$2; exit }' pyproject.toml)
@@ -29,6 +31,9 @@ AIGATE_URL ?=
 FIXTURE_TTS_MODEL ?= kokoro-82m-nvidia
 FIXTURE_TTS_VOICE ?= af_heart
 FIXTURE_AIGATE_MODEL ?= pibox-zai-glm-5-turbo
+FIXTURE_AIGATE_DRAFT_MODEL ?= cerebras-glm-4.7
+FIXTURE_AIGATE_COMMENTARY_MODEL ?= claudebox-sonnet
+FIXTURE_AIGATE_SUMMARY_MODEL ?= pibox-zai-glm-5-turbo
 FIXTURE_REAL_AIGATE ?= false
 FIXTURE_AUDIO_SCENARIO ?= overlap
 BENCHMARK_DRAFT_ARGUMENT ?=
@@ -76,7 +81,7 @@ define RUN_WITH_IMAGE_CLEANUP
 endef
 
 .DEFAULT_GOAL := help
-.PHONY: help version dev-image shell dep pkg-lock pkg-add pkg-remove pkg-update pkg-upgrade web-pkg-lock web-check web-format web-build lint lint-fix format test test-unit test-integration test-coverage test-real build run validate-web-network run-web logs doctor replay devices live-fixture live-interview-fixture live-product-fixture benchmark benchmark-with-draft benchmark-candidates benchmark-candidates-with-draft clean
+.PHONY: help version dev-image shell dep pkg-lock pkg-add pkg-remove pkg-update pkg-upgrade web-pkg-lock web-check web-format web-build lint lint-fix format test test-unit test-integration test-coverage test-browser test-real test-real-talkies build run validate-web-network run-web logs doctor replay devices live-fixture live-interview-fixture live-product-fixture benchmark benchmark-with-draft benchmark-candidates benchmark-candidates-with-draft clean
 
 help: ## Show supported development commands.
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -134,7 +139,7 @@ lint: dev-image web-check ## Run lint, format check, and strict type checking in
 	$(DEV_RUN) uv run --frozen --group dev ruff check src tests
 	$(DEV_RUN) uv run --frozen --group dev ruff format --check src tests
 	$(DEV_RUN) uv run --frozen --group dev pyright
-	$(DEV_RUN) shellcheck scripts/bump_exclude_newer.sh
+	$(DEV_RUN) shellcheck scripts/bump_exclude_newer.sh scripts/browser_smoke.sh
 
 lint-fix: dev-image ## Apply safe lint fixes and formatting inside Docker.
 	$(DEV_RUN_WRITE) uv run --frozen --group dev ruff check --fix src tests
@@ -152,8 +157,17 @@ test-integration: ## Run integration tests inside Docker, then remove its image.
 test-coverage: ## Run tests and remove the image; coverage is not installed yet.
 	$(call RUN_WITH_IMAGE_CLEANUP,$(BUILD_DEV_IMAGE) && $(DEV_RUN) uv run --frozen --group dev pytest -o cache_dir=/tmp/pytest-cache tests,$(DEV_IMAGE))
 
-test-real: ## Check real AIGate prompts, then remove its dedicated image.
-	$(call RUN_WITH_IMAGE_CLEANUP,(test -f "$(ENV_FILE)" || { echo "$(ENV_FILE) is required and must be gitignored" >&2; exit 1; }) && mkdir -p "$(FIXTURE_TRACE_DIRECTORY)" && $(BUILD_REAL_TEST_IMAGE) && docker run --rm --init $(RUNTIME_LIMITS) --read-only --tmpfs /tmp:rw$(comma)noexec$(comma)nosuid$(comma)size=512m --user "$$(id -u):$$(id -g)" --cap-drop ALL --security-opt no-new-privileges:true --network "$(LIVE_NETWORK)" $(FIXTURE_DOCKER_HOST_ARGUMENTS) --env-file "$(ENV_FILE)" $(AIGATE_URL_ARGUMENT) -e TWOXBRAINZ_AIGATE_MODEL="$(FIXTURE_AIGATE_MODEL)" -e TWOXBRAINZ_FIXTURE_TRACE_DIR=/fixture-traces -v "$(FIXTURE_TRACE_DIRECTORY):/fixture-traces:rw" -v "$(PROJECT_ROOT)/tests/integration/real_aigate_prompts.py:/fixture/real_aigate_prompts.py:ro" --entrypoint python $(REAL_TEST_IMAGE) /fixture/real_aigate_prompts.py,$(REAL_TEST_IMAGE))
+test-browser: ## Run a real-browser console smoke and remove its containers and image.
+	BROWSER_TEST_PROJECT_ROOT="$(PROJECT_ROOT)" \
+	BROWSER_TEST_APP_IMAGE="$(BROWSER_TEST_APP_IMAGE)" \
+	BROWSER_TEST_IMAGE="$(BROWSER_TEST_IMAGE)" \
+	./scripts/browser_smoke.sh
+
+test-real: ## Check real AIGate prompts and two-stream Talkies concurrency.
+	$(call RUN_WITH_IMAGE_CLEANUP,(test -f "$(ENV_FILE)" || { echo "$(ENV_FILE) is required and must be gitignored" >&2; exit 1; }) && (test -f "$(BENCHMARK_AUDIO)" || { echo "BENCHMARK_AUDIO must name a WAV file" >&2; exit 1; }) && mkdir -p "$(FIXTURE_TRACE_DIRECTORY)" && $(BUILD_REAL_TEST_IMAGE) && docker run --rm --init $(RUNTIME_LIMITS) --read-only --tmpfs /tmp:rw$(comma)noexec$(comma)nosuid$(comma)size=512m --user "$$(id -u):$$(id -g)" --cap-drop ALL --security-opt no-new-privileges:true --network "$(LIVE_NETWORK)" $(FIXTURE_DOCKER_HOST_ARGUMENTS) --env-file "$(ENV_FILE)" $(AIGATE_URL_ARGUMENT) -e TWOXBRAINZ_AIGATE_MODEL="$(FIXTURE_AIGATE_DRAFT_MODEL)" -e TWOXBRAINZ_FIXTURE_DRAFT_MODEL="$(FIXTURE_AIGATE_DRAFT_MODEL)" -e TWOXBRAINZ_FIXTURE_COMMENTARY_MODEL="$(FIXTURE_AIGATE_COMMENTARY_MODEL)" -e TWOXBRAINZ_FIXTURE_SUMMARY_MODEL="$(FIXTURE_AIGATE_SUMMARY_MODEL)" -e TWOXBRAINZ_FIXTURE_TRACE_DIR=/fixture-traces -v "$(FIXTURE_TRACE_DIRECTORY):/fixture-traces:rw" -v "$(PROJECT_ROOT)/tests/integration/real_aigate_prompts.py:/fixture/real_aigate_prompts.py:ro" --entrypoint python $(REAL_TEST_IMAGE) /fixture/real_aigate_prompts.py && docker run --rm --init $(RUNTIME_LIMITS) --read-only --tmpfs /tmp:rw$(comma)noexec$(comma)nosuid$(comma)size=512m --user "$$(id -u):$$(id -g)" --cap-drop ALL --security-opt no-new-privileges:true --network "$(LIVE_NETWORK)" $(FIXTURE_DOCKER_HOST_ARGUMENTS) --env-file "$(ENV_FILE)" $(AIGATE_URL_ARGUMENT) $(TALKIES_MODEL_ARGUMENT) -e TWOXBRAINZ_FIXTURE_TRACE_DIR=/fixture-traces -e TWOXBRAINZ_CONCURRENCY_AUDIO=/fixture/audio.wav -v "$(FIXTURE_TRACE_DIRECTORY):/fixture-traces:rw" -v "$(abspath $(BENCHMARK_AUDIO)):/fixture/audio.wav:ro" -v "$(PROJECT_ROOT)/tests/integration/real_talkies_concurrency.py:/fixture/real_talkies_concurrency.py:ro" --entrypoint python $(REAL_TEST_IMAGE) /fixture/real_talkies_concurrency.py,$(REAL_TEST_IMAGE))
+
+test-real-talkies: ## Prove two concurrent Talkies streams through real AIGate.
+	$(call RUN_WITH_IMAGE_CLEANUP,(test -f "$(ENV_FILE)" || { echo "$(ENV_FILE) is required and must be gitignored" >&2; exit 1; }) && (test -f "$(BENCHMARK_AUDIO)" || { echo "BENCHMARK_AUDIO must name a WAV file" >&2; exit 1; }) && mkdir -p "$(FIXTURE_TRACE_DIRECTORY)" && $(BUILD_REAL_TEST_IMAGE) && docker run --rm --init $(RUNTIME_LIMITS) --read-only --tmpfs /tmp:rw$(comma)noexec$(comma)nosuid$(comma)size=512m --user "$$(id -u):$$(id -g)" --cap-drop ALL --security-opt no-new-privileges:true --network "$(LIVE_NETWORK)" $(FIXTURE_DOCKER_HOST_ARGUMENTS) --env-file "$(ENV_FILE)" $(AIGATE_URL_ARGUMENT) $(TALKIES_MODEL_ARGUMENT) -e TWOXBRAINZ_FIXTURE_TRACE_DIR=/fixture-traces -e TWOXBRAINZ_CONCURRENCY_AUDIO=/fixture/audio.wav -v "$(FIXTURE_TRACE_DIRECTORY):/fixture-traces:rw" -v "$(abspath $(BENCHMARK_AUDIO)):/fixture/audio.wav:ro" -v "$(PROJECT_ROOT)/tests/integration/real_talkies_concurrency.py:/fixture/real_talkies_concurrency.py:ro" --entrypoint python $(REAL_TEST_IMAGE) /fixture/real_talkies_concurrency.py,$(REAL_TEST_IMAGE))
 
 build: ## Build and tag the production web application image.
 	$(BUILD_APP_IMAGES)

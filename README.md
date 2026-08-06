@@ -86,8 +86,12 @@ for the full list. AIGate keeps Talkies on a private network and serves it at
 
 ```bash
 TWOXBRAINZ_AIGATE_URL=http://localhost:4000/v1
-TWOXBRAINZ_AIGATE_MODEL=your-configured-model
-TWOXBRAINZ_AIGATE_REASONING_EFFORT=none
+TWOXBRAINZ_AIGATE_REPLY_MODEL=cerebras-glm-4.7
+TWOXBRAINZ_AIGATE_REPLY_REASONING_EFFORT=none
+TWOXBRAINZ_AIGATE_COACH_MODEL=your-coaching-model
+TWOXBRAINZ_AIGATE_COACH_REASONING_EFFORT=none
+TWOXBRAINZ_AIGATE_SUMMARY_MODEL=your-summary-model
+TWOXBRAINZ_AIGATE_SUMMARY_REASONING_EFFORT=none
 TWOXBRAINZ_AIGATE_TOKEN=your-gateway-token
 TWOXBRAINZ_TALKIES_MODEL=nemotron-3.5-asr-0.6b
 ```
@@ -167,24 +171,35 @@ both capture gates but keeps the browser, transcript, story, and guidance alive.
 
 The top bar provides:
 
-- the current AIGate model inventory and a runtime model selector;
-- reasoning effort (`Default`, `Minimal`, `Low`, `Medium`, or `High`) for
-  future requests; and
-- a bounded LLM activity trail showing request phases, output type, model, and
-  allowlisted search/calculation tool calls. It reports provider activity, not
-  fabricated or private hidden chain-of-thought.
+- three searchable AIGate model pickers—one each for Reply, Private coach, and
+  Story so far—with result counts, readable scrolling inventories, visible
+  current-model markers, and automatic positioning on each selected model.
+  Every flow also has its own reasoning effort (`Default`, `Minimal`, `Low`,
+  `Medium`, or `High`); all six choices persist across runs; and
+- separate live Reply, Private coach, and Story-so-far generation flows. Each is
+  one continuous chronological stream: status, visible reasoning, tool activity,
+  and streamed Markdown appear inline in arrival order. Every reasoning and tool
+  row starts independently collapsed; there are no per-generation cards or
+  grouped trace boxes. Cumulative reasoning and output snapshots coalesce per
+  flow even while Reply, Coach, and Story run concurrently, so token updates do
+  not become duplicate `Thinking` rows. It never fabricates or claims access to
+  hidden chain-of-thought.
 
 Conversation, Reply, Private coach, and Story so far remain separate scrollable,
-collapsible, resizable panels. Their layout persists in browser-local storage.
+collapsible, resizable panels. Expanded panels consume all height released by
+collapsed siblings, and their layout persists in browser-local storage. Each feed
+auto-follows new events only while it is already at the bottom, so scrolling back
+through the full activity history is not interrupted.
 
 **Sources** opens audio settings. Every visible microphone and system-audio
-candidate has its own live meter. **Redetect devices** refreshes PipeWire
-discovery after Bluetooth or USB devices disconnect or reconnect. Saving a new
-pair applies it immediately. Each capture side is supervised independently: if
-the microphone disappears, system audio keeps transcribing while the microphone
-retries; reconnecting the same node or selecting a replacement restores only
-that side. The source strip shows each channel's `idle`, `ready`,
-`switching`, or `reconnecting` state.
+candidate has its own live meter. While the modal is open, the inventory
+automatically refreshes; **Redetect devices** requests an immediate refresh.
+Disconnected Bluetooth or USB nodes disappear and returning nodes reappear.
+Saving a new pair applies it immediately. Each capture side is supervised
+independently: if the microphone disappears, system audio keeps transcribing
+while the microphone retries; reconnecting the same node or selecting a
+replacement restores only that side. The source strip shows each channel's
+`idle`, `ready`, `switching`, or `reconnecting` state.
 
 Guidance is advisory: it is never sent or spoken, has no accept/dismiss state,
 and is not supplied back to the model. Each generation uses the current
@@ -195,6 +210,16 @@ Every runtime event goes to a rotating local JSON log:
 ```bash
 make logs
 ```
+
+Set `TWOXBRAINZ_LOG_LEVEL=DEBUG` to trace the full streaming handoff without
+recording credentials or raw provider payloads: AIGate SSE connection/events,
+activity retention or coalescing, WebSocket snapshot delivery, browser receipt,
+and each Reply/Coach/Story feed render. Browser diagnostics are a strict finite
+schema of event names and numeric counts sent back over the same-origin
+WebSocket; browser code cannot choose arbitrary log messages or fields.
+High-frequency cumulative snapshots are logged as character counts at DEBUG;
+the final reasoning/output and lifecycle records remain in the reconstruction
+log without copying every growing snapshot into INFO.
 
 See [Data handling](#data-handling) before sharing that file.
 
@@ -207,11 +232,19 @@ allowlisted MCP endpoints. The application derives
 `TWOXBRAINZ_AIGATE_URL`, which must end in `/v1`.
 
 For optional current-context help, set `TWOXBRAINZ_WEB_RESEARCH_ENABLED=true`
-and enable AIGate's SearXNG MCP service. The model sees only `search_web` and a
-bounded arithmetic-only `execute_code` tool; it never receives AIGate's full
-tool catalog. It may make up to three independent tool calls concurrently, then
-uses the returned bounded results to produce its final spoken draft. AIGate's
-SearXNG configuration controls which public search engines receive a query.
+and enable AIGate with `SEARXNG=1` (`PISTON=1` additionally enables arithmetic).
+The reply model sees only `research_web` and bounded arithmetic-only
+`execute_code`; it never receives AIGate's full tool catalog. `research_web`
+accepts either a focused query or an exact discovered URL. It searches through
+AIGate, selects a clearly matching public result, downloads that page locally,
+and returns bounded, link-preserving Markdown extracted with Trafilatura. HTML
+tables, lists, and prose retain their links; raw Markdown pages are supported;
+and relative links are resolved so the model can follow relevant `docs/*.md`
+pages in the next tool round. It does not depend on AIGate's browser MCP.
+Redirects, credentials, unsupported content, oversized pages, and non-public DNS
+destinations are rejected. The model may issue up to three distinct research or
+calculation calls concurrently in each of two bounded rounds. Tool and provider
+failures appear with a bounded reason in the relevant Reply activity stream.
 Obvious structured private identifiers are rejected before a query leaves the
 app; do not enable research for conversations whose unfamiliar terms are
 themselves private.
@@ -234,14 +267,18 @@ PipeWire system ─────┘     (same ASR model)    └─ local web cons
 - **Talkies** is the ASR boundary. Its native WebSocket streams revisioned
   partial, endpoint, and final events.
 - **The coordinator** owns reconciliation, turn state, cancellation, and throwing
-  away stale results. It writes one timeline entry per finalized turn, puts the
-  reply draft first, and only runs commentary or the rolling summary when nothing
-  more important is pending. Every provider call has a hard 60-second deadline, so
-  a wedged model can't hold the session hostage.
+  away stale results. It writes one timeline entry per finalized turn and starts
+  reply, private coaching, and rolling-story work concurrently after a remote
+  final. Every provider call has a hard 60-second deadline, so a wedged model
+  cannot hold the session hostage. Cancelling an unfinished provider request
+  never removes finalized transcript state; the next silence-triggered request
+  is rebuilt from the complete current transcript. Only unfinished model output,
+  reasoning, and tool work are discarded.
 - **The text provider** only ever sees a minimized speaker-tagged transcript.
 - **The web console** is the sole live operator surface. Its loopback-only
-  control socket drives the session while the parallel reconstruction log
-  carries schema-versioned records with opaque turn/generation IDs.
+  WebSocket carries controls and SSE-style incremental activity in one
+  bidirectional channel. The parallel reconstruction log carries
+  schema-versioned records with opaque turn/generation IDs.
 
 More detail in [docs/architecture.md](docs/architecture.md). The MVP platform
 boundary is recorded in [ADR-0001](docs/decisions/0001-mvp-launch-profile.md);
@@ -278,6 +315,7 @@ Everything runs in containers; you don't need Python on your host.
 make help          # every target
 make lint          # ruff + pyright + shellcheck
 make test          # unit + integration, offline and deterministic
+make test-browser  # compiled UI in a real browser; self-cleaning containers
 make build         # production image
 make replay        # the bundled fixture
 ```
@@ -285,9 +323,22 @@ make replay        # the bundled fixture
 `make test` never loads `.env` and never calls Talkies or AIGate — the providers
 and audio boundaries are mocked or local protocol fixtures. Every `test*`
 target removes the exact local Docker image tags it builds, on success or
-failure. The targets that do hit real services (`make live-fixture`, `make test-real`,
-`make live-product-fixture`, `make benchmark`) are deliberately separate, need a
-real `.env`, and are not part of `make test` or CI.
+failure. `make test-browser` starts uniquely named `--rm` fixture and browser
+containers, verifies the compiled console through the digest-pinned stealth
+browser, and stops both from an exit trap even when an assertion or interrupt
+fails. The targets that do hit real services (`make live-fixture`,
+`make test-real`, `make live-product-fixture`, `make benchmark`) are deliberately
+separate, need a real `.env`, and are not part of `make test` or CI.
+`make test-real` sends Reply, Coach, and Story prompt checks concurrently through
+three distinct defaults (`cerebras-glm-4.7`, `claudebox-sonnet`, and
+`pibox-zai-glm-5-turbo`). It also verifies that AIGate advertises at least two
+requests for the selected Talkies model and completes two native ASR streams
+concurrently against the bundled CC0 WAV. Use `make test-real-talkies` to run
+only that provider check. The Reply check requires the model itself to recognize
+that public documentation is needed, call `research_web`, consume the fetched
+page, and finish a one-line spoken response. See
+[docs/configuration.md](docs/configuration.md#real-provider-test-tiers) for the
+full contract.
 
 Picking an ASR model? [docs/asr-evaluation.md](docs/asr-evaluation.md) covers the
 benchmark targets and the fixture's provenance.

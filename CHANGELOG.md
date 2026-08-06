@@ -3,6 +3,41 @@
 All notable changes per release. Versions follow
 [semantic versioning](https://semver.org).
 
+## v1.1.0 — 2026-08-06
+
+Make live guidance faster, observable, independently routed, and resilient to
+provider and audio-device failures.
+
+- Add searchable, independently persisted AIGate model and reasoning-effort
+  assignments for Reply, Private coach, and Story so far. Their separate
+  histories render incremental Streamdown output, preserve prior generations,
+  follow only while at the bottom, and collapse provider-visible reasoning plus
+  tool events by default. Dedicated first-run environment values configure each
+  flow's model and reasoning effort independently, with shared legacy fallbacks.
+- Run reply, coaching, and story generation concurrently. Normalize cumulative
+  provider snapshots and model sentinel tokens so streamed reasoning and output
+  no longer duplicate text.
+- Exercise the three LLM paths concurrently against distinct Cerebras,
+  Claudebox, and PIBOX models in the opt-in real-provider fixture. Require the
+  Reply model itself to complete a real research tool round, not merely validate
+  that the underlying search/fetch implementation is reachable.
+- Add two bounded tool rounds and an application-owned `research_web` tool that
+  searches through AIGate or reads an exact discovered URL, extracts
+  link-preserving Markdown with Trafilatura, and lets the model follow relevant
+  documentation links. Keep the full AIGate catalog out of model context and
+  expose bounded tool/provider failure reasons separately from cancellation.
+- Supervise microphone and system audio independently so a disconnected channel
+  retries or switches routes without cancelling its peer, the web server, or the
+  accumulated transcript and story.
+- Add automatic and operator-triggered in-app PipeWire redetection, quiesce audio
+  previews before discovery, remove disconnected nodes from the picker, and
+  apply persisted source changes immediately to the affected channel.
+- Reallocate released guidance height to expanded panels when any sibling is
+  collapsed, keeping the full browser viewport useful.
+- Add deterministic browser-stream observability tests, real autonomous research
+  qualification, and a two-stream Talkies concurrency proof. Synchronize the
+  locked dependencies and third-party inventory.
+
 ## v1.0.0 — 2026-08-05
 
 Make the loopback Svelte console the sole live operator surface and keep live

@@ -33,6 +33,7 @@ class CLIReplayIntegrationTests(unittest.TestCase):
                 "turn",
                 "timeline",
                 "draft",
+                "commentary",
                 "summary",
             ],
         )
@@ -119,9 +120,12 @@ class CLIReplayIntegrationTests(unittest.TestCase):
                 "context_revision",
             },
         )
+        self.assertEqual(set(records[9]), set(records[8]))
         self.assertTrue(all(record["schema_version"] == 1 for record in records))
         self.assertEqual(records[5]["turn_id"], records[6]["turn_id"])
         self.assertEqual(records[5]["turn_id"], records[7]["trigger_turn_id"])
+        self.assertEqual(records[5]["turn_id"], records[8]["trigger_turn_id"])
+        self.assertEqual(records[5]["turn_id"], records[9]["trigger_turn_id"])
 
     def test_doctor_reports_aigate_configuration_without_tokens(self) -> None:
         environment = os.environ.copy()

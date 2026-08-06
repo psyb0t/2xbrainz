@@ -4,6 +4,7 @@ import asyncio
 import json
 import unittest
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,6 +18,7 @@ from two_x_brainz.capture import (
     InterStreamDriftMonitor,
     InterStreamDriftStats,
 )
+from two_x_brainz.config import Settings
 from two_x_brainz.constants import DEFAULT_FRAME_BYTES
 from two_x_brainz.contracts import (
     ASRStreamStats,
@@ -30,12 +32,17 @@ from two_x_brainz.contracts import (
 from two_x_brainz.coordinator import ConversationCoordinator
 from two_x_brainz.errors import (
     CaptureError,
+    ConfigurationError,
     ProtocolError,
     RemoteServiceError,
 )
+from two_x_brainz.provider_selection import ProviderAssignment, ProviderSelection
 from two_x_brainz.runtime import (
+    _aigate_client,  # pyright: ignore[reportPrivateUsage]
     _gated_frames,  # pyright: ignore[reportPrivateUsage]
+    _initial_provider_selection,  # pyright: ignore[reportPrivateUsage]
     _supervise_audio_channel,  # pyright: ignore[reportPrivateUsage]
+    _write_provider_activity_event,  # pyright: ignore[reportPrivateUsage]
     asr_segment_stream_id,
     handle_control_line,
     session_error_reason,
@@ -53,6 +60,130 @@ _FIXTURE_FRAME = bytes(DEFAULT_FRAME_BYTES)
 
 
 class RuntimeOutputTests(unittest.TestCase):
+    def test_saved_three_flow_provider_selection_is_restored(self) -> None:
+        saved = ProviderSelection(
+            draft=ProviderAssignment("claudebox-model", "low"),
+            commentary=ProviderAssignment("pibox-model", "none"),
+            summary=ProviderAssignment("third-model", "high"),
+        )
+
+        selection = _initial_provider_selection(
+            _settings("fallback-model"),
+            saved,
+            ("fallback-model", "claudebox-model", "pibox-model", "third-model"),
+        )
+
+        self.assertEqual(selection, saved)
+
+    def test_stale_saved_provider_selection_falls_back_as_one_unit(self) -> None:
+        saved = ProviderSelection(
+            draft=ProviderAssignment("available-model", "low"),
+            commentary=ProviderAssignment("missing-model", "none"),
+            summary=ProviderAssignment("available-model", "high"),
+        )
+
+        selection = _initial_provider_selection(
+            _settings("fallback-model"),
+            saved,
+            ("fallback-model", "available-model"),
+        )
+
+        self.assertEqual(
+            selection,
+            ProviderSelection.uniform("fallback-model", "medium"),
+        )
+
+    def test_missing_initial_model_without_saved_selection_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ConfigurationError, "configure all three"):
+            _initial_provider_selection(_settings(None), None, ("model-a",))
+
+    def test_first_run_uses_independent_flow_models(self) -> None:
+        settings = _settings("fallback-model")
+        settings = replace(
+            settings,
+            aigate_reply_model="cerebras-model",
+            aigate_coach_model="coach-model",
+            aigate_summary_model="summary-model",
+            aigate_reply_reasoning_effort="minimal",
+            aigate_coach_reasoning_effort="low",
+            aigate_summary_reasoning_effort="high",
+        )
+
+        selection = _initial_provider_selection(
+            settings,
+            None,
+            (
+                "fallback-model",
+                "cerebras-model",
+                "coach-model",
+                "summary-model",
+            ),
+        )
+
+        self.assertEqual(selection.draft.model, "cerebras-model")
+        self.assertEqual(selection.draft.reasoning_effort, "minimal")
+        self.assertEqual(selection.commentary.model, "coach-model")
+        self.assertEqual(selection.commentary.reasoning_effort, "low")
+        self.assertEqual(selection.summary.model, "summary-model")
+        self.assertEqual(selection.summary.reasoning_effort, "high")
+
+    def test_web_research_is_enabled_only_for_the_reply_client(self) -> None:
+        settings = _settings("model-a", web_research_enabled=True)
+        assignment = ProviderAssignment("model-a", "none")
+
+        reply = _aigate_client(
+            settings,
+            assignment,
+            web_research_enabled=True,
+        )
+        story = _aigate_client(
+            settings,
+            assignment,
+            web_research_enabled=False,
+        )
+
+        self.assertTrue(reply.web_research_enabled)
+        self.assertFalse(story.web_research_enabled)
+
+    def test_stream_snapshots_log_counts_without_raw_text_at_debug(self) -> None:
+        with (
+            self.assertLogs("two_x_brainz.runtime", level="DEBUG") as captured,
+            patch("builtins.print"),
+        ):
+            _write_provider_activity_event(
+                {
+                    "phase": "reasoning_streaming",
+                    "flow_id": "flow-a",
+                    "output_kind": "summary",
+                    "model": "model-a",
+                    "reasoning": "private cumulative reasoning",
+                }
+            )
+            _write_provider_activity_event(
+                {
+                    "phase": "stream_completed",
+                    "flow_id": "flow-a",
+                    "output_kind": "summary",
+                    "model": "model-a",
+                    "reasoning": "final reasoning",
+                    "output": "final summary",
+                }
+            )
+
+        self.assertEqual(
+            [record.getMessage() for record in captured.records],
+            ["live provider stream event", "live runtime event"],
+        )
+        self.assertEqual(
+            captured.records[0].__dict__["reasoning_characters"],
+            len("private cumulative reasoning"),
+        )
+        self.assertNotIn("event", captured.records[0].__dict__)
+        self.assertEqual(
+            captured.records[1].__dict__["event"]["output"],
+            "final summary",
+        )
+
     def test_paused_gate_does_not_open_capture_before_start(self) -> None:
         opened = False
 
@@ -346,6 +477,25 @@ def _selection(mic_node: str, system_node: str) -> AudioSelection:
         mic_label=mic_node,
         system_label=system_node,
         system_capture_sink=True,
+    )
+
+
+def _settings(
+    aigate_model: str | None,
+    *,
+    web_research_enabled: bool = False,
+) -> Settings:
+    return Settings(
+        talkies_ws_url="ws://aigate.test/talkies/v1/audio/transcriptions/stream",
+        talkies_model="test-asr-model",
+        talkies_token=None,
+        aigate_url="https://aigate.test/v1",
+        aigate_model=aigate_model,
+        aigate_token=None,
+        log_level="INFO",
+        log_file=Path("/tmp/2xbrainz-test.log"),
+        aigate_reasoning_effort="medium",
+        web_research_enabled=web_research_enabled,
     )
 
 

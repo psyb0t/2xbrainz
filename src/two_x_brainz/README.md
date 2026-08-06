@@ -46,10 +46,19 @@ continuous ASR to Talkies.
   cancellation, and stale-result rejection for drafts, commentary, and
   summaries.
 - `aigate.py` — AIGate chat provider for drafts, commentary, and summaries. It
-  exposes only bounded `search_web` and Python calculation MCP tools to reply
-  drafts when explicitly enabled; `make test-real` probes its real-model prompt
-  contracts and a four-turn summary-to-reply context handoff using fixed
-  synthetic text.
+  exposes only application-owned `research_web` and bounded arithmetic to reply
+  drafts when explicitly enabled. Research accepts a query or exact discovered
+  URL, returns link-preserving Markdown, and allows a relevant documentation link
+  to be followed in the second bounded round. Same-round calls execute
+  concurrently. Production calls consume bounded OpenAI-style SSE and publish
+  correlated output,
+  provider-visible reasoning, and validated tool activity without claiming
+  access to hidden chain-of-thought;
+  `make test-real` probes its real-model prompt contracts and a four-turn
+  summary-to-reply context handoff using fixed synthetic text.
+- `provider_selection.py` — no-follow, bounded, exact-schema persistence for
+  separate Reply, Coach, and Story AIGate model/reasoning assignments beside the
+  audio-selection file, including migration from the legacy single assignment.
 - `fixture_trace.py` — append-only, redacted JSONL evidence for explicit real
   fixtures; it records synthetic fixture inputs, CLI output, structured runtime
   diagnostics, and terminal outcomes without tokens or PCM data.
@@ -58,8 +67,9 @@ continuous ASR to Talkies.
   channel health, and strict local lifecycle controls. It owns no TUI.
 - `web.py` — loopback FastAPI/Uvicorn adapter over the shared presentation
   state: bounded structured snapshots, same-origin start/pause controls through
-  the runtime queue, compiled Svelte assets at `/`, and all-candidate audio
-  setup. The frontend owns browser-local layout
+  the runtime queue, compiled Svelte assets at `/`, automatically refreshed
+  all-candidate audio setup, and three correlated provider-activity flows. The
+  frontend owns browser-local layout
   preferences; application audio selection remains in the validated config file.
   Process shutdown remains with the owning shell so the page cannot stop its
   own server.
@@ -113,6 +123,9 @@ continuous ASR to Talkies.
   missing or malformed pair opens Sources. A device lost during a run marks
   only its channel reconnecting; its peer continues, and redetection or a new
   selection replaces only the affected route.
+- Sources serializes discovery, stops presentation-only preview processes before
+  each scan, and refreshes automatically while open so stale Bluetooth or USB
+  nodes are removed rather than retained after a timed-out discovery call.
 - System capture targets are `Audio/Source` monitor nodes or directly
   capturable `Audio/Sink` nodes. PipeWire default markers are recommendations;
   setup probes and independent live level meters reveal the two capture paths
@@ -125,13 +138,32 @@ continuous ASR to Talkies.
 - Every frame has a monotonic stream-local sequence and capture timestamp, but
   runtime output exposes only bounded aggregate gap and relative-drift timing
   diagnostics.
-- AIGate is the sole service boundary. One validated URL, model, and optional
+- AIGate is the sole service boundary. One validated URL, three independently
+  selected flow models, and one optional
   bearer token cover text generation, model inventory, Talkies, and explicitly
   enabled allowlisted tools.
+- Production AIGate completions use bounded SSE. Every provider activity record
+  carries a flow identifier and output kind so Reply, Private coach, and Story
+  events cannot mix. Reasoning is shown only when AIGate explicitly supplies a
+  visible reasoning field; exact tool input/result text remains bounded and
+  credential-redacted in the reconstruction log.
+- A finalized remote turn starts reply, commentary, and summary requests
+  concurrently through three independently configured AIGate clients. Each
+  generation remains independently cancellable and carries an immutable
+  transcript revision so a late result cannot overwrite newer state.
+- Cancelling a provider generation never removes finalized transcript lines. A
+  later silence boundary builds replacement requests from the complete current
+  transcript and discards only unfinished provider work.
+- Reply, Coach, and Story model/reasoning choices are atomically saved with
+  owner-only permissions. A malformed, symlinked, oversized, or partly
+  unavailable selection is ignored as one unit and the validated environment
+  configuration remains active for all flows.
 - Search queries reject obvious structured private identifiers before reaching
-  AIGate. Calculation calls accept only a bounded arithmetic AST and send
-  application-generated Python to Piston.
-- Live startup verifies the configured AIGate model before it opens PipeWire
+  AIGate. Page reads accept only public HTTP(S) URLs, reject credential-bearing
+  and non-public destinations, disable redirects, and revalidate
+  the browser's final URL. Calculation calls accept only a bounded arithmetic AST
+  and send application-generated Python to Piston.
+- Live startup verifies every configured AIGate flow model before it opens PipeWire
   capture or Talkies streams, preventing a capture-only session without reply
   drafts.
 - Live startup verifies the selected Talkies model inventory and completes a
@@ -175,9 +207,17 @@ processes cover the same capture framing code without a host PipeWire socket.
 Control tests cover paused startup, pause/resume gating, stop wakeup,
 idempotency, removed reply-action rejection, and malformed control-line
 rejection. Web-console tests cover all-candidate setup meters, audio redetection,
-runtime provider settings, bounded activity history, and separate user/system
-channel state. See the architecture overview in
+runtime provider settings, flat chronological provider activity, bottom-aware
+autoscroll, per-flow cumulative snapshot coalescing, independently collapsed
+reasoning/tool rows, a long-inventory model-picker screenshot, and separate
+user/system channel state. See the
+architecture overview in
 [`docs/architecture.md`](../../docs/architecture.md). The opt-in
+browser smoke uses a real local fake AIGate HTTP service to stream SSE reasoning,
+a fragmented search tool call, an MCP result, and follow-up output through the
+production client and compiled Svelte UI. It asserts chronological DOM text and
+the backend/frontend DEBUG trail before cleaning up its owned containers and
+test image. The opt-in
 `make live-fixture` route generates temporary Talkies WAVs and drives the
 production capture adapter through a controlled overlap; `make
 live-interview-fixture` adds four alternating fixture turns, and `make
