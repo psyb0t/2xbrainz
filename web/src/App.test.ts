@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App.svelte';
 import { EMPTY_SNAPSHOT, type WebSnapshot } from './lib/contracts';
 import { PREFERENCES_KEY } from './lib/preferences';
+import { RUNTIME_SETTINGS_KEY } from './lib/runtimeSettings';
 
 type SocketListener = (event: Event) => void;
 
@@ -101,6 +102,23 @@ Remote: Verify the release gates.`,
         output: 'Run the final checks before shipping.'
       }
     ]
+  },
+  settings: {
+    schemaVersion: 1,
+    talkiesModels: ['asr-a', 'asr-b'],
+    talkiesModel: 'asr-a',
+    sessionBrief: '',
+    webResearchEnabled: true,
+    defaults: {
+      assignments: {
+        draft: { model: 'model-a', reasoningEffort: 'none' },
+        commentary: { model: 'model-b', reasoningEffort: 'low' },
+        summary: { model: 'model-a', reasoningEffort: 'medium' }
+      },
+      talkiesModel: 'asr-a',
+      sessionBrief: '',
+      webResearchEnabled: true
+    }
   },
   activeAudio: {
     microphone: { label: 'Desk microphone', nodeName: 'desk-mic', level: 41, state: 'ready' },
@@ -224,6 +242,7 @@ describe('operator console', () => {
     const socket = await connectedSocket();
     await publish(socket, SNAPSHOT);
 
+    await fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
     await fireEvent.click(screen.getByRole('button', { name: 'Models' }));
     await fireEvent.click(screen.getByRole('button', { name: 'Reply model' }));
     expect(screen.getByRole('textbox', { name: 'Filter models' })).toBeTruthy();
@@ -236,20 +255,60 @@ describe('operator console', () => {
     await fireEvent.change(screen.getByRole('combobox', { name: 'Reply reasoning' }), {
       target: { value: 'high' }
     });
+    await fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
 
-    expect(socket.sent.map((value) => JSON.parse(value))).toContainEqual({
-      type: 'provider_settings',
-      flow: 'draft',
-      model: 'model-b',
-      reasoning_effort: 'none'
-    });
-    expect(socket.sent.map((value) => JSON.parse(value))).toContainEqual({
-      type: 'provider_settings',
-      flow: 'draft',
-      model: 'model-b',
-      reasoning_effort: 'high'
-    });
+    expect(socket.sent.map((value) => JSON.parse(value))).toContainEqual(
+      expect.objectContaining({
+        type: 'runtime_settings',
+        providers: expect.objectContaining({
+          draft: { model: 'model-b', reasoning_effort: 'high' }
+        }),
+        talkies_model: 'asr-a'
+      })
+    );
+    expect(localStorage.getItem(RUNTIME_SETTINGS_KEY)).toContain('model-b');
     expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
+  });
+
+  it('clears browser overrides and sends backend defaults', async () => {
+    localStorage.setItem(
+      RUNTIME_SETTINGS_KEY,
+      JSON.stringify({
+        schemaVersion: 1,
+        providers: {
+          draft: { model: 'model-b', reasoningEffort: 'high' },
+          commentary: { model: 'model-b', reasoningEffort: 'low' },
+          summary: { model: 'model-a', reasoningEffort: 'medium' }
+        },
+        talkiesModel: 'asr-b',
+        sessionBrief: 'Saved context.',
+        webResearchEnabled: false,
+        microphoneNode: 'desk-mic',
+        systemNode: 'headphones.monitor'
+      })
+    );
+    render(App);
+    const socket = await connectedSocket();
+    await publish(socket, SNAPSHOT);
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Reset defaults' }));
+
+    expect(localStorage.getItem(RUNTIME_SETTINGS_KEY)).toBeNull();
+    expect(socket.sent.map((value) => JSON.parse(value))).toContainEqual({
+      type: 'runtime_settings',
+      schema_version: 1,
+      providers: {
+        draft: { model: 'model-a', reasoning_effort: 'none' },
+        commentary: { model: 'model-b', reasoning_effort: 'low' },
+        summary: { model: 'model-a', reasoning_effort: 'medium' }
+      },
+      talkies_model: 'asr-a',
+      session_brief: '',
+      web_research_enabled: true,
+      microphone_node: null,
+      system_node: null
+    });
   });
 
   it('meters every setup candidate and submits the selected pair', async () => {
@@ -264,14 +323,16 @@ describe('operator console', () => {
 
     await fireEvent.click(screen.getByRole('button', { name: 'Redetect devices' }));
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Save sources' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
     const messages = socket.sent.map((value) => JSON.parse(value));
     expect(messages).toContainEqual({ type: 'audio_metering', enabled: true });
-    expect(messages).toContainEqual({
-      type: 'audio_selection',
-      microphone_index: 0,
-      system_index: 0
-    });
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: 'runtime_settings',
+        microphone_node: 'desk-mic',
+        system_node: 'headphones.monitor'
+      })
+    );
     expect(messages).toContainEqual({ type: 'audio_metering', enabled: false });
     expect(messages).toContainEqual({ type: 'audio_rescan' });
   });

@@ -9,10 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
-from two_x_brainz.audio_selection import (
-    AudioSelectionStore,
-    prepare_audio_selection_setup,
-)
+from two_x_brainz.audio_selection import prepare_audio_selection_setup
 from two_x_brainz.capture import list_pipewire_nodes
 
 _PIPEWIRE_DUMP = json.dumps(
@@ -70,28 +67,18 @@ _EXECUTABLE_TEMP_DIRECTORY = Path("/work-env")
 
 
 class AudioSelectionIntegrationTests(unittest.TestCase):
-    def test_fixture_pipewire_dump_persists_then_reuses_selection(self) -> None:
+    def test_fixture_pipewire_dump_accepts_browser_persisted_node_names(self) -> None:
         with (
             _fake_pw_dump(_PIPEWIRE_DUMP) as command,
-            tempfile.TemporaryDirectory() as temporary_directory,
             patch("two_x_brainz.capture._PIPEWIRE_DUMP_COMMAND", str(command)),
         ):
             nodes = asyncio.run(list_pipewire_nodes())
-            store = AudioSelectionStore(Path(temporary_directory) / "audio.json")
-            first_setup = prepare_audio_selection_setup(
-                nodes=nodes,
-                store=store,
-                mic_node=None,
-                system_node=None,
+            setup = prepare_audio_selection_setup(nodes=nodes)
+            first_selection = setup.select(0, 0)
+            second_selection = setup.select_nodes(
+                first_selection.mic_node,
+                first_selection.system_node,
             )
-            first_selection = first_setup.select(0, 0)
-            second_setup = prepare_audio_selection_setup(
-                nodes=nodes,
-                store=store,
-                mic_node=None,
-                system_node=None,
-            )
-            second_selection = second_setup.selection
 
         self.assertEqual(first_selection, second_selection)
         self.assertEqual(first_selection.mic_node, "mic-usb")
@@ -105,16 +92,10 @@ class AudioSelectionIntegrationTests(unittest.TestCase):
         dump = json.dumps(payload)
         with (
             _fake_pw_dump(dump) as command,
-            tempfile.TemporaryDirectory() as temporary_directory,
             patch("two_x_brainz.capture._PIPEWIRE_DUMP_COMMAND", str(command)),
         ):
             nodes = asyncio.run(list_pipewire_nodes())
-            setup = prepare_audio_selection_setup(
-                nodes=nodes,
-                store=AudioSelectionStore(Path(temporary_directory) / "audio.json"),
-                mic_node=None,
-                system_node=None,
-            )
+            setup = prepare_audio_selection_setup(nodes=nodes)
             selection = setup.select(0, 0)
 
         self.assertEqual(selection.system_node, "speaker-usb")

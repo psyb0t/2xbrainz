@@ -37,13 +37,13 @@ host PipeWire socket (read-only mount)
 ```
 
 At startup, `live` reads the visible PipeWire nodes through the existing
-read-only runtime mount and opens the browser idle. It reuses a validated local
-selection when available; otherwise Sources asks for one non-monitor microphone
-source and one system-audio
-capture source: a monitor source when available, or a directly capturable sink.
-It persists only those names in the host-mounted per-user
-configuration file. Sources remains available throughout the run. While it is
-open, redetection serially stops the temporary meter probes, refreshes candidates
+read-only runtime mount and opens the browser idle. The browser sends its
+validated local settings when available; otherwise Settings opens on Audio and
+asks for one non-monitor microphone source and one system-audio capture source:
+a monitor source when available, or a directly capturable sink. The browser
+persists those stable names with the other safe runtime settings. Settings
+remains available throughout the run. While Audio is open, redetection serially
+stops the temporary meter probes, refreshes candidates
 every three seconds, and restarts probes for the new inventory. A manual refresh
 uses the same path. A changed pair restarts only the affected capture channel,
 and a missing channel retries independently while its peer continues.
@@ -57,7 +57,11 @@ capture paths. No audio or PipeWire socket is written to that file.
 
 `live` opens one Talkies stream per capture node. Before it constructs either
 PipeWire source, both `live` and `benchmark` verify the selected model inventory
-and serially open a synthetic-silence stream. The warm-up must receive `ready`,
+and serially open a synthetic-silence stream. AIGate model aliases choose the
+native proxy: `local-talkies-*` maps to `/talkies/`, while
+`local-talkies-cuda-*` maps to `/talkies-cuda/`; only the inner model slug is
+sent to Talkies. Alias preflight checks the selected service health response and
+rejects a CPU/CUDA mismatch. The warm-up must receive `ready`,
 send exactly one all-zero 20 ms PCM frame, then `end`, and receive uncancelled
 one-frame terminal statistics. This materializes lazy backend initialization
 before the two audio streams start together without using captured audio.
@@ -119,8 +123,10 @@ independent multi-turn finals without recreating either capture process.
 - Remote speech supersedes the active reply and cancels commentary and summary
   work. User speech cancels an active reply.
 - Cancellation discards only unfinished provider output, reasoning, and tool
-  work. Finalized transcript lines remain in coordinator state, so the next
-  silence-triggered request contains both earlier and newly finalized speech.
+  work and closes the active SSE response so superseded upstream work does not
+  keep occupying provider capacity. Finalized transcript lines remain in
+  coordinator state, so the next silence-triggered request contains both earlier
+  and newly finalized speech.
 - A result is visible only when its generation ID and transcript revision still
   match the coordinator's active state; a changed revision discards stale
   background output.
@@ -139,7 +145,9 @@ independent multi-turn finals without recreating either capture process.
   It can trim only transcript lines that it covers; newer lines remain visible.
 - A rolling summary treats transcript text as untrusted ASR output. It retains
   an established fact across conflicting later wording unless a speaker
-  explicitly corrects it, and it does not infer unsupported qualifiers.
+  explicitly corrects it, closes a prior question when a speaker directly
+  answers it even hesitantly or outside the requested format, and does not infer
+  unsupported qualifiers.
 - The AIGate boundary receives transcript text only. It never receives raw
   frames, PipeWire node identifiers, or Talkies credentials.
 
@@ -222,9 +230,10 @@ independent multi-turn finals without recreating either capture process.
   flow across interleaved concurrent flows and across each other; a same-flow
   tool or lifecycle event is the boundary that starts a new chronological row.
   Svelte flexes expanded guidance into height released by collapsed panels and
-  owns only browser-local layout preferences, not session state. Reply, Coach,
-  and Story model/reasoning assignments are independently mutable and saved in
-  the validated owner-only application config beside the audio selection.
+  owns browser-local layout plus safe runtime settings. Reply, Coach, and Story
+  model/reasoning assignments, the Talkies model, session brief, research toggle,
+  and audio names are sent as one validated settings snapshot. Credentials and
+  endpoints remain environment-only.
 - [`logging_config.py`](../src/two_x_brainz/logging_config.py) writes every
   runtime event to a credential-redacted rotating JSON log. It is the durable
   reconstruction surface; it retains text events but never PCM. DEBUG mode also

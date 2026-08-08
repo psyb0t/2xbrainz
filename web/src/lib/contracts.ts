@@ -39,6 +39,19 @@ export interface WebSnapshot {
     assignments: Record<ProviderOutputKind, ProviderAssignment>;
     activity: ProviderActivity[];
   };
+  settings: {
+    schemaVersion: number;
+    talkiesModels: string[];
+    talkiesModel: string;
+    sessionBrief: string;
+    webResearchEnabled: boolean;
+    defaults: {
+      assignments: Record<ProviderOutputKind, ProviderAssignment>;
+      talkiesModel: string;
+      sessionBrief: string;
+      webResearchEnabled: boolean;
+    };
+  };
   activeAudio: {
     microphone: ActiveAudioSource;
     system: ActiveAudioSource;
@@ -96,6 +109,23 @@ export const EMPTY_SNAPSHOT: WebSnapshot = {
     },
     activity: []
   },
+  settings: {
+    schemaVersion: 1,
+    talkiesModels: [],
+    talkiesModel: '',
+    sessionBrief: '',
+    webResearchEnabled: true,
+    defaults: {
+      assignments: {
+        draft: { model: '', reasoningEffort: 'none' },
+        commentary: { model: '', reasoningEffort: 'none' },
+        summary: { model: '', reasoningEffort: 'none' }
+      },
+      talkiesModel: '',
+      sessionBrief: '',
+      webResearchEnabled: true
+    }
+  },
   activeAudio: {
     microphone: { label: 'Not selected', nodeName: '', level: 0, state: 'idle' },
     system: { label: 'Not selected', nodeName: '', level: 0, state: 'idle' }
@@ -120,6 +150,18 @@ export function isWebSnapshot(value: unknown): value is WebSnapshot {
     isProviderAssignments(value.provider.assignments) &&
     Array.isArray(value.provider.activity) &&
     value.provider.activity.every(isProviderActivity) &&
+    isRecord(value.settings) &&
+    Number.isInteger(value.settings.schemaVersion) &&
+    Array.isArray(value.settings.talkiesModels) &&
+    value.settings.talkiesModels.every((model) => typeof model === 'string') &&
+    typeof value.settings.talkiesModel === 'string' &&
+    typeof value.settings.sessionBrief === 'string' &&
+    typeof value.settings.webResearchEnabled === 'boolean' &&
+    isRecord(value.settings.defaults) &&
+    isProviderAssignments(value.settings.defaults.assignments) &&
+    typeof value.settings.defaults.talkiesModel === 'string' &&
+    typeof value.settings.defaults.sessionBrief === 'string' &&
+    typeof value.settings.defaults.webResearchEnabled === 'boolean' &&
     isRecord(value.activeAudio) &&
     isActiveAudioSource(value.activeAudio.microphone) &&
     isActiveAudioSource(value.activeAudio.system) &&

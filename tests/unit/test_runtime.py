@@ -11,7 +11,6 @@ from unittest.mock import patch
 from two_x_brainz.audio_selection import (
     AudioSelection,
     AudioSelectionSetup,
-    AudioSelectionStore,
 )
 from two_x_brainz.capture import (
     CaptureStats,
@@ -32,11 +31,10 @@ from two_x_brainz.contracts import (
 from two_x_brainz.coordinator import ConversationCoordinator
 from two_x_brainz.errors import (
     CaptureError,
-    ConfigurationError,
     ProtocolError,
     RemoteServiceError,
 )
-from two_x_brainz.provider_selection import ProviderAssignment, ProviderSelection
+from two_x_brainz.provider_selection import ProviderAssignment
 from two_x_brainz.runtime import (
     _aigate_client,  # pyright: ignore[reportPrivateUsage]
     _gated_frames,  # pyright: ignore[reportPrivateUsage]
@@ -60,44 +58,7 @@ _FIXTURE_FRAME = bytes(DEFAULT_FRAME_BYTES)
 
 
 class RuntimeOutputTests(unittest.TestCase):
-    def test_saved_three_flow_provider_selection_is_restored(self) -> None:
-        saved = ProviderSelection(
-            draft=ProviderAssignment("claudebox-model", "low"),
-            commentary=ProviderAssignment("pibox-model", "none"),
-            summary=ProviderAssignment("third-model", "high"),
-        )
-
-        selection = _initial_provider_selection(
-            _settings("fallback-model"),
-            saved,
-            ("fallback-model", "claudebox-model", "pibox-model", "third-model"),
-        )
-
-        self.assertEqual(selection, saved)
-
-    def test_stale_saved_provider_selection_falls_back_as_one_unit(self) -> None:
-        saved = ProviderSelection(
-            draft=ProviderAssignment("available-model", "low"),
-            commentary=ProviderAssignment("missing-model", "none"),
-            summary=ProviderAssignment("available-model", "high"),
-        )
-
-        selection = _initial_provider_selection(
-            _settings("fallback-model"),
-            saved,
-            ("fallback-model", "available-model"),
-        )
-
-        self.assertEqual(
-            selection,
-            ProviderSelection.uniform("fallback-model", "medium"),
-        )
-
-    def test_missing_initial_model_without_saved_selection_is_rejected(self) -> None:
-        with self.assertRaisesRegex(ConfigurationError, "configure all three"):
-            _initial_provider_selection(_settings(None), None, ("model-a",))
-
-    def test_first_run_uses_independent_flow_models(self) -> None:
+    def test_code_defaults_use_independent_flow_models(self) -> None:
         settings = _settings("fallback-model")
         settings = replace(
             settings,
@@ -111,7 +72,6 @@ class RuntimeOutputTests(unittest.TestCase):
 
         selection = _initial_provider_selection(
             settings,
-            None,
             (
                 "fallback-model",
                 "cerebras-model",
@@ -261,7 +221,7 @@ class RuntimeOutputTests(unittest.TestCase):
             ):
                 microphone = asyncio.create_task(
                     _supervise_audio_channel(
-                        stream_config=config,
+                        stream_config_factory=lambda: config,
                         coordinator=coordinator,
                         session_id="session",
                         stream_id="microphone",
@@ -273,7 +233,7 @@ class RuntimeOutputTests(unittest.TestCase):
                 )
                 remote = asyncio.create_task(
                     _supervise_audio_channel(
-                        stream_config=config,
+                        stream_config_factory=lambda: config,
                         coordinator=coordinator,
                         session_id="session",
                         stream_id="system",
@@ -481,7 +441,7 @@ def _selection(mic_node: str, system_node: str) -> AudioSelection:
 
 
 def _settings(
-    flow_model: str | None,
+    flow_model: str,
     *,
     web_research_enabled: bool = False,
 ) -> Settings:
@@ -505,7 +465,6 @@ def _settings(
 
 def _audio_setup(mic_node: str, system_node: str) -> AudioSelectionSetup:
     return AudioSelectionSetup(
-        store=AudioSelectionStore(Path("/tmp/2xbrainz-runtime-audio.json")),
         microphones=(),
         system_monitors=(),
         selection=_selection(mic_node, system_node),

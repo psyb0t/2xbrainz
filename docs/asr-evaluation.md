@@ -29,6 +29,24 @@ partial, endpoint, and final latencies as well as sustained CPU and memory use.
 For the full design and the distinction between transport verification and a
 model-quality decision, see [the architecture overview](architecture.md).
 
+## Generated conversation quality gate
+
+`make test-real-evaluation` complements the short CC0 contract clip with an
+eight-turn generated conversation. Two Talkies TTS voices deliver slang,
+hesitation, a false start, an explicit correction, and a technical research
+question. Opposing turns are transcribed in concurrent pairs through the native
+WebSocket path; the recognized output, including any ASR mistakes, becomes the
+only transcript supplied to the production coordinator.
+
+The resulting scorecard records a word error rate for every turn, request
+duration, time to first visible reasoning, time to first output, maximum active
+provider flows, and overlapping provider pairs. It also verifies interruption
+recovery, current-state output anchors, stale-fact rejection, and a completed
+Reply research tool call. Results land below the gitignored
+`.testing/fixture-traces/`; synthetic WAVs remain on tmpfs and are discarded.
+This is a repeatable system-quality smoke, not a substitute for evaluating a
+larger consented corpus across accents, noise, and real microphones.
+
 ## Contract command
 
 After Talkies is reachable on the selected Docker network and `.env` contains
@@ -58,8 +76,7 @@ To run all six sequentially, start Talkies with those model slugs enabled and
 run `make benchmark-candidates LIVE_NETWORK=<network>`. This is a transport and
 resource measurement loop, not an automatic model-selection decision.
 
-To add the configured drafting path to the same concurrent check, set
-`TWOXBRAINZ_AIGATE_REPLY_MODEL` and run:
+To add the backend-default drafting path to the same concurrent check, run:
 
 ```bash
 make benchmark-with-draft LIVE_NETWORK=<network>

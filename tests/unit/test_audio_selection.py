@@ -1,18 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import stat
-import tempfile
 import unittest
-from pathlib import Path
 
 from two_x_brainz.audio_selection import (
     AudioSelection,
-    AudioSelectionStore,
     prepare_audio_selection_setup,
 )
-from two_x_brainz.errors import CaptureError, ConfigurationError
+from two_x_brainz.errors import CaptureError
 
 _NODES = (
     {
@@ -43,13 +38,7 @@ _NODES = (
 
 
 class AudioSelectionTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self._temporary_directory = tempfile.TemporaryDirectory()
-        self.addCleanup(self._temporary_directory.cleanup)
-        self._config_path = Path(self._temporary_directory.name) / "audio.json"
-        self._store = AudioSelectionStore(self._config_path)
-
-    def test_first_selection_saves_stable_names_with_private_mode(self) -> None:
+    def test_first_selection_uses_stable_names_without_writing_a_file(self) -> None:
         setup = self._setup()
 
         self.assertIsNone(setup.selection)
@@ -59,50 +48,26 @@ class AudioSelectionTests(unittest.TestCase):
             selection,
             AudioSelection(mic_node="mic-usb", system_node="speaker-usb.monitor"),
         )
-        self.assertEqual(self._store.load(), selection)
-        self.assertEqual(stat.S_IMODE(self._config_path.stat().st_mode), 0o600)
-        self.assertEqual(
-            json.loads(self._config_path.read_text()),
-            {
-                "schema_version": 1,
-                "mic_node": "mic-usb",
-                "system_node": "speaker-usb.monitor",
-            },
-        )
 
-    def test_available_saved_selection_skips_the_setup_screen(self) -> None:
-        saved_selection = AudioSelection("mic-usb", "speaker-usb.monitor")
-        self._store.save(saved_selection)
-
-        setup = self._setup()
-
-        self.assertEqual(setup.selection, saved_selection)
-
-    def test_stale_saved_selection_reopens_the_selector(self) -> None:
-        self._store.save(AudioSelection("missing-mic", "speaker-usb.monitor"))
-
-        setup = self._setup()
-        selection = setup.select(0, 0)
-
-        self.assertEqual(selection.mic_node, "mic-usb")
-        self.assertEqual(self._store.load(), selection)
-
-    def test_invalid_setup_index_does_not_persist_a_bad_value(self) -> None:
+    def test_invalid_setup_index_does_not_change_selection(self) -> None:
         setup = self._setup()
 
         with self.assertRaisesRegex(CaptureError, "not available"):
             setup.select(99, 0)
 
-        self.assertIsNone(self._store.load())
+        self.assertIsNone(setup.selection)
 
-    def test_explicit_paired_ids_are_validated_and_saved(self) -> None:
-        setup = self._setup(
-            mic_node="12",
-            system_node="42",
+    def test_browser_persisted_node_names_are_validated(self) -> None:
+        setup = self._setup()
+
+        selection = setup.select_nodes("mic-usb", "speaker-usb.monitor")
+
+        self.assertEqual(
+            selection,
+            AudioSelection("mic-usb", "speaker-usb.monitor"),
         )
-
-        self.assertEqual(setup.selection, AudioSelection("12", "42"))
-        self.assertEqual(self._store.load(), setup.selection)
+        with self.assertRaisesRegex(CaptureError, "not available"):
+            setup.select_nodes("missing", "speaker-usb.monitor")
 
     def test_setup_shows_friendly_labels_and_default_recommendations(self) -> None:
         setup = self._setup()
@@ -121,9 +86,6 @@ class AudioSelectionTests(unittest.TestCase):
 
         setup = prepare_audio_selection_setup(
             nodes=nodes,
-            store=self._store,
-            mic_node=None,
-            system_node=None,
         )
 
         self.assertEqual(setup.system_monitors[0].name, "speaker-usb")
@@ -137,24 +99,6 @@ class AudioSelectionTests(unittest.TestCase):
         self.assertEqual(selection.system_node, "speaker-usb.monitor")
         self.assertFalse(selection.system_capture_sink)
 
-    def test_unpaired_explicit_override_is_rejected(self) -> None:
-        with self.assertRaisesRegex(ConfigurationError, "supplied together"):
-            self._setup(mic_node="12")
-
-    def test_invalid_saved_config_reopens_the_selector(self) -> None:
-        self._config_path.write_text("{not-json")
-
-        setup = self._setup()
-
-        self.assertIsNone(setup.selection)
-
-    def test_symlinked_saved_config_is_ignored(self) -> None:
-        target = self._config_path.with_name("target.json")
-        target.write_text("{}")
-        self._config_path.symlink_to(target)
-
-        self.assertIsNone(self._store.load())
-
     def test_no_compatible_system_output_opens_recoverable_setup(self) -> None:
         nodes = tuple(
             node
@@ -165,9 +109,6 @@ class AudioSelectionTests(unittest.TestCase):
 
         setup = prepare_audio_selection_setup(
             nodes=nodes,
-            store=self._store,
-            mic_node=None,
-            system_node=None,
         )
 
         self.assertEqual(setup.system_monitors, ())
@@ -214,15 +155,15 @@ class AudioSelectionTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
-    def _setup(
-        self,
-        *,
-        mic_node: str | None = None,
-        system_node: str | None = None,
-    ):
-        return prepare_audio_selection_setup(
-            nodes=_NODES,
-            store=self._store,
-            mic_node=mic_node,
-            system_node=system_node,
-        )
+    def test_runtime_change_wakes_capture_workers(self) -> None:
+        async def exercise() -> None:
+            setup = self._setup()
+            revision = setup.revision
+            changed = asyncio.create_task(setup.wait_for_change(revision))
+            setup.notify_runtime_change()
+            self.assertEqual(await changed, revision + 1)
+
+        asyncio.run(exercise())
+
+    def _setup(self):
+        return prepare_audio_selection_setup(nodes=_NODES)

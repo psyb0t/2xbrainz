@@ -37,7 +37,7 @@ def _load_prompt_module() -> Any:
 _PROMPTS = _load_prompt_module()
 
 
-def _settings(flow_model: str | None) -> Settings:
+def _settings(flow_model: str) -> Settings:
     return Settings(
         talkies_ws_url="ws://aigate.test/talkies/v1/audio/transcriptions/stream",
         talkies_model="test-asr-model",

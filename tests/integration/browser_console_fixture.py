@@ -19,7 +19,6 @@ from two_x_brainz.aigate import AIGateClient
 from two_x_brainz.audio_selection import (
     AudioDevice,
     AudioSelectionSetup,
-    AudioSelectionStore,
 )
 from two_x_brainz.constants import MAX_WEB_CONSOLE_PORT, MIN_WEB_CONSOLE_PORT
 from two_x_brainz.contracts import (
@@ -29,9 +28,9 @@ from two_x_brainz.contracts import (
     TranscriptSnapshot,
 )
 from two_x_brainz.logging_config import configure_logging
-from two_x_brainz.provider_selection import ProviderFlow, ProviderSelection
+from two_x_brainz.provider_selection import ProviderSelection
 from two_x_brainz.terminal import LiveTerminal
-from two_x_brainz.web import WebConsole
+from two_x_brainz.web import WebConsole, WebRuntimeSettings
 
 _FIXTURE_MODEL = "provider-example-model-087"
 _SSE_DELAY_SECONDS = 0.03
@@ -181,7 +180,6 @@ def _port(value: str) -> int:
 
 def _state(directory: Path) -> LiveTerminal:
     setup = AudioSelectionSetup(
-        store=AudioSelectionStore(directory / "audio.json"),
         microphones=(
             AudioDevice(
                 "1",
@@ -212,17 +210,19 @@ def _state(directory: Path) -> LiveTerminal:
 
 
 async def _accept_provider_settings(
-    flow: ProviderFlow,
-    model: str,
-    reasoning_effort: str,
+    settings: WebRuntimeSettings,
 ) -> bool:
-    del flow, model, reasoning_effort
+    del settings
     return True
 
 
 def _seed_console(console: WebConsole) -> None:
-    console.configure_provider(
+    console.configure_runtime_settings(
         models=tuple(f"provider-example-model-{index:03d}" for index in range(120)),
+        talkies_models=("fixture-asr",),
+        talkies_model="fixture-asr",
+        session_brief=None,
+        web_research_enabled=True,
         selection=ProviderSelection.uniform(_FIXTURE_MODEL, "medium"),
         callback=_accept_provider_settings,
     )

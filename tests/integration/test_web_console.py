@@ -18,15 +18,13 @@ from two_x_brainz.audio_selection import (
     AudioDevice,
     AudioSelection,
     AudioSelectionSetup,
-    AudioSelectionStore,
 )
 from two_x_brainz.provider_selection import (
     ProviderAssignment,
-    ProviderFlow,
     ProviderSelection,
 )
 from two_x_brainz.terminal import LiveTerminal
-from two_x_brainz.web import WebConsole
+from two_x_brainz.web import WebConsole, WebRuntimeSettings
 
 
 class WebConsoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
@@ -34,7 +32,7 @@ class WebConsoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             static_directory = _static_app(Path(temporary_directory))
             console = WebConsole(
-                _state_with_selection(Path(temporary_directory) / "audio.json"),
+                _state_with_selection(),
                 port=_free_port(),
                 static_directory=static_directory,
             )
@@ -67,9 +65,18 @@ class WebConsoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_websocket_streams_state_and_routes_controls(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             console = WebConsole(
-                _state_with_selection(Path(temporary_directory) / "audio.json"),
+                _state_with_selection(),
                 port=_free_port(),
                 static_directory=_static_app(Path(temporary_directory)),
+            )
+            console.configure_runtime_settings(
+                models=("model-a",),
+                talkies_models=("asr-a",),
+                talkies_model="asr-a",
+                session_brief=None,
+                web_research_enabled=True,
+                selection=ProviderSelection.uniform("model-a", "none"),
+                callback=AsyncMock(return_value=True),
             )
             await console.open()
             try:
@@ -96,7 +103,7 @@ class WebConsoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_frontend_stream_diagnostics_are_validated_and_logged(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             console = WebConsole(
-                _state_with_selection(Path(temporary_directory) / "audio.json"),
+                _state_with_selection(),
                 port=_free_port(),
                 static_directory=_static_app(Path(temporary_directory)),
             )
@@ -139,7 +146,7 @@ class WebConsoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_websocket_rejects_cross_origin_and_malformed_commands(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             console = WebConsole(
-                _state_with_selection(Path(temporary_directory) / "audio.json"),
+                _state_with_selection(),
                 port=_free_port(),
                 static_directory=_static_app(Path(temporary_directory)),
             )
@@ -163,13 +170,31 @@ class WebConsoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         await websocket.recv()
                     assert closed.exception.rcvd is not None
                     self.assertEqual(closed.exception.rcvd.code, 1008)
+                for invalid_settings in (
+                    {**_runtime_settings_payload(), "token": "not-allowed"},
+                    {
+                        **_runtime_settings_payload(),
+                        "session_brief": "x" * 4_001,
+                    },
+                ):
+                    async with connect(
+                        _websocket_url(console),
+                        origin=_origin(console),
+                        proxy=None,
+                    ) as websocket:
+                        await websocket.recv()
+                        await websocket.send(json.dumps(invalid_settings))
+                        with self.assertRaises(ConnectionClosedError) as closed:
+                            await websocket.recv()
+                        assert closed.exception.rcvd is not None
+                        self.assertEqual(closed.exception.rcvd.code, 1008)
                 async with connect(
                     _websocket_url(console),
                     origin=_origin(console),
                     proxy=None,
                 ) as websocket:
                     await websocket.recv()
-                    await websocket.send("x" * 5_000)
+                    await websocket.send("x" * 20_000)
                     with self.assertRaises(ConnectionClosedError) as closed:
                         await websocket.recv()
                     assert closed.exception.rcvd is not None
@@ -216,9 +241,9 @@ class WebConsoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 await console.close()
 
-    async def test_audio_selection_is_persisted_through_websocket(self) -> None:
+    async def test_audio_selection_is_applied_through_runtime_settings(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
-            setup = _audio_setup(Path(temporary_directory) / "audio.json")
+            setup = _audio_setup()
             setup.select(0, 0)
             state = LiveTerminal(
                 log_file="/tmp/2xbrainz-web.log",
@@ -231,6 +256,15 @@ class WebConsoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 port=_free_port(),
                 static_directory=_static_app(Path(temporary_directory)),
             )
+            console.configure_runtime_settings(
+                models=("model-a",),
+                talkies_models=("asr-a",),
+                talkies_model="asr-a",
+                session_brief=None,
+                web_research_enabled=True,
+                selection=ProviderSelection.uniform("model-a", "none"),
+                callback=AsyncMock(return_value=True),
+            )
             await console.open()
             try:
                 async with connect(
@@ -242,9 +276,9 @@ class WebConsoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     await websocket.send(
                         json.dumps(
                             {
-                                "type": "audio_selection",
-                                "microphone_index": 1,
-                                "system_index": 1,
+                                **_runtime_settings_payload(),
+                                "microphone_node": "backup-mic",
+                                "system_node": "backup-system",
                             }
                         )
                     )
@@ -259,15 +293,19 @@ class WebConsoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_websocket_updates_provider_and_redetects_audio_devices(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
-            state = _state_with_selection(Path(temporary_directory) / "audio.json")
+            state = _state_with_selection()
             console = WebConsole(
                 state,
                 port=_free_port(),
                 static_directory=_static_app(Path(temporary_directory)),
             )
             callback = AsyncMock()
-            console.configure_provider(
+            console.configure_runtime_settings(
                 models=("model-a", "model-b"),
+                talkies_models=("asr-a",),
+                talkies_model="asr-a",
+                session_brief=None,
+                web_research_enabled=True,
                 selection=ProviderSelection.uniform("model-a", "none"),
                 callback=callback,
             )
@@ -287,20 +325,18 @@ class WebConsoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         await websocket.send(
                             json.dumps(
                                 {
-                                    "type": "provider_settings",
-                                    "flow": "summary",
-                                    "model": "model-not-in-inventory",
-                                    "reasoning_effort": "high",
+                                    **_runtime_settings_payload(
+                                        summary_model="model-not-in-inventory"
+                                    ),
                                 }
                             )
                         )
                         await websocket.send(
                             json.dumps(
                                 {
-                                    "type": "provider_settings",
-                                    "flow": "summary",
-                                    "model": "model-b",
-                                    "reasoning_effort": "high",
+                                    **_runtime_settings_payload(
+                                        summary_model="model-b"
+                                    ),
                                 }
                             )
                         )
@@ -309,7 +345,14 @@ class WebConsoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     await console.close()
 
-        callback.assert_awaited_once_with(ProviderFlow.SUMMARY, "model-b", "high")
+        callback.assert_awaited_once()
+        callback_call = callback.await_args
+        assert callback_call is not None
+        applied = callback_call.args[0]
+        self.assertIsInstance(applied, WebRuntimeSettings)
+        self.assertEqual(
+            applied.providers.summary, ProviderAssignment("model-b", "high")
+        )
         self.assertEqual(
             console.snapshot().provider_selection,
             ProviderSelection(
@@ -324,9 +367,8 @@ class WebConsoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(console.snapshot().requires_audio_setup)
 
 
-def _audio_setup(path: Path) -> AudioSelectionSetup:
+def _audio_setup() -> AudioSelectionSetup:
     return AudioSelectionSetup(
-        store=AudioSelectionStore(path),
         microphones=(
             AudioDevice("1", "mic", "Audio/Source", "Microphone", True),
             AudioDevice("3", "backup-mic", "Audio/Source", "Backup microphone", False),
@@ -345,8 +387,8 @@ def _audio_setup(path: Path) -> AudioSelectionSetup:
     )
 
 
-def _state_with_selection(path: Path) -> LiveTerminal:
-    setup = _audio_setup(path)
+def _state_with_selection() -> LiveTerminal:
+    setup = _audio_setup()
     setup.select(0, 0)
     return LiveTerminal(
         log_file="/tmp/2xbrainz-web.log",
@@ -354,6 +396,26 @@ def _state_with_selection(path: Path) -> LiveTerminal:
         stream=io.StringIO(),
         _setup_preview_enabled=False,
     )
+
+
+def _runtime_settings_payload(
+    *,
+    summary_model: str = "model-a",
+) -> dict[str, object]:
+    return {
+        "type": "runtime_settings",
+        "schema_version": 1,
+        "providers": {
+            "draft": {"model": "model-a", "reasoning_effort": "none"},
+            "commentary": {"model": "model-a", "reasoning_effort": "none"},
+            "summary": {"model": summary_model, "reasoning_effort": "high"},
+        },
+        "talkies_model": "asr-a",
+        "session_brief": "",
+        "web_research_enabled": True,
+        "microphone_node": "mic",
+        "system_node": "system",
+    }
 
 
 def _static_app(directory: Path) -> Path:

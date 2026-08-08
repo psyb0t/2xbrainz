@@ -12,10 +12,7 @@ from pathlib import Path
 
 from two_x_brainz import VERSION
 from two_x_brainz.aigate import AIGateClient, EchoDraftProvider
-from two_x_brainz.audio_selection import (
-    AudioSelectionStore,
-    prepare_audio_selection_setup,
-)
+from two_x_brainz.audio_selection import prepare_audio_selection_setup
 from two_x_brainz.benchmark import run_asr_benchmark
 from two_x_brainz.capture import list_pipewire_nodes
 from two_x_brainz.config import Settings
@@ -104,11 +101,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "live",
         help="capture two PipeWire nodes and call Talkies",
     )
-    live.add_argument("--mic-node", help="optional visible microphone node override")
-    live.add_argument(
-        "--system-node",
-        help="optional visible system-output node override",
-    )
     live.add_argument(
         "--web-port",
         type=_web_port,
@@ -120,6 +112,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="verify concurrent Talkies native and file contracts with one WAV",
     )
     benchmark.add_argument("--audio", required=True, type=Path)
+    benchmark.add_argument(
+        "--model",
+        help="Talkies model override for this finite benchmark only",
+    )
     benchmark.add_argument(
         "--reference-file",
         type=Path,
@@ -147,9 +143,6 @@ async def _run(arguments: argparse.Namespace, settings: Settings) -> int:
     if command == "live":
         audio_setup = prepare_audio_selection_setup(
             nodes=await list_pipewire_nodes(),
-            store=AudioSelectionStore(settings.audio_config_file),
-            mic_node=arguments.mic_node,
-            system_node=arguments.system_node,
         )
         await run_live(
             settings,
@@ -158,6 +151,8 @@ async def _run(arguments: argparse.Namespace, settings: Settings) -> int:
         )
         return _EXIT_SUCCESS
     if command == "benchmark":
+        if arguments.model:
+            settings = replace(settings, talkies_model=arguments.model)
         draft_provider = None
         if arguments.with_draft:
             draft_provider = AIGateClient(

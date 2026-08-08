@@ -148,11 +148,11 @@ class CLIReplayIntegrationTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         status = json.loads(result.stdout)
-        self.assertEqual(status["aigate_reply_model"], "reply-model")
-        self.assertEqual(status["aigate_coach_model"], "coach-model")
-        self.assertEqual(status["aigate_summary_model"], "summary-model")
+        self.assertEqual(status["aigate_reply_model"], "claudebox-sonnet")
+        self.assertEqual(status["aigate_coach_model"], "pibox-zai-glm-5-turbo")
+        self.assertEqual(status["aigate_summary_model"], "groq-gpt-oss-120b")
         self.assertFalse(status["aigate_token_configured"])
-        self.assertTrue(status["session_brief_configured"])
+        self.assertFalse(status["session_brief_configured"])
         self.assertNotIn("Private local framing text.", result.stdout)
 
     def test_overlap_replay_suppresses_remote_reply_draft(self) -> None:

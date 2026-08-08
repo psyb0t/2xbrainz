@@ -9,7 +9,6 @@ from typing import cast
 from two_x_brainz.audio_selection import (
     AudioDevice,
     AudioSelectionSetup,
-    AudioSelectionStore,
 )
 from two_x_brainz.errors import WebConsoleError
 from two_x_brainz.terminal import LiveTerminal
@@ -79,21 +78,20 @@ class WebConsoleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(system["level"], 27)
 
     async def test_snapshot_lists_every_candidate_as_a_separate_meter(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            setup = _audio_setup(Path(temporary_directory) / "audio.json")
-            state = LiveTerminal(
-                log_file="/tmp/2xbrainz-web.log",
-                stream=io.StringIO(),
-                audio_setup=setup,
-                _setup_preview_enabled=False,
-            )
-            state.start_setup_audio_metering(setup.microphones, setup.system_monitors)
-            state.set_setup_audio_level("user", "mic", 50)
-            state.set_setup_audio_level("user", "backup-mic", 75)
-            state.set_setup_audio_level("remote", "system", 25)
-            state.set_setup_audio_level("remote", "backup-system", 100)
+        setup = _audio_setup()
+        state = LiveTerminal(
+            log_file="/tmp/2xbrainz-web.log",
+            stream=io.StringIO(),
+            audio_setup=setup,
+            _setup_preview_enabled=False,
+        )
+        state.start_setup_audio_metering(setup.microphones, setup.system_monitors)
+        state.set_setup_audio_level("user", "mic", 50)
+        state.set_setup_audio_level("user", "backup-mic", 75)
+        state.set_setup_audio_level("remote", "system", 25)
+        state.set_setup_audio_level("remote", "backup-system", 100)
 
-            snapshot = WebConsole(state).snapshot()
+        snapshot = WebConsole(state).snapshot()
 
         self.assertEqual(
             [meter.label for meter in snapshot.microphones],
@@ -294,9 +292,8 @@ class WebConsoleTests(unittest.IsolatedAsyncioTestCase):
                 await console.open()
 
 
-def _audio_setup(path: Path) -> AudioSelectionSetup:
+def _audio_setup() -> AudioSelectionSetup:
     return AudioSelectionSetup(
-        store=AudioSelectionStore(path),
         microphones=(
             AudioDevice("1", "mic", "Audio/Source", "Microphone", True),
             AudioDevice("3", "backup-mic", "Audio/Source", "Backup microphone", False),

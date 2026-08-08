@@ -10,31 +10,28 @@ from two_x_brainz.config import Settings
 
 
 class CLIAudioSelectionTests(unittest.TestCase):
-    def test_live_defaults_to_saved_or_interactive_selection(self) -> None:
+    def test_live_uses_browser_owned_audio_selection(self) -> None:
         prepare, run_live = self._run_live_command(["2xbrainz", "live"])
 
-        self.assertIsNone(prepare.call_args.kwargs["mic_node"])
-        self.assertIsNone(prepare.call_args.kwargs["system_node"])
+        self.assertEqual(set(prepare.call_args.kwargs), {"nodes"})
         self.assertNotEqual(run_live.call_args.args[0].log_file, _settings().log_file)
         self.assertEqual(run_live.call_args.kwargs["web_port"], 7860)
 
-    def test_live_accepts_web_port_and_paired_overrides(self) -> None:
+    def test_live_accepts_web_port(self) -> None:
         prepare, run_live = self._run_live_command(
             [
                 "2xbrainz",
                 "live",
                 "--web-port",
                 "9000",
-                "--mic-node",
-                "mic-usb",
-                "--system-node",
-                "speaker-usb",
             ]
         )
 
-        self.assertEqual(prepare.call_args.kwargs["mic_node"], "mic-usb")
-        self.assertEqual(prepare.call_args.kwargs["system_node"], "speaker-usb")
+        self.assertEqual(set(prepare.call_args.kwargs), {"nodes"})
         self.assertEqual(run_live.call_args.kwargs["web_port"], 9000)
+
+    def test_live_rejects_removed_audio_node_arguments(self) -> None:
+        self._assert_parse_rejected(["2xbrainz", "live", "--mic-node", "mic"])
 
     def test_live_rejects_removed_select_audio_argument(self) -> None:
         self._assert_parse_rejected(["2xbrainz", "live", "--select-audio"])
@@ -90,9 +87,7 @@ def _settings() -> Settings:
         talkies_model="fixture-model",
         talkies_token=None,
         aigate_url="http://aigate:4000/v1",
-        aigate_reply_model=None,
         aigate_token=None,
         log_level="INFO",
         log_file=Path("/tmp/2xbrainz-test.log"),
-        audio_config_file=Path("/tmp/2xbrainz-audio.json"),
     )

@@ -8,33 +8,22 @@ from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
 from two_x_brainz.constants import (
-    AIGATE_REASONING_EFFORTS,
+    DEFAULT_AIGATE_COACH_MODEL,
     DEFAULT_AIGATE_REASONING_EFFORT,
+    DEFAULT_AIGATE_REPLY_MODEL,
+    DEFAULT_AIGATE_SUMMARY_MODEL,
     DEFAULT_AIGATE_URL,
-    DEFAULT_AUDIO_CONFIG_FILE,
     DEFAULT_LOG_FILE,
     DEFAULT_LOG_FILENAME,
     DEFAULT_LOG_LEVEL,
     DEFAULT_TALKIES_MODEL,
     DEFAULT_WEB_RESEARCH_ENABLED,
-    ENV_AIGATE_COACH_MODEL,
-    ENV_AIGATE_COACH_REASONING_EFFORT,
-    ENV_AIGATE_REPLY_MODEL,
-    ENV_AIGATE_REPLY_REASONING_EFFORT,
-    ENV_AIGATE_SUMMARY_MODEL,
-    ENV_AIGATE_SUMMARY_REASONING_EFFORT,
     ENV_AIGATE_TOKEN,
     ENV_AIGATE_URL,
-    ENV_AUDIO_CONFIG_FILE,
     ENV_LOG_DIRECTORY,
     ENV_LOG_FILE,
     ENV_LOG_LEVEL,
-    ENV_SESSION_BRIEF,
-    ENV_TALKIES_MODEL,
-    ENV_WEB_RESEARCH_ENABLED,
-    MAX_SESSION_BRIEF_CHARACTERS,
     TALKIES_STREAM_PATH,
-    WEB_RESEARCH_ENABLED_VALUE,
 )
 from two_x_brainz.errors import ConfigurationError
 
@@ -62,11 +51,10 @@ class Settings:
     log_level: str
     log_file: Path
     session_brief: str | None = field(default=None, repr=False)
-    audio_config_file: Path = Path(DEFAULT_AUDIO_CONFIG_FILE)
     web_research_enabled: bool = DEFAULT_WEB_RESEARCH_ENABLED
-    aigate_reply_model: str | None = None
-    aigate_coach_model: str | None = None
-    aigate_summary_model: str | None = None
+    aigate_reply_model: str = DEFAULT_AIGATE_REPLY_MODEL
+    aigate_coach_model: str = DEFAULT_AIGATE_COACH_MODEL
+    aigate_summary_model: str = DEFAULT_AIGATE_SUMMARY_MODEL
     aigate_reply_reasoning_effort: str = DEFAULT_AIGATE_REASONING_EFFORT
     aigate_coach_reasoning_effort: str = DEFAULT_AIGATE_REASONING_EFFORT
     aigate_summary_reasoning_effort: str = DEFAULT_AIGATE_REASONING_EFFORT
@@ -76,55 +64,28 @@ class Settings:
         """Load settings from the process environment and fail fast on errors."""
         aigate_url = _read_aigate_url()
         talkies_ws_url = _talkies_stream_url(aigate_url)
-        talkies_model = _read_required_text(ENV_TALKIES_MODEL, DEFAULT_TALKIES_MODEL)
-        aigate_reply_model = _read_optional_text(ENV_AIGATE_REPLY_MODEL)
-        aigate_coach_model = _read_optional_text(ENV_AIGATE_COACH_MODEL)
-        aigate_summary_model = _read_optional_text(ENV_AIGATE_SUMMARY_MODEL)
-        aigate_reply_reasoning_effort = _read_reasoning_effort(
-            ENV_AIGATE_REPLY_REASONING_EFFORT
-        )
-        aigate_coach_reasoning_effort = _read_reasoning_effort(
-            ENV_AIGATE_COACH_REASONING_EFFORT
-        )
-        aigate_summary_reasoning_effort = _read_reasoning_effort(
-            ENV_AIGATE_SUMMARY_REASONING_EFFORT
-        )
         aigate_token = _read_optional_text(ENV_AIGATE_TOKEN)
-        session_brief = _read_optional_bounded_text(
-            ENV_SESSION_BRIEF,
-            MAX_SESSION_BRIEF_CHARACTERS,
-        )
         log_level = _read_required_text(ENV_LOG_LEVEL, DEFAULT_LOG_LEVEL).upper()
         if log_level not in _VALID_LOG_LEVELS:
             raise ConfigurationError(f"{ENV_LOG_LEVEL} must be a standard log level")
 
         log_file = _read_log_file()
-        audio_config_file = _read_absolute_path(
-            ENV_AUDIO_CONFIG_FILE,
-            DEFAULT_AUDIO_CONFIG_FILE,
-        )
-        web_research_enabled = _read_boolean(
-            ENV_WEB_RESEARCH_ENABLED,
-            DEFAULT_WEB_RESEARCH_ENABLED,
-        )
-
         return cls(
             talkies_ws_url=talkies_ws_url,
-            talkies_model=talkies_model,
+            talkies_model=DEFAULT_TALKIES_MODEL,
             talkies_token=aigate_token,
             aigate_url=aigate_url,
-            aigate_reply_model=aigate_reply_model,
-            aigate_coach_model=aigate_coach_model,
-            aigate_summary_model=aigate_summary_model,
-            aigate_reply_reasoning_effort=aigate_reply_reasoning_effort,
-            aigate_coach_reasoning_effort=aigate_coach_reasoning_effort,
-            aigate_summary_reasoning_effort=aigate_summary_reasoning_effort,
+            aigate_reply_model=DEFAULT_AIGATE_REPLY_MODEL,
+            aigate_coach_model=DEFAULT_AIGATE_COACH_MODEL,
+            aigate_summary_model=DEFAULT_AIGATE_SUMMARY_MODEL,
+            aigate_reply_reasoning_effort=DEFAULT_AIGATE_REASONING_EFFORT,
+            aigate_coach_reasoning_effort=DEFAULT_AIGATE_REASONING_EFFORT,
+            aigate_summary_reasoning_effort=DEFAULT_AIGATE_REASONING_EFFORT,
             aigate_token=aigate_token,
-            session_brief=session_brief,
+            session_brief=None,
             log_level=log_level,
             log_file=log_file,
-            audio_config_file=audio_config_file,
-            web_research_enabled=web_research_enabled,
+            web_research_enabled=DEFAULT_WEB_RESEARCH_ENABLED,
         )
 
 
@@ -173,38 +134,6 @@ def _read_required_text(name: str, default: str) -> str:
 def _read_optional_text(name: str) -> str | None:
     value = os.environ.get(name, "").strip()
     return value or None
-
-
-def _read_reasoning_effort(name: str) -> str:
-    normalized = _read_required_text(name, DEFAULT_AIGATE_REASONING_EFFORT).lower()
-    _validate_reasoning_effort(name, normalized)
-    return normalized
-
-
-def _validate_reasoning_effort(name: str, value: str) -> None:
-    if value not in AIGATE_REASONING_EFFORTS:
-        raise ConfigurationError(
-            f"{name} must be one of: " + ", ".join(sorted(AIGATE_REASONING_EFFORTS))
-        )
-
-
-def _read_optional_bounded_text(name: str, maximum_characters: int) -> str | None:
-    value = _read_optional_text(name)
-    if value is not None and len(value) > maximum_characters:
-        raise ConfigurationError(f"{name} exceeds the configured length limit")
-    return value
-
-
-def _read_boolean(name: str, default: bool) -> bool:
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    normalized = value.strip().lower()
-    if normalized == WEB_RESEARCH_ENABLED_VALUE:
-        return True
-    if normalized == "false":
-        return False
-    raise ConfigurationError(f"{name} must be true or false")
 
 
 def _read_absolute_path(name: str, default: str) -> Path:

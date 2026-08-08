@@ -3,6 +3,33 @@
 All notable changes per release. Versions follow
 [semantic versioning](https://semver.org).
 
+## v3.0.0 — 2026-08-08
+
+Move all non-secret live configuration into the web console and add a
+repeatable, end-to-end conversation quality gate.
+
+- **Breaking.** Remove the live model, reasoning, ASR, session-context,
+  research, and audio-source environment variables. Configure those settings
+  in the browser; only credentials, service connectivity, logging, and server
+  settings remain environment-based.
+- **Breaking.** Remove the `--mic-node` and `--system-node` live-command
+  options and the host audio-selection file. The browser settings modal now
+  owns source selection and persists safe settings in local storage.
+- Add strict runtime-settings validation and independent in-session model and
+  reasoning controls for Reply, Private coach, and Story so far, backed by
+  code-defined defaults.
+- Default streaming ASR to the exact CUDA Nemotron model, validate its reported
+  device and concurrency before real evaluation, and keep independently
+  supervised audio channels recoverable across hot-plug events.
+- Harden provider streaming and research-tool recovery with bounded retries,
+  URL validation, parallel tool execution, and clearer failure events.
+- Add an eight-turn slang-heavy, interrupted conversation evaluation that
+  generates speech, exercises two concurrent ASR streams and three routed LLM
+  flows, and gates transcript accuracy, latency, interruption recovery,
+  research behavior, and final conversation understanding.
+- Improve the web console's streamed histories, settings layout, searchable
+  model controls, diagnostics, and automated browser coverage.
+
 ## v2.0.0 — 2026-08-06
 
 Remove pre-release compatibility layers and require explicit configuration for

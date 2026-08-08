@@ -86,7 +86,11 @@
       const flowId = event.flow_id;
       const phase = event.phase;
 
-      if (phase === 'request_started' || phase === 'followup_started') {
+      if (
+        phase === 'request_started' ||
+        phase === 'followup_started' ||
+        phase === 'tool_call_retry_started'
+      ) {
         settleStatus(result, flowId);
         result.push({
           type: 'status',
@@ -94,7 +98,8 @@
           flowId,
           phase,
           model: event.model ?? model,
-          active: true
+          active: true,
+          message: phase === 'tool_call_retry_started' ? event.error_message : undefined
         });
         continue;
       }

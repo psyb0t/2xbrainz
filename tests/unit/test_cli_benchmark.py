@@ -163,6 +163,52 @@ class CLIBenchmarkTests(unittest.TestCase):
         self.assertIsInstance(supplied_provider, AIGateClient)
         self.assertEqual(supplied_provider.model, "draft-model")
 
+    def test_benchmark_accepts_a_finite_model_override(self) -> None:
+        report = ASRBenchmarkReport(
+            model="override-model",
+            source_audio_seconds=2.4,
+            native_elapsed_seconds=2.5,
+            native_streams=(),
+            draft_elapsed_seconds=None,
+            batch_json_elapsed_seconds=0.1,
+            batch_json_word_error_rate=None,
+            batch_verbose_json_elapsed_seconds=0.2,
+            batch_verbose_json_word_error_rate=None,
+            verbose_segment_count=0,
+            verbose_word_count=0,
+        )
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "2xbrainz",
+                    "benchmark",
+                    "--audio",
+                    "/fixture/audio.wav",
+                    "--model",
+                    "override-model",
+                ],
+            ),
+            patch(
+                "two_x_brainz.cli.Settings.from_environment",
+                return_value=_settings(),
+            ),
+            patch("two_x_brainz.cli.configure_logging"),
+            patch(
+                "two_x_brainz.cli.run_asr_benchmark",
+                new_callable=AsyncMock,
+                return_value=report,
+            ) as benchmark_mock,
+            patch("sys.stdout", io.StringIO()),
+        ):
+            exit_code = main()
+
+        self.assertEqual(exit_code, 0)
+        benchmark_call = benchmark_mock.await_args
+        assert benchmark_call is not None
+        self.assertEqual(benchmark_call.args[0].talkies_model, "override-model")
+
     def test_benchmark_reference_file_is_forwarded_without_entering_output(
         self,
     ) -> None:
@@ -217,38 +263,6 @@ class CLIBenchmarkTests(unittest.TestCase):
         )
         self.assertNotIn("reference", output.getvalue())
 
-    def test_benchmark_with_draft_requires_a_reply_model(self) -> None:
-        settings = _settings()
-        stderr = io.StringIO()
-        with (
-            patch.object(
-                sys,
-                "argv",
-                [
-                    "2xbrainz",
-                    "benchmark",
-                    "--audio",
-                    "/fixture/audio.wav",
-                    "--with-draft",
-                ],
-            ),
-            patch(
-                "two_x_brainz.cli.Settings.from_environment",
-                return_value=settings,
-            ),
-            patch("two_x_brainz.cli.configure_logging"),
-            patch(
-                "two_x_brainz.cli.run_asr_benchmark",
-                new_callable=AsyncMock,
-            ) as benchmark_mock,
-            patch("sys.stderr", stderr),
-        ):
-            exit_code = main()
-
-        self.assertEqual(exit_code, 1)
-        self.assertIn("AIGate model", stderr.getvalue())
-        benchmark_mock.assert_not_awaited()
-
 
 class CLIErrorTests(unittest.TestCase):
     def test_expected_benchmark_error_group_exits_without_a_traceback(self) -> None:
@@ -292,7 +306,7 @@ class CLIErrorTests(unittest.TestCase):
             patch.object(
                 sys,
                 "argv",
-                ["2xbrainz", "live", "--mic-node", "12", "--system-node", "34"],
+                ["2xbrainz", "live"],
             ),
             patch(
                 "two_x_brainz.cli.Settings.from_environment",
@@ -323,7 +337,7 @@ class CLIErrorTests(unittest.TestCase):
         )
 
 
-def _settings(reply_model: str | None = None) -> Settings:
+def _settings(reply_model: str = "fixture-reply-model") -> Settings:
     return Settings(
         talkies_ws_url="ws://talkies:8000/v1/audio/transcriptions/stream",
         talkies_model="fixture-model",

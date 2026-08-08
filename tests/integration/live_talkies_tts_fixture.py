@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 import time
+from dataclasses import replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -50,7 +51,9 @@ _AUDIO_SCENARIO_ENV = "TWOXBRAINZ_FIXTURE_AUDIO_SCENARIO"
 _REMOTE_START_SIGNAL_ENV = "TWOXBRAINZ_FIXTURE_REMOTE_START_SIGNAL"
 _REMOTE_START_DELAY_ENV = "TWOXBRAINZ_FIXTURE_REMOTE_START_DELAY_SECONDS"
 _TTS_MODEL_ENV = "TWOXBRAINZ_FIXTURE_TTS_MODEL"
-_TTS_VOICE_ENV = "TWOXBRAINZ_FIXTURE_TTS_VOICE"
+TTS_VOICE_ENV = "TWOXBRAINZ_FIXTURE_TTS_VOICE"
+_AIGATE_MODEL_ENV = "TWOXBRAINZ_FIXTURE_AIGATE_MODEL"
+_TALKIES_MODEL_ENV = "TWOXBRAINZ_FIXTURE_TALKIES_MODEL"
 _WORK_DIRECTORY_ENV = "TWOXBRAINZ_FIXTURE_WORK_DIR"
 _TRACE_DIRECTORY_ENV = "TWOXBRAINZ_FIXTURE_TRACE_DIR"
 _USER_WAV_ENV = "TWOXBRAINZ_FIXTURE_USER_WAV"
@@ -212,6 +215,22 @@ def main() -> int:
 
 async def _run() -> Path:
     settings = Settings.from_environment()
+    settings = replace(
+        settings,
+        talkies_model=os.environ.get(_TALKIES_MODEL_ENV, settings.talkies_model),
+        aigate_reply_model=os.environ.get(
+            _AIGATE_MODEL_ENV,
+            settings.aigate_reply_model,
+        ),
+        aigate_coach_model=os.environ.get(
+            _AIGATE_MODEL_ENV,
+            settings.aigate_coach_model,
+        ),
+        aigate_summary_model=os.environ.get(
+            _AIGATE_MODEL_ENV,
+            settings.aigate_summary_model,
+        ),
+    )
     if settings.talkies_token is None:
         raise FixtureError("shared gateway token is required for Talkies")
     work_directory = Path(os.environ.get(_WORK_DIRECTORY_ENV, "/tmp"))
@@ -247,8 +266,6 @@ async def _run_with_trace(
     use_real_aigate = _real_aigate_enabled()
     if use_real_aigate and settings.aigate_token is None:
         raise FixtureError("real AIGate fixture requires TWOXBRAINZ_AIGATE_TOKEN")
-    if use_real_aigate and settings.aigate_reply_model is None:
-        raise FixtureError("real AIGate fixture requires TWOXBRAINZ_AIGATE_REPLY_MODEL")
     with tempfile.TemporaryDirectory(
         prefix="2xbrainz-live-fixture-", dir=work_directory
     ) as name:
@@ -267,8 +284,8 @@ async def _run_with_trace(
             ),
         )
         user_texts, remote_texts = _scenario_texts(scenario)
-        _synthesize_wav(settings, user_texts[0], user_wav, SpeakerRole.USER, trace)
-        _synthesize_wav(
+        synthesize_wav(settings, user_texts[0], user_wav, SpeakerRole.USER, trace)
+        synthesize_wav(
             settings,
             remote_texts[0],
             remote_wav,
@@ -276,14 +293,14 @@ async def _run_with_trace(
             trace,
         )
         if scenario == _INTERVIEW_SCENARIO:
-            _synthesize_wav(
+            synthesize_wav(
                 settings,
                 user_texts[1],
                 user_followup_wav,
                 SpeakerRole.USER,
                 trace,
             )
-            _synthesize_wav(
+            synthesize_wav(
                 settings,
                 remote_texts[1],
                 remote_followup_wav,
@@ -398,7 +415,7 @@ def _real_aigate_enabled() -> bool:
     return os.environ.get(_REAL_AIGATE_ENV, "").strip().lower() == _TRUE_VALUE
 
 
-def _synthesize_wav(
+def synthesize_wav(
     settings: Settings,
     text: str,
     destination: Path,
@@ -406,7 +423,7 @@ def _synthesize_wav(
     trace: FixtureTrace,
 ) -> None:
     model = os.environ.get(_TTS_MODEL_ENV, _DEFAULT_TTS_MODEL).strip()
-    voice = os.environ.get(_TTS_VOICE_ENV, _DEFAULT_TTS_VOICE).strip()
+    voice = os.environ.get(TTS_VOICE_ENV, _DEFAULT_TTS_VOICE).strip()
     if not model or not voice:
         raise FixtureError("fixture Talkies TTS model and voice must not be empty")
     trace.event(
@@ -560,9 +577,6 @@ async def _run_live(
         {
             "PATH": f"{command.parent}:{environment['PATH']}",
             "TWOXBRAINZ_AIGATE_URL": aigate_url,
-            "TWOXBRAINZ_AIGATE_REPLY_MODEL": reply_model,
-            "TWOXBRAINZ_AIGATE_COACH_MODEL": reply_model,
-            "TWOXBRAINZ_AIGATE_SUMMARY_MODEL": reply_model,
             "TWOXBRAINZ_AIGATE_TOKEN": aigate_token,
             _USER_WAV_ENV: str(user_wav),
             _REMOTE_WAV_ENV: str(remote_wav),

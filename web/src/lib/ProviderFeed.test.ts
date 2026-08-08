@@ -205,6 +205,23 @@ describe('provider feed', () => {
     expect(view.container.querySelectorAll('.stream-status.failed')).toHaveLength(1);
     expect(view.container.querySelectorAll('.stream-status.cancelled')).toHaveLength(1);
   });
+
+  it('shows a malformed tool-call retry and its validation reason', () => {
+    const view = renderFeed([
+      {
+        phase: 'tool_call_retry_started',
+        flow_id: 'retry-flow',
+        output_kind: 'draft',
+        model: 'model-a',
+        error_type: 'ProtocolError',
+        error_message: 'research_web requires a query or URL'
+      }
+    ]);
+
+    expect(screen.getByText('tool call retry started')).toBeTruthy();
+    expect(screen.getByText(/research_web requires a query or URL/)).toBeTruthy();
+    expect(view.container.querySelectorAll('.stream-status.active')).toHaveLength(1);
+  });
 });
 
 function renderFeed(activity: ProviderActivity[]) {

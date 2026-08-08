@@ -8,6 +8,7 @@ import os
 import sys
 import time
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from pathlib import Path
 
 from two_x_brainz.audio import WavFixture, load_wav_fixture
@@ -31,6 +32,7 @@ from two_x_brainz.talkies import TalkiesClient, TalkiesStreamConfig
 
 _AUDIO_PATH_ENV = "TWOXBRAINZ_CONCURRENCY_AUDIO"
 _TRACE_DIRECTORY_ENV = "TWOXBRAINZ_FIXTURE_TRACE_DIR"
+_TALKIES_MODEL_ENV = "TWOXBRAINZ_FIXTURE_TALKIES_MODEL"
 _TRACE_LABEL = "real-talkies-concurrency"
 _SESSION_ID = "real-talkies-concurrency"
 _EXPECTED_CONCURRENT_STREAMS = 2
@@ -97,6 +99,10 @@ def main() -> int:
 
 async def _run() -> dict[str, object]:
     settings = Settings.from_environment()
+    settings = replace(
+        settings,
+        talkies_model=os.environ.get(_TALKIES_MODEL_ENV, settings.talkies_model),
+    )
     trace = FixtureTrace(
         _trace_directory(),
         _TRACE_LABEL,

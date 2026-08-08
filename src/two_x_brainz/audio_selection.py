@@ -1,24 +1,13 @@
-"""Interactive, persistent selection of the two PipeWire capture nodes."""
+"""Interactive selection of the two PipeWire capture nodes."""
 
 from __future__ import annotations
 
 import asyncio
-import errno
-import json
-import os
-import stat
-import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import cast
 
 from two_x_brainz.capture import validate_pipewire_node_identifier
-from two_x_brainz.constants import (
-    AUDIO_SELECTION_CONFIG_SCHEMA_VERSION,
-    MAX_AUDIO_SELECTION_CONFIG_BYTES,
-)
-from two_x_brainz.errors import CaptureError, ConfigurationError
+from two_x_brainz.errors import CaptureError
 
 _MICROPHONE_MEDIA_CLASS = "Audio/Source"
 _SYSTEM_MONITOR_MEDIA_CLASS = "Audio/Source"
@@ -29,13 +18,6 @@ _DEFAULT_SINK_ROLE = "sink"
 _DEVICE_DESCRIPTION_KEY = "description"
 _DEVICE_DEFAULT_ROLE_KEY = "default_role"
 _MAX_DEVICE_LABEL_CHARACTERS = 160
-_SCHEMA_VERSION_KEY = "schema_version"
-_MIC_NODE_KEY = "mic_node"
-_SYSTEM_NODE_KEY = "system_node"
-_CONFIG_KEYS = frozenset({_SCHEMA_VERSION_KEY, _MIC_NODE_KEY, _SYSTEM_NODE_KEY})
-_CONFIG_FILE_MODE = 0o600
-_CONFIG_DIRECTORY_MODE = 0o700
-_NO_FOLLOW_OPEN_FLAG = getattr(os, "O_NOFOLLOW", 0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,9 +59,8 @@ class AudioDevice:
 
 @dataclass(slots=True)
 class AudioSelectionSetup:
-    """Validated choices and persistence for the live audio settings screen."""
+    """Validated choices for the live audio settings screen."""
 
-    store: AudioSelectionStore
     microphones: tuple[AudioDevice, ...]
     system_monitors: tuple[AudioDevice, ...]
     selection: AudioSelection | None
@@ -105,7 +86,7 @@ class AudioSelectionSetup:
         microphone_index: int,
         system_monitor_index: int,
     ) -> AudioSelection:
-        """Persist the two in-range UI choices and return their labelled pair."""
+        """Apply the two in-range UI choices and return their labelled pair."""
         try:
             microphone = self.microphones[microphone_index]
             system_monitor = self.system_monitors[system_monitor_index]
@@ -120,12 +101,24 @@ class AudioSelectionSetup:
             system_label=system_monitor.label,
             system_capture_sink=system_monitor.capture_sink,
         )
-        self.store.save(selection)
         if selection != self.selection:
             self.selection = selection
             self._revision += 1
             self._changed.set()
         return selection
+
+    def select_nodes(self, microphone_node: str, system_node: str) -> AudioSelection:
+        """Apply stable browser-persisted node names after inventory validation."""
+        microphone_index = _device_index(microphone_node, self.microphones)
+        system_index = _device_index(system_node, self.system_monitors)
+        if microphone_index is None or system_index is None:
+            raise CaptureError("the selected PipeWire audio node is not available")
+        return self.select(microphone_index, system_index)
+
+    def notify_runtime_change(self) -> None:
+        """Reconnect capture workers after a non-routing ASR setting changes."""
+        self._revision += 1
+        self._changed.set()
 
     def refresh(self, nodes: Sequence[Mapping[str, str]]) -> None:
         """Replace discovery candidates while retaining a reconnectable selection."""
@@ -146,147 +139,18 @@ class AudioSelectionSetup:
         return self._revision
 
 
-class AudioSelectionStore:
-    """Read and atomically persist a small, local-only audio-target configuration."""
-
-    def __init__(self, path: Path) -> None:
-        self._path = path
-
-    def load(self) -> AudioSelection | None:
-        """Return a validated selection, or None when selection is required."""
-        try:
-            descriptor = os.open(self._path, os.O_RDONLY | _NO_FOLLOW_OPEN_FLAG)
-        except FileNotFoundError:
-            return None
-        except OSError as error:
-            if error.errno == errno.ELOOP:
-                return None
-            raise ConfigurationError("read audio selection configuration") from error
-        try:
-            with os.fdopen(descriptor, "rb") as config_file:
-                file_status = os.fstat(config_file.fileno())
-                if not stat.S_ISREG(file_status.st_mode):
-                    return None
-                if file_status.st_size > MAX_AUDIO_SELECTION_CONFIG_BYTES:
-                    return None
-                raw = config_file.read(MAX_AUDIO_SELECTION_CONFIG_BYTES + 1)
-        except OSError as error:
-            raise ConfigurationError("read audio selection configuration") from error
-        if len(raw) > MAX_AUDIO_SELECTION_CONFIG_BYTES:
-            return None
-        try:
-            payload = json.loads(raw)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            return None
-        return _selection_from_payload(payload)
-
-    def save(self, selection: AudioSelection) -> None:
-        """Atomically replace the local config with no audio or credential data."""
-        try:
-            self._path.parent.mkdir(
-                mode=_CONFIG_DIRECTORY_MODE,
-                parents=True,
-                exist_ok=True,
-            )
-        except OSError as error:
-            raise ConfigurationError("create audio selection directory") from error
-
-        temporary_path: Path | None = None
-        try:
-            descriptor, temporary_name = tempfile.mkstemp(
-                dir=self._path.parent,
-                prefix=f".{self._path.name}.",
-            )
-            temporary_path = Path(temporary_name)
-            os.fchmod(descriptor, _CONFIG_FILE_MODE)
-            with os.fdopen(descriptor, "w", encoding="utf-8") as config_file:
-                json.dump(
-                    {
-                        _SCHEMA_VERSION_KEY: AUDIO_SELECTION_CONFIG_SCHEMA_VERSION,
-                        _MIC_NODE_KEY: selection.mic_node,
-                        _SYSTEM_NODE_KEY: selection.system_node,
-                    },
-                    config_file,
-                    separators=(",", ":"),
-                )
-                config_file.flush()
-                os.fsync(config_file.fileno())
-            os.replace(temporary_path, self._path)
-            os.chmod(self._path, _CONFIG_FILE_MODE)
-        except OSError as error:
-            raise ConfigurationError("write audio selection configuration") from error
-        finally:
-            if temporary_path is not None and temporary_path.exists():
-                temporary_path.unlink()
-
-
 def prepare_audio_selection_setup(
     *,
     nodes: Sequence[Mapping[str, str]],
-    store: AudioSelectionStore,
-    mic_node: str | None,
-    system_node: str | None,
 ) -> AudioSelectionSetup:
-    """Prepare safe candidates and any reusable selection for the web app."""
+    """Prepare safe candidates for browser-owned selection and persistence."""
     microphones = _candidate_devices(nodes, is_system_monitor=False)
     system_monitors = _candidate_devices(nodes, is_system_monitor=True)
-    explicit_selection = _explicit_selection(mic_node, system_node)
-    if explicit_selection is not None:
-        _require_available_selection(
-            explicit_selection,
-            microphones,
-            system_monitors,
-        )
-        selection = _with_device_labels(
-            explicit_selection,
-            microphones,
-            system_monitors,
-        )
-        store.save(selection)
-        return AudioSelectionSetup(
-            store=store,
-            microphones=microphones,
-            system_monitors=system_monitors,
-            selection=selection,
-        )
-
-    selection: AudioSelection | None = None
-    saved_selection = store.load()
-    if saved_selection is not None and _selection_is_available(
-        saved_selection,
-        microphones,
-        system_monitors,
-    ):
-        selection = _with_device_labels(
-            saved_selection,
-            microphones,
-            system_monitors,
-        )
-
     return AudioSelectionSetup(
-        store=store,
         microphones=microphones,
         system_monitors=system_monitors,
-        selection=selection,
+        selection=None,
     )
-
-
-def _selection_from_payload(payload: object) -> AudioSelection | None:
-    if not isinstance(payload, dict):
-        return None
-    config = cast(dict[str, object], payload)
-    if frozenset(config) != _CONFIG_KEYS:
-        return None
-    if config.get(_SCHEMA_VERSION_KEY) != AUDIO_SELECTION_CONFIG_SCHEMA_VERSION:
-        return None
-    mic_node = config.get(_MIC_NODE_KEY)
-    system_node = config.get(_SYSTEM_NODE_KEY)
-    if not isinstance(mic_node, str) or not isinstance(system_node, str):
-        return None
-    try:
-        return AudioSelection(mic_node=mic_node, system_node=system_node)
-    except CaptureError:
-        return None
 
 
 def _candidate_devices(
@@ -349,28 +213,6 @@ def _is_candidate_device(
     return media_class == _SYSTEM_SINK_MEDIA_CLASS
 
 
-def _explicit_selection(
-    mic_node: str | None,
-    system_node: str | None,
-) -> AudioSelection | None:
-    if mic_node is None and system_node is None:
-        return None
-    if mic_node is None or system_node is None:
-        raise ConfigurationError(
-            "--mic-node and --system-node must be supplied together"
-        )
-    return AudioSelection(mic_node=mic_node, system_node=system_node)
-
-
-def _require_available_selection(
-    selection: AudioSelection,
-    microphones: Sequence[AudioDevice],
-    system_outputs: Sequence[AudioDevice],
-) -> None:
-    if not _selection_is_available(selection, microphones, system_outputs):
-        raise CaptureError("the requested PipeWire audio nodes are not available")
-
-
 def _selection_is_available(
     selection: AudioSelection,
     microphones: Sequence[AudioDevice],
@@ -384,6 +226,13 @@ def _selection_is_available(
 
 def _device_matches(identifier: str, devices: Sequence[AudioDevice]) -> bool:
     return any(identifier in {device.node_id, device.name} for device in devices)
+
+
+def _device_index(identifier: str, devices: Sequence[AudioDevice]) -> int | None:
+    for index, device in enumerate(devices):
+        if identifier in {device.node_id, device.name}:
+            return index
+    return None
 
 
 def _with_device_labels(

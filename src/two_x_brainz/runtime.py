@@ -8,7 +8,7 @@ import contextvars
 import json
 import logging
 import sys
-from collections.abc import AsyncIterable, Mapping
+from collections.abc import AsyncIterable, Callable, Mapping
 from typing import Protocol
 from uuid import uuid4
 
@@ -24,11 +24,7 @@ from two_x_brainz.capture import (
     audio_level_percent,
 )
 from two_x_brainz.config import Settings
-from two_x_brainz.constants import (
-    DEFAULT_PROVIDER_CONFIG_FILENAME,
-    DEFAULT_WEB_CONSOLE_PORT,
-    JSON_RECORD_SCHEMA_VERSION,
-)
+from two_x_brainz.constants import DEFAULT_WEB_CONSOLE_PORT, JSON_RECORD_SCHEMA_VERSION
 from two_x_brainz.contracts import (
     ASRStreamStats,
     AudioFrame,
@@ -41,7 +37,6 @@ from two_x_brainz.contracts import (
 from two_x_brainz.coordinator import ConversationCoordinator
 from two_x_brainz.errors import (
     CaptureError,
-    ConfigurationError,
     ProtocolError,
     RemoteServiceError,
 )
@@ -49,7 +44,6 @@ from two_x_brainz.provider_selection import (
     ProviderAssignment,
     ProviderFlow,
     ProviderSelection,
-    ProviderSelectionStore,
 )
 from two_x_brainz.session_controls import (
     SessionCommand,
@@ -59,7 +53,7 @@ from two_x_brainz.session_controls import (
 )
 from two_x_brainz.talkies import TalkiesClient, TalkiesStreamConfig
 from two_x_brainz.terminal import LiveTerminal
-from two_x_brainz.web import WebConsole
+from two_x_brainz.web import WebConsole, WebRuntimeSettings
 
 _MAX_CONTROL_LINE_BYTES = 1_024
 _SESSION_STARTED_ACTION = "started"
@@ -129,11 +123,7 @@ async def run_live(
             token=settings.aigate_token,
         )
         models = await inventory_client.list_models()
-        provider_store = ProviderSelectionStore(
-            settings.audio_config_file.with_name(DEFAULT_PROVIDER_CONFIG_FILENAME)
-        )
-        saved_provider = provider_store.load()
-        selection = _initial_provider_selection(settings, saved_provider, models)
+        selection = _initial_provider_selection(settings, models)
         providers = {
             flow: _aigate_client(
                 settings,
@@ -142,58 +132,82 @@ async def run_live(
             )
             for flow in ProviderFlow
         }
+        talkies_model = settings.talkies_model
+        inventory_stream_config = TalkiesStreamConfig(
+            url=settings.talkies_ws_url,
+            model=talkies_model,
+            token=settings.talkies_token,
+        )
+        talkies_inventory_client = TalkiesClient(inventory_stream_config)
+        talkies_models = await talkies_inventory_client.list_models()
         selection_lock = asyncio.Lock()
 
-        async def configure_provider(
-            flow: ProviderFlow,
-            model: str,
-            reasoning_effort: str,
+        async def configure_runtime_settings(
+            runtime_settings: WebRuntimeSettings,
         ) -> bool:
-            nonlocal selection
-            if model not in models:
-                raise RemoteServiceError("selected AIGate model is unavailable")
-            assignment = ProviderAssignment(
-                model=model,
-                reasoning_effort=reasoning_effort,
-            )
+            nonlocal selection, talkies_model
             async with selection_lock:
-                updated_selection = selection.replace(flow, assignment)
-                try:
-                    provider_store.save(updated_selection)
-                except ConfigurationError:
-                    logger.warning(
-                        "provider settings were not persisted",
-                        extra={
-                            "reason": "provider_settings_persistence_failed",
-                            "output_kind": flow.value,
-                        },
-                        exc_info=True,
+                if runtime_settings.talkies_model != talkies_model:
+                    candidate = TalkiesClient(
+                        TalkiesStreamConfig(
+                            url=settings.talkies_ws_url,
+                            model=runtime_settings.talkies_model,
+                            token=settings.talkies_token,
+                        )
                     )
-                    _write_provider_activity_event(
-                        {
-                            "phase": "settings_failed",
-                            "output_kind": flow.value,
-                            "model": model,
-                            "reasoning_effort": reasoning_effort,
-                        }
+                    try:
+                        await candidate.verify_configured_model()
+                    except RemoteServiceError:
+                        logger.warning(
+                            "runtime settings were not applied",
+                            extra={"reason": "talkies_model_verification_failed"},
+                            exc_info=True,
+                        )
+                        _write_provider_activity_event(
+                            {
+                                "phase": "settings_failed",
+                                "output_kind": "transcription",
+                                "model": runtime_settings.talkies_model,
+                            }
+                        )
+                        return False
+                for flow in ProviderFlow:
+                    assignment = runtime_settings.providers.assignment(flow)
+                    providers[flow].configure(
+                        assignment.model,
+                        assignment.reasoning_effort,
                     )
-                    return False
-                providers[flow].configure(model, reasoning_effort)
-                selection = updated_selection
-            _write_provider_activity_event(
-                {
-                    "phase": "settings_changed",
-                    "output_kind": flow.value,
-                    "model": model,
-                    "reasoning_effort": reasoning_effort,
-                }
-            )
+                    providers[flow].configure_context(
+                        session_brief=runtime_settings.session_brief,
+                        web_research_enabled=(
+                            runtime_settings.web_research_enabled
+                            and flow is ProviderFlow.DRAFT
+                        ),
+                    )
+                if runtime_settings.talkies_model != talkies_model:
+                    talkies_model = runtime_settings.talkies_model
+                    audio_setup.notify_runtime_change()
+                selection = runtime_settings.providers
+            for flow in ProviderFlow:
+                assignment = selection.assignment(flow)
+                _write_provider_activity_event(
+                    {
+                        "phase": "settings_changed",
+                        "output_kind": flow.value,
+                        "model": assignment.model,
+                        "reasoning_effort": assignment.reasoning_effort,
+                    }
+                )
             return True
 
-        terminal.configure_provider(
+        terminal.configure_runtime_settings(
             models=models,
+            talkies_models=talkies_models,
+            talkies_model=talkies_model,
+            session_brief=settings.session_brief,
+            web_research_enabled=settings.web_research_enabled,
             selection=selection,
-            callback=configure_provider,
+            callback=configure_runtime_settings,
         )
         coordinator = ConversationCoordinator(
             draft_provider=providers[ProviderFlow.DRAFT],
@@ -202,12 +216,15 @@ async def run_live(
         )
         controller = SessionController(start_paused=True)
         session_id = str(uuid4())
-        stream_config = TalkiesStreamConfig(
-            url=settings.talkies_ws_url,
-            model=settings.talkies_model,
-            token=settings.talkies_token,
-        )
-        talkies_client = TalkiesClient(stream_config)
+
+        def current_stream_config() -> TalkiesStreamConfig:
+            return TalkiesStreamConfig(
+                url=settings.talkies_ws_url,
+                model=talkies_model,
+                token=settings.talkies_token,
+            )
+
+        talkies_client = TalkiesClient(current_stream_config())
         await talkies_client.verify_configured_model()
         await talkies_client.warm_configured_model()
         drift_monitor = InterStreamDriftMonitor()
@@ -232,7 +249,7 @@ async def run_live(
             async with asyncio.TaskGroup() as group:
                 group.create_task(
                     _supervise_audio_channel(
-                        stream_config=stream_config,
+                        stream_config_factory=current_stream_config,
                         coordinator=coordinator,
                         session_id=session_id,
                         stream_id=_MICROPHONE_STREAM_ID,
@@ -245,7 +262,7 @@ async def run_live(
                 )
                 group.create_task(
                     _supervise_audio_channel(
-                        stream_config=stream_config,
+                        stream_config_factory=current_stream_config,
                         coordinator=coordinator,
                         session_id=session_id,
                         stream_id=_SYSTEM_STREAM_ID,
@@ -275,24 +292,14 @@ async def run_live(
 
 def _initial_provider_selection(
     settings: Settings,
-    saved_selection: ProviderSelection | None,
     available_models: tuple[str, ...],
 ) -> ProviderSelection:
-    if saved_selection is not None and all(
-        model in available_models for model in saved_selection.models()
-    ):
-        return saved_selection
     configured_models = (
         settings.aigate_reply_model,
         settings.aigate_coach_model,
         settings.aigate_summary_model,
     )
-    if any(model is None for model in configured_models):
-        raise ConfigurationError("configure all three AIGate flow models")
     reply_model, coach_model, summary_model = configured_models
-    assert reply_model is not None
-    assert coach_model is not None
-    assert summary_model is not None
     if any(model not in available_models for model in configured_models):
         raise RemoteServiceError(
             "a configured AIGate flow model is not available from the current inventory"
@@ -349,7 +356,7 @@ async def _gated_frames(
 
 async def _supervise_audio_channel(
     *,
-    stream_config: TalkiesStreamConfig,
+    stream_config_factory: Callable[[], TalkiesStreamConfig],
     coordinator: ConversationCoordinator,
     session_id: str,
     stream_id: str,
@@ -386,7 +393,7 @@ async def _supervise_audio_channel(
         _write_audio_channel_event(speaker_role, "ready")
         capture_task = asyncio.create_task(
             _consume_stream(
-                client=TalkiesClient(stream_config),
+                client=TalkiesClient(stream_config_factory()),
                 coordinator=coordinator,
                 session_id=session_id,
                 stream_id=attempt_stream_id,

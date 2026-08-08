@@ -28,8 +28,11 @@ from two_x_brainz.constants import (
     AIGATE_REASONING_EFFORTS,
     DEFAULT_WEB_CONSOLE_PORT,
     MAX_AIGATE_MODEL_ID_CHARACTERS,
+    MAX_SESSION_BRIEF_CHARACTERS,
+    MAX_WEB_CLIENT_MESSAGE_BYTES,
     MAX_WEB_CONSOLE_PORT,
     MIN_WEB_CONSOLE_PORT,
+    RUNTIME_SETTINGS_SCHEMA_VERSION,
     WEB_CONSOLE_HOST,
 )
 from two_x_brainz.errors import CaptureError, WebConsoleError
@@ -43,7 +46,6 @@ from two_x_brainz.terminal import LiveTerminal
 _SNAPSHOT_INTERVAL_SECONDS = 0.25
 _SERVER_START_TIMEOUT_SECONDS = 5
 _SERVER_CLOSE_TIMEOUT_SECONDS = 5
-_MAX_CLIENT_MESSAGE_BYTES = 4_096
 _WEB_TITLE = "2xbrainz operator console"
 _WEB_URL_MESSAGE = "web operator console ready"
 _STATIC_INDEX_FILENAME = "index.html"
@@ -100,13 +102,32 @@ class _AudioRescanMessage(BaseModel):
     type: Literal["audio_rescan"]
 
 
-class _ProviderSettingsMessage(BaseModel):
+class _ProviderAssignmentMessage(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    type: Literal["provider_settings"]
-    flow: Literal["draft", "commentary", "summary"]
     model: str = Field(min_length=1, max_length=MAX_AIGATE_MODEL_ID_CHARACTERS)
     reasoning_effort: Literal["none", "minimal", "low", "medium", "high"]
+
+
+class _ProviderAssignmentsMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    draft: _ProviderAssignmentMessage
+    commentary: _ProviderAssignmentMessage
+    summary: _ProviderAssignmentMessage
+
+
+class _RuntimeSettingsMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    type: Literal["runtime_settings"]
+    schema_version: Literal[1]
+    providers: _ProviderAssignmentsMessage
+    talkies_model: str = Field(min_length=1, max_length=MAX_AIGATE_MODEL_ID_CHARACTERS)
+    session_brief: str = Field(max_length=MAX_SESSION_BRIEF_CHARACTERS)
+    web_research_enabled: bool
+    microphone_node: str | None = Field(default=None, max_length=512)
+    system_node: str | None = Field(default=None, max_length=512)
 
 
 class _ClientDebugMessage(BaseModel):
@@ -131,7 +152,7 @@ _ClientMessage = Annotated[
     | _AudioSelectionMessage
     | _AudioMeteringMessage
     | _AudioRescanMessage
-    | _ProviderSettingsMessage
+    | _RuntimeSettingsMessage
     | _ClientDebugMessage,
     Field(discriminator="type"),
 ]
@@ -179,6 +200,22 @@ def _provider_selection_payload(
     return payload
 
 
+def _provider_assignment(
+    message: _ProviderAssignmentMessage,
+) -> ProviderAssignment:
+    return ProviderAssignment(message.model, message.reasoning_effort)
+
+
+@dataclass(frozen=True, slots=True)
+class WebRuntimeSettings:
+    """Validated non-secret settings accepted from the loopback browser."""
+
+    providers: ProviderSelection
+    talkies_model: str
+    session_brief: str | None
+    web_research_enabled: bool
+
+
 @dataclass(frozen=True, slots=True)
 class WebSnapshot:
     """Sanitized session state sent to browser clients."""
@@ -202,7 +239,15 @@ class WebSnapshot:
     system_monitors: tuple[WebAudioMeter, ...]
     session_state: str = "starting"
     models: tuple[str, ...] = ()
+    talkies_models: tuple[str, ...] = ()
+    talkies_model: str = ""
+    session_brief: str = ""
+    web_research_enabled: bool = False
     provider_selection: ProviderSelection | None = None
+    default_provider_selection: ProviderSelection | None = None
+    default_talkies_model: str = ""
+    default_session_brief: str = ""
+    default_web_research_enabled: bool = False
     provider_activity: tuple[dict[str, object], ...] = ()
 
     def payload(self) -> dict[str, object]:
@@ -220,6 +265,21 @@ class WebSnapshot:
                 "models": list(self.models),
                 "assignments": _provider_selection_payload(self.provider_selection),
                 "activity": list(self.provider_activity),
+            },
+            "settings": {
+                "schemaVersion": RUNTIME_SETTINGS_SCHEMA_VERSION,
+                "talkiesModels": list(self.talkies_models),
+                "talkiesModel": self.talkies_model,
+                "sessionBrief": self.session_brief,
+                "webResearchEnabled": self.web_research_enabled,
+                "defaults": {
+                    "assignments": _provider_selection_payload(
+                        self.default_provider_selection
+                    ),
+                    "talkiesModel": self.default_talkies_model,
+                    "sessionBrief": self.default_session_brief,
+                    "webResearchEnabled": self.default_web_research_enabled,
+                },
             },
             "activeAudio": {
                 "microphone": {
@@ -276,13 +336,24 @@ class WebConsole:
     _server_task: asyncio.Task[None] | None = field(default=None, init=False)
     _url: str | None = field(default=None, init=False)
     _models: tuple[str, ...] = field(default=(), init=False)
+    _talkies_models: tuple[str, ...] = field(default=(), init=False)
+    _talkies_model: str = field(default="", init=False)
+    _session_brief: str = field(default="", init=False, repr=False)
+    _web_research_enabled: bool = field(default=False, init=False)
     _provider_selection: ProviderSelection | None = field(default=None, init=False)
+    _default_provider_selection: ProviderSelection | None = field(
+        default=None,
+        init=False,
+    )
+    _default_talkies_model: str = field(default="", init=False)
+    _default_session_brief: str = field(default="", init=False, repr=False)
+    _default_web_research_enabled: bool = field(default=False, init=False)
     _provider_activity: deque[dict[str, object]] = field(
         default_factory=lambda: deque(maxlen=_MAX_PROVIDER_ACTIVITY_ENTRIES),
         init=False,
     )
-    _provider_settings_callback: (
-        Callable[[ProviderFlow, str, str], Awaitable[bool]] | None
+    _runtime_settings_callback: (
+        Callable[[WebRuntimeSettings], Awaitable[bool]] | None
     ) = field(default=None, init=False)
     _audio_rescan_task: asyncio.Task[None] | None = field(default=None, init=False)
     _audio_rescan_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
@@ -315,7 +386,7 @@ class WebConsole:
             log_config=None,
             lifespan="off",
             server_header=False,
-            ws_max_size=_MAX_CLIENT_MESSAGE_BYTES,
+            ws_max_size=MAX_WEB_CLIENT_MESSAGE_BYTES,
             timeout_graceful_shutdown=_SERVER_CLOSE_TIMEOUT_SECONDS,
         )
         self._server = _EmbeddedServer(config)
@@ -395,21 +466,41 @@ class WebConsole:
             ),
             session_state=self.state.session_state,
             models=self._models,
+            talkies_models=self._talkies_models,
+            talkies_model=self._talkies_model,
+            session_brief=self._session_brief,
+            web_research_enabled=self._web_research_enabled,
             provider_selection=self._provider_selection,
+            default_provider_selection=self._default_provider_selection,
+            default_talkies_model=self._default_talkies_model,
+            default_session_brief=self._default_session_brief,
+            default_web_research_enabled=self._default_web_research_enabled,
             provider_activity=tuple(self._provider_activity),
         )
 
-    def configure_provider(
+    def configure_runtime_settings(
         self,
         *,
         models: tuple[str, ...],
+        talkies_models: tuple[str, ...],
+        talkies_model: str,
+        session_brief: str | None,
+        web_research_enabled: bool,
         selection: ProviderSelection,
-        callback: Callable[[ProviderFlow, str, str], Awaitable[bool]],
+        callback: Callable[[WebRuntimeSettings], Awaitable[bool]],
     ) -> None:
-        """Publish validated provider options and install the runtime updater."""
+        """Publish safe defaults and install the atomic runtime updater."""
         self._models = models
+        self._talkies_models = talkies_models
+        self._talkies_model = talkies_model
+        self._session_brief = session_brief or ""
+        self._web_research_enabled = web_research_enabled
         self._provider_selection = selection
-        self._provider_settings_callback = callback
+        self._default_provider_selection = selection
+        self._default_talkies_model = talkies_model
+        self._default_session_brief = session_brief or ""
+        self._default_web_research_enabled = web_research_enabled
+        self._runtime_settings_callback = callback
 
     def record_provider_activity(self, activity: Mapping[str, object]) -> None:
         """Retain a bounded, already-sanitized provider activity timeline."""
@@ -576,7 +667,7 @@ class WebConsole:
     async def _receive_commands(self, websocket: WebSocket) -> None:
         while True:
             raw = await websocket.receive_text()
-            if len(raw.encode("utf-8")) > _MAX_CLIENT_MESSAGE_BYTES:
+            if len(raw.encode("utf-8")) > MAX_WEB_CLIENT_MESSAGE_BYTES:
                 await websocket.close(code=_MESSAGE_TOO_LARGE_CLOSE_CODE)
                 return
             try:
@@ -614,12 +705,8 @@ class WebConsole:
             if isinstance(message, _AudioRescanMessage):
                 await self._rescan_audio()
                 continue
-            if isinstance(message, _ProviderSettingsMessage):
-                await self._set_provider_settings(
-                    ProviderFlow(message.flow),
-                    message.model,
-                    message.reasoning_effort,
-                )
+            if isinstance(message, _RuntimeSettingsMessage):
+                await self._set_runtime_settings(message)
                 continue
             self._select_audio(message.microphone_index, message.system_index)
 
@@ -658,31 +745,80 @@ class WebConsole:
         except asyncio.CancelledError:
             raise
 
-    async def _set_provider_settings(
-        self,
-        flow: ProviderFlow,
-        model: str,
-        reasoning_effort: str,
-    ) -> None:
-        callback = self._provider_settings_callback
-        if (
-            callback is None
-            or model not in self._models
-            or reasoning_effort not in AIGATE_REASONING_EFFORTS
+    async def _set_runtime_settings(self, message: _RuntimeSettingsMessage) -> None:
+        callback = self._runtime_settings_callback
+        assignments = {
+            flow: getattr(message.providers, flow.value) for flow in ProviderFlow
+        }
+        if callback is None or any(
+            assignment.model not in self._models
+            or assignment.reasoning_effort not in AIGATE_REASONING_EFFORTS
+            for assignment in assignments.values()
         ):
             logger.warning(
-                "provider settings rejected",
-                extra={"reason": "provider_settings_invalid"},
+                "runtime settings rejected",
+                extra={"reason": "runtime_provider_settings_invalid"},
             )
             return
-        if not await callback(flow, model, reasoning_effort):
+        if message.talkies_model not in self._talkies_models:
+            logger.warning(
+                "runtime settings rejected",
+                extra={"reason": "runtime_talkies_model_invalid"},
+            )
             return
-        selection = self._provider_selection
-        if selection is None:
+        if (message.microphone_node is None) != (message.system_node is None):
+            logger.warning(
+                "runtime settings rejected",
+                extra={"reason": "runtime_audio_selection_incomplete"},
+            )
             return
-        self._provider_selection = selection.replace(
-            flow,
-            ProviderAssignment(model, reasoning_effort),
+        if message.microphone_node is not None and not self._audio_nodes_available(
+            message.microphone_node,
+            message.system_node,
+        ):
+            logger.warning(
+                "runtime settings rejected",
+                extra={"reason": "runtime_audio_selection_unavailable"},
+            )
+            return
+        selection = ProviderSelection(
+            draft=_provider_assignment(assignments[ProviderFlow.DRAFT]),
+            commentary=_provider_assignment(assignments[ProviderFlow.COMMENTARY]),
+            summary=_provider_assignment(assignments[ProviderFlow.SUMMARY]),
+        )
+        settings = WebRuntimeSettings(
+            providers=selection,
+            talkies_model=message.talkies_model,
+            session_brief=message.session_brief.strip() or None,
+            web_research_enabled=message.web_research_enabled,
+        )
+        if not await callback(settings):
+            return
+        if message.microphone_node is not None and message.system_node is not None:
+            setup = self.state.audio_setup
+            if setup is None:
+                return
+            setup.select_nodes(message.microphone_node, message.system_node)
+            assert setup.selection is not None
+            self.state.apply_audio_selection(setup.selection)
+        self._provider_selection = selection
+        self._talkies_model = settings.talkies_model
+        self._session_brief = settings.session_brief or ""
+        self._web_research_enabled = settings.web_research_enabled
+
+    def _audio_nodes_available(
+        self,
+        microphone_node: str,
+        system_node: str | None,
+    ) -> bool:
+        if system_node is None:
+            return False
+        return any(
+            microphone_node in {device.node_id, device.name}
+            for device in self._microphones()
+        ) and any(
+            system_node in {device.node_id, device.name}
+            for device in self._system_monitors()
         )
 
     def _select_audio(self, microphone_index: int, system_index: int) -> None:

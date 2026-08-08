@@ -211,6 +211,25 @@ class RecordingInsightProvider(InsightProvider):
         )
 
 
+class SignallingSummaryProvider(InsightProvider):
+    def __init__(self) -> None:
+        self.completed = asyncio.Event()
+
+    async def insight(self, request: InsightRequest) -> InsightResult:
+        if request.kind is not InsightKind.SUMMARY:
+            raise AssertionError("non-summary request reached summary provider")
+        result = InsightResult(
+            generation_id=request.generation_id,
+            kind=request.kind,
+            trigger_turn_id=request.trigger_turn_id,
+            context_revision=request.context_revision,
+            status=GenerationStatus.COMPLETED,
+            text="accepted working memory",
+        )
+        self.completed.set()
+        return result
+
+
 class ConversationCoordinatorTests(unittest.TestCase):
     def test_user_speech_cancels_a_remote_turn_draft(self) -> None:
         asyncio.run(self._assert_user_speech_cancels_draft())
@@ -223,6 +242,9 @@ class ConversationCoordinatorTests(unittest.TestCase):
 
     def test_replacement_draft_contains_all_transcript_after_cancellation(self) -> None:
         asyncio.run(self._assert_replacement_draft_keeps_transcript())
+
+    def test_replacement_draft_contains_latest_accepted_summary(self) -> None:
+        asyncio.run(self._assert_replacement_draft_keeps_summary())
 
     def test_remote_endpoint_supersedes_an_active_draft(self) -> None:
         asyncio.run(self._assert_remote_endpoint_supersedes_draft())
@@ -320,6 +342,55 @@ class ConversationCoordinatorTests(unittest.TestCase):
         self.assertEqual(
             [line.text for line in replacement_lines],
             ["First complete statement.", "Second statement completed."],
+        )
+
+    async def _assert_replacement_draft_keeps_summary(self) -> None:
+        provider = FirstCancelledThenRecordingProvider()
+        summary_provider = SignallingSummaryProvider()
+        coordinator = ConversationCoordinator(
+            provider,
+            summary_provider=summary_provider,
+        )
+        await coordinator.ingest(
+            _event_with_text(
+                SpeakerRole.REMOTE,
+                TranscriptEventType.FINAL,
+                revision=1,
+                stream_id="remote-segment-1",
+                text="First complete statement.",
+            )
+        )
+        await provider.first_started.wait()
+        await summary_provider.completed.wait()
+        await asyncio.sleep(0)
+        self.assertEqual(
+            coordinator.transcript_snapshot().running_summary,
+            "accepted working memory",
+        )
+
+        await coordinator.ingest(
+            _event_with_text(
+                SpeakerRole.REMOTE,
+                TranscriptEventType.PARTIAL,
+                revision=1,
+                stream_id="remote-segment-2",
+                text="Second statement",
+            )
+        )
+        await coordinator.ingest(
+            _event_with_text(
+                SpeakerRole.REMOTE,
+                TranscriptEventType.FINAL,
+                revision=2,
+                stream_id="remote-segment-2",
+                text="Second statement completed.",
+            )
+        )
+        await coordinator.wait_for_idle()
+
+        self.assertEqual(
+            provider.requests[1].transcript.running_summary,
+            "accepted working memory",
         )
 
     async def _assert_remote_endpoint_supersedes_draft(self) -> None:

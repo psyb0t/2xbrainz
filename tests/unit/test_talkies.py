@@ -20,7 +20,9 @@ from two_x_brainz.talkies import (
     TalkiesStreamConfig,
     UtteranceReconciler,
     batch_url,
+    health_url,
     models_url,
+    parse_asr_model_inventory,
     parse_batch_transcription,
     parse_model_inventory,
     parse_model_max_concurrency,
@@ -220,6 +222,28 @@ class TalkiesBatchContractTests(unittest.TestCase):
             "https://aigate.example/talkies/v1/audio/transcriptions",
         )
 
+    def test_cuda_alias_posts_inner_model_to_cuda_route(self) -> None:
+        response = _HTTPResponse(b'{"text":"fixture transcript"}')
+        with patch(
+            "two_x_brainz.talkies.urlopen",
+            return_value=response,
+        ) as urlopen_mock:
+            asyncio.run(
+                _aigate_alias_client().transcribe_file(
+                    _fixture(),
+                    BatchResponseFormat.JSON,
+                )
+            )
+
+        request = urlopen_mock.call_args.args[0]
+        assert request.data is not None
+        self.assertEqual(
+            request.full_url,
+            "https://aigate.example/prefix/talkies-cuda/v1/audio/transcriptions",
+        )
+        self.assertIn(b"nemotron-3.5-asr-0.6b", request.data)
+        self.assertNotIn(b"local-talkies-cuda-nemotron", request.data)
+
     def test_accepts_standard_json_transcription_shape(self) -> None:
         result = parse_batch_transcription(
             {"text": "fixture transcript"},
@@ -302,6 +326,15 @@ class TalkiesModelInventoryTests(unittest.TestCase):
             "https://aigate.example/talkies/v1/models",
         )
 
+    def test_derives_health_endpoint_from_cuda_proxy_url(self) -> None:
+        self.assertEqual(
+            health_url(
+                "wss://aigate.example/prefix/talkies-cuda/v1/audio/"
+                "transcriptions/stream"
+            ),
+            "https://aigate.example/prefix/talkies-cuda/healthz",
+        )
+
     def test_rejects_url_without_native_stream_suffix(self) -> None:
         with self.assertRaisesRegex(ConfigurationError, "native streaming endpoint"):
             models_url("ws://talkies.example/other")
@@ -312,6 +345,29 @@ class TalkiesModelInventoryTests(unittest.TestCase):
         )
 
         self.assertEqual(model_ids, frozenset({"fixture-model", "other-model"}))
+
+    def test_filters_asr_inventory_entries(self) -> None:
+        model_ids = parse_asr_model_inventory(
+            {
+                "data": [
+                    {"id": "speech-model", "modality": "tts"},
+                    {"id": "transcription-model", "modality": "asr"},
+                ]
+            }
+        )
+
+        self.assertEqual(model_ids, frozenset({"transcription-model"}))
+
+    def test_rejects_inventory_without_valid_asr_modality(self) -> None:
+        invalid_payloads: tuple[dict[str, object], ...] = (
+            {"data": [{"id": "missing-modality"}]},
+            {"data": [{"id": "invalid-modality", "modality": 1}]},
+            {"data": [{"id": "speech-model", "modality": "tts"}]},
+        )
+
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload), self.assertRaises(ProtocolError):
+                parse_asr_model_inventory(payload)
 
     def test_selects_configured_model_concurrency_in_any_order(self) -> None:
         max_concurrency = parse_model_max_concurrency(
@@ -377,6 +433,75 @@ class TalkiesModelInventoryTests(unittest.TestCase):
         self.assertEqual(request.get_method(), "GET")
         self.assertEqual(request.full_url, "http://talkies:8000/v1/models")
         self.assertEqual(request.get_header("Authorization"), "Bearer test-token")
+
+    def test_model_inventory_is_sorted_for_browser_settings(self) -> None:
+        response = _HTTPResponse(
+            b'{"data":['
+            b'{"id":"z-model","modality":"asr"},'
+            b'{"id":"speech-model","modality":"tts"},'
+            b'{"id":"a-model","modality":"asr"}]}'
+        )
+        with patch("two_x_brainz.talkies.urlopen", return_value=response):
+            models = asyncio.run(_file_client().list_models())
+
+        self.assertEqual(models, ("a-model", "z-model"))
+
+    def test_cuda_alias_uses_cuda_route_inner_slug_and_device_attestation(
+        self,
+    ) -> None:
+        inventory = _HTTPResponse(
+            b'{"data":[{"id":"nemotron-3.5-asr-0.6b",'
+            b'"modality":"asr","max_concurrency":2}]}'
+        )
+        health = _HTTPResponse(b'{"ok":true,"device":"cuda"}')
+        client = _aigate_alias_client()
+        with patch(
+            "two_x_brainz.talkies.urlopen",
+            side_effect=(inventory, health),
+        ) as urlopen_mock:
+            device = asyncio.run(client.verify_configured_model())
+
+        inventory_request = urlopen_mock.call_args_list[0].args[0]
+        health_request = urlopen_mock.call_args_list[1].args[0]
+        self.assertEqual(
+            inventory_request.full_url,
+            "https://aigate.example/prefix/talkies-cuda/v1/models",
+        )
+        self.assertEqual(
+            health_request.full_url,
+            "https://aigate.example/prefix/talkies-cuda/healthz",
+        )
+        self.assertEqual(device, "cuda")
+        self.assertEqual(inventory_request.get_header("Authorization"), "Bearer token")
+
+    def test_cuda_alias_rejects_non_cuda_health_response(self) -> None:
+        inventory = _HTTPResponse(
+            b'{"data":[{"id":"nemotron-3.5-asr-0.6b",'
+            b'"modality":"asr","max_concurrency":2}]}'
+        )
+        health = _HTTPResponse(b'{"ok":true,"device":"cpu"}')
+        with (
+            patch(
+                "two_x_brainz.talkies.urlopen",
+                side_effect=(inventory, health),
+            ),
+            self.assertRaisesRegex(RemoteServiceError, "wrong device"),
+        ):
+            asyncio.run(_aigate_alias_client().verify_configured_model())
+
+    def test_cuda_inventory_returns_prefixed_asr_aliases_only(self) -> None:
+        response = _HTTPResponse(
+            b'{"data":['
+            b'{"id":"nemotron-3.5-asr-0.6b","modality":"asr"},'
+            b'{"id":"qwen3-tts-0.6b","modality":"tts"}]}'
+        )
+        with patch("two_x_brainz.talkies.urlopen", return_value=response):
+            models = asyncio.run(_aigate_alias_client().list_models())
+
+        self.assertEqual(
+            models,
+            ("local-talkies-cuda-nemotron-3.5-asr-0.6b",),
+        )
 
     def test_preflight_rejects_unavailable_model_before_transport(self) -> None:
         response = _HTTPResponse(b'{"data":[{"id":"other-model"}]}')
@@ -451,6 +576,16 @@ def _file_client(token: str | None = None) -> TalkiesClient:
             url="ws://talkies:8000/v1/audio/transcriptions/stream",
             model="fixture-model",
             token=token,
+        )
+    )
+
+
+def _aigate_alias_client() -> TalkiesClient:
+    return TalkiesClient(
+        TalkiesStreamConfig(
+            url=("wss://aigate.example/prefix/talkies/v1/audio/transcriptions/stream"),
+            model="local-talkies-cuda-nemotron-3.5-asr-0.6b",
+            token="token",
         )
     )
 

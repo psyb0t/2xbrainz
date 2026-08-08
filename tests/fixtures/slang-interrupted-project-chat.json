@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "slug": "slang-interrupted-project-chat",
+  "turns": [
+    {
+      "id": "user-restart",
+      "speaker_role": "user",
+      "text": "Alright, uh, let's run that back — my bad. RelayCrate is our little gateway thing for routing model calls.",
+      "marker_groups": [["run that back"], ["relaycrate", "relay crate"], ["gateway"]]
+    },
+    {
+      "id": "remote-pitch",
+      "speaker_role": "remote",
+      "text": "Cool, gimme the one-line pitch. Like, what does the damn thing actually buy us?",
+      "marker_groups": [["one-line", "one line"], ["pitch"], ["buy us"]]
+    },
+    {
+      "id": "user-false-start",
+      "speaker_role": "user",
+      "text": "It, uh, keeps providers behind one API and — wait, scratch that — it also handles failover. We said the demo is Friday.",
+      "marker_groups": [["providers"], ["one api"], ["failover"], ["friday"]]
+    },
+    {
+      "id": "remote-correction-question",
+      "speaker_role": "remote",
+      "text": "Hold up, I thought the demo moved. Is it Thursday now, or am I mixing stuff up?",
+      "marker_groups": [["demo"], ["thursday"]],
+      "interrupt_after_phase": "output_streaming"
+    },
+    {
+      "id": "user-correction",
+      "speaker_role": "user",
+      "text": "Yeah, you're right — Thursday, not Friday. I'll own the failover test and send the numbers before lunch.",
+      "marker_groups": [["thursday"], ["not friday"], ["failover"], ["before lunch"]]
+    },
+    {
+      "id": "remote-unfamiliar-topic",
+      "speaker_role": "remote",
+      "text": "Gotcha. Does RFC 9264's linkset format help us connect the provider docs, or is that a dead end?",
+      "marker_groups": [["rfc 9264", "rfc nine two six four"], ["linkset"], ["provider docs"]],
+      "interrupt_after_phase": "tool_started"
+    },
+    {
+      "id": "user-research-guardrail",
+      "speaker_role": "user",
+      "text": "Maybe, but don't wing it. Check whether it defines a machine-readable link set, then tie that back to our docs.",
+      "marker_groups": [["don't wing it", "do not wing it"], ["machine-readable", "machine readable"], ["docs"]]
+    },
+    {
+      "id": "remote-recap",
+      "speaker_role": "remote",
+      "text": "Sweet. Recap it for me: what's the Thursday commitment, and what should I say about the linkset bit?",
+      "marker_groups": [["thursday"], ["commitment"], ["linkset"]]
+    }
+  ],
+  "outputs": {
+    "draft": {
+      "marker_groups": [["failover"], ["before lunch", "lunch"], ["linkset", "link set", "links"]],
+      "forbidden_markers": ["friday is the final date", "verified online when no tool completed"]
+    },
+    "commentary": {
+      "marker_groups": [["thursday"], ["commitment", "failover"], ["link", "research", "verif", "accur", "correct", "fact"]],
+      "forbidden_markers": [
+        "friday is the final date",
+        "still owe the remote a clean",
+        "one-line pitch also remains open",
+        "don't let the pitch slide",
+        "do not let the pitch slide"
+      ]
+    },
+    "summary": {
+      "marker_groups": [["relaycrate", "relay crate", "gateway"], ["thursday"], ["failover"], ["before lunch", "lunch"], ["linkset", "rfc 9264"]],
+      "forbidden_markers": [
+        "friday is the final date",
+        "pitch remains open",
+        "question remains unanswered",
+        "has not provided that pitch",
+        "has not supplied it"
+      ]
+    }
+  }
+}

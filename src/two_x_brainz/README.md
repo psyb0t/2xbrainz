@@ -37,6 +37,9 @@ continuous ASR to Talkies.
   evaluation for one supplied WAV fixture, with an optional concurrent,
   synthetic text-only draft probe and optional local-reference word error rates;
   it is not the live capture path.
+- `evaluation.py` — validated synthetic-conversation scenarios, ASR word error
+  rates, provider lifecycle/concurrency timing, semantic hard gates, and
+  exclusive JSON/Markdown scorecard output for deterministic and real tests.
 - `docker_hosts.py` — host-side FQDN-to-IPv4 mapping helper for Docker launch;
   it reads endpoint fields only and never emits credential values.
 - `transcript.py` — monotonic revision reconciliation.
@@ -56,9 +59,8 @@ continuous ASR to Talkies.
   access to hidden chain-of-thought;
   `make test-real` probes its real-model prompt contracts and a four-turn
   summary-to-reply context handoff using fixed synthetic text.
-- `provider_selection.py` — no-follow, bounded, exact-schema persistence for
-  separate Reply, Coach, and Story AIGate model/reasoning assignments beside the
-  audio-selection file.
+- `provider_selection.py` — validated value objects for separate Reply, Coach,
+  and Story AIGate model/reasoning assignments.
 - `fixture_trace.py` — append-only, redacted JSONL evidence for explicit real
   fixtures; it records synthetic fixture inputs, CLI output, structured runtime
   diagnostics, and terminal outcomes without tokens or PCM data.
@@ -69,8 +71,8 @@ continuous ASR to Talkies.
   state: bounded structured snapshots, same-origin start/pause controls through
   the runtime queue, compiled Svelte assets at `/`, automatically refreshed
   all-candidate audio setup, and three correlated provider-activity flows. The
-  frontend owns browser-local layout
-  preferences; application audio selection remains in the validated config file.
+  frontend owns browser-local layout and safe runtime settings, including audio
+  selection, models, reasoning, call context, and research enablement.
   Process shutdown remains with the owning shell so the page cannot stop its
   own server.
 - `logging_config.py` — credential-redacted rotating JSON event log.
@@ -119,11 +121,11 @@ continuous ASR to Talkies.
   speech-negative windows close it. Separate start and stop thresholds provide
   hysteresis, and continuous input rotates after 60 seconds so noise cannot
   hold Talkies or downstream generation open forever.
-- Audio-selection persistence contains only validated stable node names. A
-  missing or malformed pair opens Sources. A device lost during a run marks
+- Browser audio-selection persistence contains only validated stable node names.
+  A missing or malformed pair opens Settings on Audio. A device lost during a run marks
   only its channel reconnecting; its peer continues, and redetection or a new
   selection replaces only the affected route.
-- Sources serializes discovery, stops presentation-only preview processes before
+- The Audio Settings tab serializes discovery, stops presentation-only preview processes before
   each scan, and refreshes automatically while open so stale Bluetooth or USB
   nodes are removed rather than retained after a timed-out discovery call.
 - System capture targets are `Audio/Source` monitor nodes or directly
@@ -154,10 +156,10 @@ continuous ASR to Talkies.
 - Cancelling a provider generation never removes finalized transcript lines. A
   later silence boundary builds replacement requests from the complete current
   transcript and discards only unfinished provider work.
-- Reply, Coach, and Story model/reasoning choices are atomically saved with
-  owner-only permissions. A malformed, symlinked, oversized, or partly
-  unavailable selection is ignored as one unit and the validated environment
-  configuration remains active for all flows.
+- Safe runtime settings are sent as one exact-schema browser message. Invalid,
+  oversized, credential-shaped, or partly unavailable settings are rejected
+  without partial mutation. Browser persistence never contains AIGate endpoints
+  or tokens; code defaults remain the fallback.
 - Search queries reject obvious structured private identifiers before reaching
   AIGate. Page reads accept only public HTTP(S) URLs, reject credential-bearing
   and non-public destinations, disable redirects, and revalidate
@@ -168,7 +170,10 @@ continuous ASR to Talkies.
   drafts.
 - Live startup verifies the selected Talkies model inventory and completes a
   serial synthetic-silence native-stream warm-up before it opens PipeWire
-  capture. Warm-up sends one all-zero 20 ms frame and requires uncancelled
+  capture. AIGate CPU/CUDA model aliases select `/talkies/` or
+  `/talkies-cuda/`, send the inner slug on the wire, and require the selected
+  health endpoint to advertise the matching device. Warm-up sends one all-zero
+  20 ms frame and requires uncancelled
   one-frame terminal statistics, preventing a silent ASR-model substitution or
   a concurrent lazy-initialization race without using captured audio.
 - Only fixed local lifecycle commands can alter capture. The browser's Start
@@ -224,3 +229,9 @@ live-interview-fixture` adds four alternating fixture turns, and `make
 live-product-fixture` runs that interview with real AIGate commentary, draft,
 and summary generation. Both it and `make test-real` create local reconstruction
 traces for their fixed synthetic scenarios under `.testing/fixture-traces/`.
+`make test-real-evaluation` extends that path to eight generated, slang-heavy
+turns. It drives paired real Talkies streams, interrupts provider work during
+output and tool phases, resumes from the complete recognized transcript, and
+requires concurrent terminal Reply, Coach, and Story results plus completed web
+research. Its per-run directory preserves redacted timing, transcripts, word
+error rates, and hard-gate scorecards while generated WAVs stay ephemeral.

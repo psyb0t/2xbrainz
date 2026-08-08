@@ -1,14 +1,14 @@
 # Configuration
 
-All runtime configuration is environment-based and begins with
-`TWOXBRAINZ_`. The CLI rejects malformed URLs, URL credentials, query strings,
-and relative log paths before it opens any network connection.
+Secrets, connectivity, and operational logging use `TWOXBRAINZ_` environment
+variables. Safe interactive settings use the web Settings dialog and are stored
+in browser-local storage. The backend validates both boundaries before applying
+them.
 
-Use [`.env.example`](../.env.example) as the field reference. Keep the actual
-`.env` file outside version control and provide it only to explicit real
+Use [`.env.example`](../.env.example) as the environment reference. Keep the
+actual `.env` file outside version control and provide it only to explicit real
 targets such as `make run`, `make benchmark`, `make test-real`, or a live
-fixture. `TWOXBRAINZ_AIGATE_REPLY_MODEL` is additionally required by the
-optional `make benchmark-with-draft` target.
+fixture.
 
 ## Contents
 
@@ -22,43 +22,43 @@ optional `make benchmark-with-draft` target.
 - [Live-session controls](#live-session-controls)
 - [Health checks](#health-checks)
 
-`make run` validates its configured AIGate model against AIGate's model
-inventory before it opens PipeWire capture or Talkies streams. A missing or
-unavailable model therefore fails before it can produce a capture-only session
-that cannot draft replies. It also verifies that the selected Talkies model is
-currently exposed before it opens PipeWire capture, so an unavailable ASR
-model cannot silently alter a session's configured transcription path.
-After inventory verification, it sends one synthetic all-zero 20 ms PCM frame
-through a serial Talkies warm-up stream and requires uncancelled one-frame
-terminal statistics. This materializes lazy ASR backends before either
-captured stream begins; no captured audio is used for the warm-up.
-
 | Variable | Required for live capture | Purpose |
 |---|---:|---|
-| `TWOXBRAINZ_TALKIES_MODEL` | yes | One Talkies streaming model slug shared by both streams. |
-| `TWOXBRAINZ_AIGATE_URL` | yes | AIGate API root using `http` or `https` and ending in `/v1`. 2xbrainz derives the Talkies WebSocket proxy route from it. |
-| `TWOXBRAINZ_AIGATE_REPLY_MODEL` | conditionally | First-run Reply model. This is the only flow with research and arithmetic tools, so select a fast model with reliable tool calling. |
-| `TWOXBRAINZ_AIGATE_COACH_MODEL` | conditionally | First-run Private coach model. Tools remain disabled. |
-| `TWOXBRAINZ_AIGATE_SUMMARY_MODEL` | conditionally | First-run Story-so-far model. Tools remain disabled. |
-| `TWOXBRAINZ_AIGATE_REPLY_REASONING_EFFORT` | no | First-run Reply reasoning: `none`, `minimal`, `low`, `medium`, or `high`. |
-| `TWOXBRAINZ_AIGATE_COACH_REASONING_EFFORT` | no | First-run Private coach reasoning, using the same allowed values. |
-| `TWOXBRAINZ_AIGATE_SUMMARY_REASONING_EFFORT` | no | First-run Story-so-far reasoning, using the same allowed values. The browser persists every flow's model/effort pair independently. |
-| `TWOXBRAINZ_AIGATE_TOKEN` | if AIGate requires it | The single bearer token used for AIGate chat, Talkies proxy, model inventory, and the three allowlisted MCP tools. |
-| `TWOXBRAINZ_SESSION_BRIEF` | no | Trusted local context, up to 4000 characters, appended to every generation prompt to frame the call. It is neither transcript data nor status/log output. |
-| `TWOXBRAINZ_WEB_RESEARCH_ENABLED` | no | Exactly `true` enables reply-draft search, application-owned public-page reading, and bounded arithmetic. It requires AIGate `SEARXNG=1`; arithmetic additionally requires `PISTON=1`. |
+| `TWOXBRAINZ_AIGATE_URL` | yes | AIGate API root using `http` or `https` and ending in `/v1`. 2xbrainz derives the Talkies proxy route from it. |
+| `TWOXBRAINZ_AIGATE_TOKEN` | if AIGate requires it | The single bearer token used for AIGate chat, Talkies, model inventory, and allowlisted tools. |
 | `TWOXBRAINZ_LOG_LEVEL` | no | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. |
-| `TWOXBRAINZ_LOG_DIRECTORY` | no | Absolute in-container directory for UTC-prefixed rotating session logs. It wins over `TWOXBRAINZ_LOG_FILE`; direct Docker users must mount it themselves. |
-| `TWOXBRAINZ_LOG_FILE` | no | Absolute base JSON log filename for direct Docker use when `TWOXBRAINZ_LOG_DIRECTORY` is unset. `live` prefixes its basename with a UTC session timestamp. |
-| `TWOXBRAINZ_AUDIO_CONFIG_FILE` | no | Absolute in-container path for the local microphone/system-output selection. `make run` mounts this at `/audio-config/audio-selection.json`. |
+| `TWOXBRAINZ_LOG_DIRECTORY` | no | Absolute in-container directory for rotating session logs. It wins over `TWOXBRAINZ_LOG_FILE`; direct Docker users must mount it themselves. |
+| `TWOXBRAINZ_LOG_FILE` | no | Absolute base JSON log filename for direct Docker use when `TWOXBRAINZ_LOG_DIRECTORY` is unset. |
 
-2xbrainz derives `ws(s)://<aigate-host>[/prefix]/talkies/v1/audio/transcriptions/stream`
-from `TWOXBRAINZ_AIGATE_URL`. It does not support a separate Talkies endpoint or
-credential.
+2xbrainz derives the native WebSocket route from the selected AIGate model
+alias. `local-talkies-*` uses `/talkies/`; `local-talkies-cuda-*` uses
+`/talkies-cuda/`. It sends only the inner Talkies slug on that native wire and
+retains the full alias in browser state, traces, and transcript records. It does
+not support a separate Talkies endpoint or credential.
+
+The backend publishes immutable safe defaults in each browser snapshot:
+
+| Setting | Built-in default |
+|---|---|
+| Reply model | `claudebox-sonnet` |
+| Private coach model | `pibox-zai-glm-5-turbo` |
+| Story-so-far model | `groq-gpt-oss-120b` |
+| Reasoning effort | `none` for every flow |
+| Talkies ASR model | `local-talkies-cuda-nemotron-3.5-asr-0.6b` |
+| Reply research | enabled |
+| Session brief | empty |
+
+The browser transmits an override only after the provider and Talkies model
+inventories are available. Missing models fall back to the current validated
+backend value. The selector contains ASR entries only; TTS entries are removed
+using Talkies' advertised modality. Alias preflight also checks `/healthz`, so a
+CUDA alias is rejected unless that exact route reports `device=cuda`. Runtime
+settings never alter the process environment.
 
 ## Audio device selection
 
 `make run` mounts the desktop PipeWire runtime directory read-only and serves
-the Svelte Sources view at `http://127.0.0.1:7860`. It offers
+the Svelte Settings dialog at `http://127.0.0.1:7860`. Its Audio tab offers
 non-monitor `Audio/Source` microphone nodes and a system-audio source: either
 an `Audio/Source` monitor node (`*.monitor`) or a directly capturable
 `Audio/Sink`; application-stream nodes are excluded. Audio Setup shows a
@@ -69,36 +69,25 @@ route. Audio Setup starts one temporary, presentation-only probe for **every
 displayed candidate**. Speak and play audio while the list is visible; each
 candidate row has its own meter, so the active microphone and system-audio
 route can be identified before selection. The dashboard then keeps its own live
-MIC INPUT and SYSTEM AUDIO meters for the active capture pair. It
-saves stable node names—not ephemeral numeric IDs—to the host's
-`$XDG_CONFIG_HOME/2xbrainz/audio-selection.json` (or
-`~/.config/2xbrainz/audio-selection.json`) with mode `0600`.
+MIC INPUT and SYSTEM AUDIO meters for the active capture pair. It saves stable
+node names—not ephemeral numeric IDs—in the browser.
 
-The stored pair is checked against the currently visible PipeWire nodes before
-each session. A missing or malformed file opens Sources. A temporarily absent
-device leaves only its channel waiting and retrying while the other channel
-continues. The open Sources modal automatically refreshes discovery every three
-seconds; **Redetect devices** requests the same refresh immediately. Preview
-capture stops before discovery so a busy probe cannot leave disconnected
-Bluetooth or USB nodes stuck in the list. Saving a new pair switches each
-changed channel independently and immediately without restarting the web
-session.
-The selection file contains only the two node names; it has no audio, transcript,
-endpoint, or credential data. Runtime model and reasoning choices are stored in
-the same host directory as `provider-selection.json`, also mode `0600`. That
-exact-schema file contains separate model and reasoning assignments for Reply,
-Private coach, and Story so far. A missing, malformed, symlinked, oversized, or
-partly unavailable saved selection falls back as one unit to the three explicit
-environment flow assignments. Each model and reasoning effort has its own
-first-run variable. Only the current schema-v2 file shape is accepted.
+The browser checks its stored pair against the current PipeWire inventory on
+each connection. A missing, malformed, or stale pair opens Settings on Audio.
+A temporarily absent device leaves only its channel waiting and retrying while
+the other channel continues. The open Audio tab automatically refreshes
+discovery every three seconds; **Redetect devices** requests the same refresh
+immediately. Preview capture stops before discovery so a busy probe cannot leave
+disconnected Bluetooth or USB nodes stuck in the list. Saving a new pair
+switches each changed channel independently without restarting the web session.
 
 ## Web console and persistent log
 
 `make run` serves the compiled Svelte console through FastAPI/Uvicorn at
 `127.0.0.1` only. Its same-origin
-`/ws` connection carries bounded snapshots and strict start, pause,
-audio-metering, audio-redetection, audio-selection, model, and reasoning-effort
-commands. The app opens idle and does not start either PipeWire capture until
+`/ws` connection carries bounded snapshots and strict start, pause, metering,
+redetection, and atomic runtime-settings commands. The app opens idle and does
+not start either PipeWire capture until
 **Start listening** is pressed. **Stop listening** pauses capture while keeping
 the page and session state alive; process shutdown remains `Ctrl+C` in the
 owning terminal.
@@ -112,15 +101,22 @@ allowed to fall back to the default microphone. In the
 browser, Conversation, Reply suggestion, Private coach, and Story so far are
 separate scrollable, collapsible, and resizable panels. Expanded guidance
 panels consume the full height released by collapsed siblings. Their presentation
-preferences are validated and stored in browser-local storage. Source settings
-use a modal with a live meter for every candidate; selected source identity is
-kept in the application audio-selection file. Panels scroll independently and
-auto-follow only when already at their own bottom. Level updates are never
-written to the reconstruction log and retain no PCM. The provider-routing panel
-has one searchable model picker and reasoning selector for each flow. Every
-picker shows an explicit result count, readable fixed-height rows, a visible
-scrollbar, and opens around its selected inventory item. Changes affect future
-requests for that flow only and persist in the application config directory.
+preferences are validated and stored in browser-local storage. The tabbed
+Settings modal keeps Context, Models, and Audio controls separate. Audio has a
+live meter for every candidate. Models has one searchable model picker and
+reasoning selector for each flow plus the Talkies ASR model. Context has the
+optional 4000-character session brief and Reply research toggle. Every picker
+shows an explicit result count, readable fixed-height rows, a visible scrollbar,
+and opens around its selected inventory item. Saving sends the complete safe
+settings object as one strict schema, applies it to future requests, and stores
+it under `2xbrainz.web.settings.v1` in that browser. Credentials and endpoint
+URLs are rejected from this object. Reset clears the key and sends the immutable
+backend defaults. The session brief and device names remain readable to scripts
+running in that browser profile, so use Reset to remove them on a shared profile.
+If multiple browsers connect, the last accepted complete settings snapshot owns
+future requests for that running process. Panels scroll independently and auto-follow only when already
+at their own bottom. Level updates are never written to the reconstruction log
+and retain no PCM.
 Reply, Private coach, and Story-so-far generation have independent clients and
 bounded activity histories. A remote final starts all three concurrently. The
 browser renders
@@ -183,7 +179,7 @@ gateway's service name on that network. This optional mode uses a host-side
 `python3` helper from the repository to validate a hostname mapping. Live web
 capture through `make run` requires `LIVE_NETWORK=host`.
 
-When `TWOXBRAINZ_WEB_RESEARCH_ENABLED=true`, the reply path exposes only two
+When Reply research is enabled in Settings, the reply path exposes only two
 application-owned tools to the model: `research_web` and `execute_code`. The app
 permits two tool rounds with at most three calls per round; calls in one round
 execute concurrently. Commentary and rolling summaries are transcript-only and
@@ -254,8 +250,9 @@ identity, so the configured Nemotron backend can produce independent
 multi-turn finals without holding an idle connection or recreating either
 capture process.
 
-The target requires `TWOXBRAINZ_AIGATE_URL`, `TWOXBRAINZ_TALKIES_MODEL`, and
-the single `TWOXBRAINZ_AIGATE_TOKEN`.
+The target requires `TWOXBRAINZ_AIGATE_URL` and the single
+`TWOXBRAINZ_AIGATE_TOKEN`. `TALKIES_MODEL` is an optional fixture-only Make
+override; otherwise the backend code default is used.
 `FIXTURE_TTS_MODEL` and `FIXTURE_TTS_VOICE` are Make variables, not application
 configuration; use them only to select an available Talkies TTS model and voice
 for this test. Because it reaches the configured Talkies service,
@@ -277,9 +274,9 @@ host-only Docker mapping helper used for configured endpoints.
 provider. The explicit `make test-real` target loads the gitignored `.env`,
 validates three distinct models, and sends fixed synthetic text concurrently to
 the production Reply, Coach, and Story paths. Its defaults are
-`FIXTURE_AIGATE_DRAFT_MODEL=cerebras-glm-4.7`,
-`FIXTURE_AIGATE_COMMENTARY_MODEL=claudebox-sonnet`, and
-`FIXTURE_AIGATE_SUMMARY_MODEL=pibox-zai-glm-5-turbo`; each Make variable is
+`FIXTURE_AIGATE_DRAFT_MODEL=claudebox-sonnet`,
+`FIXTURE_AIGATE_COMMENTARY_MODEL=pibox-zai-glm-5-turbo`, and
+`FIXTURE_AIGATE_SUMMARY_MODEL=groq-gpt-oss-120b`; each Make variable is
 independently overridable. It asserts each non-empty result is completed and
 plain prose. The Reply model must also autonomously call `research_web` for a
 synthetic public-documentation question, consume the fetched Markdown, and
@@ -290,7 +287,7 @@ question; it also requires the final reply request to contain the accepted
 mitigation summary and address the final question.
 
 After the prompt contract passes, the same target queries AIGate's Talkies
-`/v1/models` proxy for the selected `TWOXBRAINZ_TALKIES_MODEL`. The model must
+`/v1/models` proxy for the selected fixture Talkies model. The model must
 advertise an integer `max_concurrency` of at least two. The test then opens two
 native Talkies WebSockets with distinct stream identities and waits until both
 servers have replied `ready` before either stream sends audio. Both connections
@@ -301,12 +298,33 @@ stalled handling fail instead of hanging or reporting false concurrency.
 Run `make test-real-talkies` to execute this focused ASR concurrency proof
 without running the separate LLM prompt fixture first.
 
+`make test-real-evaluation` is the full generated-conversation quality gate. It
+uses Talkies TTS to create distinct local and remote voices for an eight-turn
+fictional project discussion containing slang, a false start, an explicit date
+correction, overlapping provider work, two interruptions at different stream
+phases, and a public technical term that requires research. Talkies must
+advertise at least two requests for the selected ASR model; each opposing pair
+then starts behind a barrier and streams concurrently in real time. The actual
+recognized text is what reaches Reply, Coach, and Story.
+
+The test requires all three final outputs to retain scenario-defined semantic
+anchors and reject stale claims. It also requires every provider request to
+emit exactly one terminal lifecycle event, proves overlap among the three final
+flows, measures request duration plus first-reasoning and first-output latency,
+and requires Reply to complete `research_web` or `fetch_url` for the unfamiliar
+public topic. These are deterministic hard gates; no second LLM grades the
+first. By default the target runs three independent attempts and writes an
+aggregate JSON result, so one lucky provider response cannot pass the suite.
+Override the count from one through five with `EVALUATION_REPEATS`, the
+synthetic voices with `EVALUATION_USER_VOICE` and `EVALUATION_REMOTE_VOICE`, or
+the validated JSON scenario with `EVALUATION_SCENARIO`.
+
 `make live-product-fixture` runs the four-turn synthetic-audio interview with
 real AIGate rather than the fixture gateway. It releases each opposing turn
 only after the required preceding provider result completes, so the production
 coordinator must preserve the whole story, supersede the first draft after the
 local mitigation, and create a final current draft and summary. It uses the
-same default PIBOX GLM model and accepts the same `FIXTURE_AIGATE_MODEL`
+same default Groq GPT-OSS 120B model and accepts the same `FIXTURE_AIGATE_MODEL`
 override. It is a contract check: a backend must produce a terminal final
 when the runtime closes a bounded utterance segment; otherwise the retained
 trace records the failure instead of claiming a completed interview.
@@ -333,6 +351,13 @@ password, or cookie, and replaces configured credential values appearing in
 text. It is required for a successful real fixture run, so a missing or
 unwritable trace directory fails the target rather than producing unverifiable
 success.
+
+Each conversation evaluation gets its own subdirectory containing
+`transcripts.json`, `scorecard.json`, `report.md`, and the append-only event
+trace. The transcript artifact pairs every fixed synthetic reference with the
+recognized ASR text and its word error rate. The scorecard contains mechanical
+integrity, concurrency, overlap, latency, and output-marker results. Generated
+WAV files remain on an ephemeral tmpfs and are removed with the test container.
 
 ## Data boundary and optional tools
 

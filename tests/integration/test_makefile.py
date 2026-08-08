@@ -53,7 +53,13 @@ class MakefileIntegrationTests(unittest.TestCase):
         self.assertIn('--env-file ".env"', result.stdout)
 
     def test_local_test_targets_remove_the_exact_development_image(self) -> None:
-        for target in ("test", "test-unit", "test-integration", "test-coverage"):
+        for target in (
+            "lint",
+            "test",
+            "test-unit",
+            "test-integration",
+            "test-coverage",
+        ):
             with self.subTest(target=target):
                 result = _dry_run(target)
 
@@ -89,10 +95,70 @@ class MakefileIntegrationTests(unittest.TestCase):
 
         self.assertIn("real_talkies_concurrency.py", result.stdout)
         self.assertIn(
-            'TWOXBRAINZ_TALKIES_MODEL="nemotron-3.5-asr-0.6b"',
+            'TWOXBRAINZ_FIXTURE_TALKIES_MODEL="nemotron-3.5-asr-0.6b"',
             result.stdout,
         )
         self.assertIn("for image in 2xbrainz-test-real:local", result.stdout)
+
+    def test_real_evaluation_mounts_scenario_and_cleans_its_image(self) -> None:
+        result = _dry_run(
+            "test-real-evaluation",
+            "TALKIES_MODEL=custom-asr",
+            "FIXTURE_AIGATE_DRAFT_MODEL=custom-reply",
+            "FIXTURE_AIGATE_COMMENTARY_MODEL=custom-coach",
+            "FIXTURE_AIGATE_SUMMARY_MODEL=custom-story",
+        )
+
+        self.assertIn("real_conversation_evaluation.py", result.stdout)
+        self.assertIn("live_talkies_tts_fixture.py", result.stdout)
+        self.assertIn(
+            "slang-interrupted-project-chat.json:/fixture/scenario.json:ro",
+            result.stdout,
+        )
+        self.assertIn(
+            "TWOXBRAINZ_EVALUATION_SCENARIO=/fixture/scenario.json",
+            result.stdout,
+        )
+        self.assertIn('TWOXBRAINZ_EVALUATION_REPEATS="3"', result.stdout)
+        self.assertIn(
+            'TWOXBRAINZ_FIXTURE_TALKIES_MODEL="custom-asr"',
+            result.stdout,
+        )
+        self.assertIn(
+            'TWOXBRAINZ_FIXTURE_DRAFT_MODEL="custom-reply"',
+            result.stdout,
+        )
+        self.assertIn(
+            'TWOXBRAINZ_FIXTURE_COMMENTARY_MODEL="custom-coach"',
+            result.stdout,
+        )
+        self.assertIn(
+            'TWOXBRAINZ_FIXTURE_SUMMARY_MODEL="custom-story"',
+            result.stdout,
+        )
+        self.assertIn("--tmpfs /fixture-work:rw,exec,nosuid,size=512m", result.stdout)
+        self.assertIn("for image in 2xbrainz-test-real:local", result.stdout)
+        self.assertNotIn("docker image rm --force", result.stdout)
+        self.assertNotIn("docker image prune", result.stdout)
+
+    def test_evaluation_report_uses_only_local_artifacts_and_cleans_image(self) -> None:
+        result = _dry_run(
+            "evaluation-report",
+            "EVALUATION_RUN=scenario-suite-123",
+        )
+
+        self.assertIn("two_x_brainz.evaluation_report", result.stdout)
+        self.assertIn(
+            'TWOXBRAINZ_EVALUATION_RUN="scenario-suite-123"',
+            result.stdout,
+        )
+        self.assertIn(
+            ".testing/fixture-traces:/workspace/.testing/fixture-traces:rw",
+            result.stdout,
+        )
+        self.assertNotIn("--env-file", result.stdout)
+        self.assertNotIn("--network", result.stdout)
+        self.assertIn("for image in 2xbrainz-dev:local", result.stdout)
 
     def test_browser_test_uses_the_cleanup_owned_runner(self) -> None:
         result = _dry_run("test-browser")

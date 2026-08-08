@@ -21,6 +21,10 @@ from websockets.exceptions import WebSocketException
 
 from two_x_brainz.audio import WavFixture
 from two_x_brainz.constants import (
+    AIGATE_TALKIES_CUDA_MODEL_PREFIX,
+    AIGATE_TALKIES_CUDA_PROXY_PREFIX,
+    AIGATE_TALKIES_MODEL_PREFIX,
+    AIGATE_TALKIES_PROXY_PREFIX,
     BEARER_PREFIX,
     DEFAULT_CHANNELS,
     DEFAULT_FRAME_BYTES,
@@ -32,6 +36,7 @@ from two_x_brainz.constants import (
     MAX_EVENT_BYTES,
     MAX_PROVIDER_RESPONSE_BYTES,
     TALKIES_BATCH_PATH,
+    TALKIES_HEALTH_PATH,
     TALKIES_MODELS_PATH,
     TALKIES_STREAM_PATH,
 )
@@ -68,6 +73,11 @@ _WARMUP_STREAM_ID = "talkies-warmup-stream"
 _WARMUP_FRAME_COUNT = 1
 _WARMUP_FRAME_SEQUENCE = 0
 _WARMUP_CAPTURED_AT_MONOTONIC = 0.0
+_ASR_MODALITY = "asr"
+_CPU_DEVICE = "cpu"
+_CUDA_DEVICE = "cuda"
+_DEVICE_FIELD = "device"
+_MODALITY_FIELD = "modality"
 
 
 class BatchResponseFormat(StrEnum):
@@ -97,11 +107,97 @@ class TalkiesStreamConfig:
     language: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _ResolvedTalkiesConfig:
+    url: str
+    wire_model: str
+    display_model: str
+    token: str | None
+    language: str | None
+    alias_prefix: str | None
+    expected_device: str | None
+
+
+def _resolve_talkies_config(config: TalkiesStreamConfig) -> _ResolvedTalkiesConfig:
+    if config.model.startswith(AIGATE_TALKIES_CUDA_MODEL_PREFIX):
+        return _aliased_talkies_config(
+            config,
+            AIGATE_TALKIES_CUDA_MODEL_PREFIX,
+            AIGATE_TALKIES_CUDA_PROXY_PREFIX,
+            _CUDA_DEVICE,
+        )
+    if config.model.startswith(AIGATE_TALKIES_MODEL_PREFIX):
+        return _aliased_talkies_config(
+            config,
+            AIGATE_TALKIES_MODEL_PREFIX,
+            AIGATE_TALKIES_PROXY_PREFIX,
+            _CPU_DEVICE,
+        )
+    return _ResolvedTalkiesConfig(
+        url=config.url,
+        wire_model=config.model,
+        display_model=config.model,
+        token=config.token,
+        language=config.language,
+        alias_prefix=None,
+        expected_device=None,
+    )
+
+
+def _aliased_talkies_config(
+    config: TalkiesStreamConfig,
+    model_prefix: str,
+    proxy_prefix: str,
+    expected_device: str,
+) -> _ResolvedTalkiesConfig:
+    wire_model = config.model.removeprefix(model_prefix)
+    if not wire_model:
+        raise ConfigurationError("AIGate Talkies model alias must include a model slug")
+    return _ResolvedTalkiesConfig(
+        url=_replace_aigate_proxy_prefix(config.url, proxy_prefix),
+        wire_model=wire_model,
+        display_model=config.model,
+        token=config.token,
+        language=config.language,
+        alias_prefix=model_prefix,
+        expected_device=expected_device,
+    )
+
+
+def _replace_aigate_proxy_prefix(stream_url: str, proxy_prefix: str) -> str:
+    parsed = urlsplit(stream_url)
+    if not parsed.path.endswith(TALKIES_STREAM_PATH):
+        raise ConfigurationError(
+            "Talkies stream URL must end with the native streaming endpoint"
+        )
+    current_prefix = parsed.path.removesuffix(TALKIES_STREAM_PATH)
+    base_prefix = _aigate_base_prefix(current_prefix)
+    return urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            f"{base_prefix}{proxy_prefix}{TALKIES_STREAM_PATH}",
+            "",
+            "",
+        )
+    )
+
+
+def _aigate_base_prefix(current_prefix: str) -> str:
+    for proxy_prefix in (
+        AIGATE_TALKIES_CUDA_PROXY_PREFIX,
+        AIGATE_TALKIES_PROXY_PREFIX,
+    ):
+        if current_prefix.endswith(proxy_prefix):
+            return current_prefix.removesuffix(proxy_prefix)
+    raise ConfigurationError("AIGate Talkies model alias requires an AIGate proxy URL")
+
+
 class TalkiesClient:
     """Converts one PCM stream into normalized transcript events."""
 
     def __init__(self, config: TalkiesStreamConfig) -> None:
-        self._config = config
+        self._config = _resolve_talkies_config(config)
 
     async def transcribe(
         self,
@@ -113,7 +209,7 @@ class TalkiesClient:
     ) -> AsyncIterator[TranscriptEvent | ASRStreamStats]:
         """Stream PCM frames and yield validated Talkies events in order."""
         headers = _authorization_headers(self._config.token)
-        start = _start_message(self._config.model, self._config.language)
+        start = _start_message(self._config.wire_model, self._config.language)
         transcript_reconciler = UtteranceReconciler()
         try:
             async with connect(
@@ -126,7 +222,7 @@ class TalkiesClient:
             ) as socket:
                 await socket.send(json.dumps(start, separators=(",", ":")))
                 ready = await socket.recv()
-                _validate_ready(ready, self._config.model)
+                _validate_ready(ready, self._config.wire_model)
                 sender_context = contextvars.copy_context()
                 sender = sender_context.run(
                     asyncio.create_task,
@@ -142,7 +238,7 @@ class TalkiesClient:
                             session_id=session_id,
                             stream_id=stream_id,
                             speaker_role=speaker_role,
-                            model=self._config.model,
+                            model=self._config.display_model,
                         )
                         if event is not None:
                             if isinstance(event, TranscriptEvent):
@@ -166,22 +262,46 @@ class TalkiesClient:
         return await asyncio.to_thread(
             _post_file_transcription,
             batch_url(self._config.url),
-            self._config.model,
+            self._config.wire_model,
             self._config.token,
             fixture.wav_bytes,
             response_format,
         )
 
-    async def verify_configured_model(self) -> None:
-        """Reject a benchmark model that Talkies does not currently expose."""
+    async def verify_configured_model(self) -> str | None:
+        """Verify the model and return an attested device for AIGate aliases."""
         model_ids = await asyncio.to_thread(
             _get_model_ids,
             models_url(self._config.url),
             self._config.token,
         )
-        if self._config.model in model_ids:
-            return
-        raise RemoteServiceError("configured Talkies model is not available")
+        if self._config.wire_model not in model_ids:
+            raise RemoteServiceError("configured Talkies model is not available")
+        if self._config.expected_device is None:
+            return None
+        device = await asyncio.to_thread(
+            _get_device,
+            health_url(self._config.url),
+            self._config.token,
+        )
+        if device != self._config.expected_device:
+            raise RemoteServiceError("configured Talkies route uses the wrong device")
+        return device
+
+    async def list_models(self) -> tuple[str, ...]:
+        """Return the validated Talkies inventory for browser settings."""
+        model_ids = await asyncio.to_thread(
+            _get_asr_model_ids,
+            models_url(self._config.url),
+            self._config.token,
+        )
+        if self._config.alias_prefix is not None:
+            return tuple(
+                sorted(
+                    f"{self._config.alias_prefix}{model_id}" for model_id in model_ids
+                )
+            )
+        return tuple(sorted(model_ids))
 
     async def configured_model_max_concurrency(self) -> int:
         """Return the selected model's validated advertised request limit."""
@@ -189,7 +309,7 @@ class TalkiesClient:
             _get_model_max_concurrency,
             models_url(self._config.url),
             self._config.token,
-            self._config.model,
+            self._config.wire_model,
         )
 
     async def warm_configured_model(self) -> None:
@@ -450,6 +570,11 @@ def models_url(stream_url: str) -> str:
     return _http_url_from_stream_url(stream_url, TALKIES_MODELS_PATH)
 
 
+def health_url(stream_url: str) -> str:
+    """Derive the selected Talkies service health URL."""
+    return _http_url_from_stream_url(stream_url, TALKIES_HEALTH_PATH)
+
+
 def _http_url_from_stream_url(stream_url: str, endpoint_path: str) -> str:
     """Preserve an optional reverse-proxy prefix while changing the endpoint."""
     parsed = urlsplit(stream_url)
@@ -464,6 +589,10 @@ def _http_url_from_stream_url(stream_url: str, endpoint_path: str) -> str:
 
 def _get_model_ids(url: str, token: str | None) -> frozenset[str]:
     return parse_model_inventory(_get_model_inventory_payload(url, token))
+
+
+def _get_asr_model_ids(url: str, token: str | None) -> frozenset[str]:
+    return parse_asr_model_inventory(_get_model_inventory_payload(url, token))
 
 
 def _get_model_max_concurrency(
@@ -511,9 +640,58 @@ def _get_model_inventory_payload(
     return payload
 
 
+def _get_device(url: str, token: str | None) -> str:
+    headers = _authorization_headers(token) or {}
+    request = Request(url, headers=headers, method="GET")
+    try:
+        with urlopen(
+            request,
+            timeout=DEFAULT_HTTP_TIMEOUT.total_seconds(),
+        ) as response:
+            raw_response = response.read(MAX_PROVIDER_RESPONSE_BYTES + 1)
+            status_code = response.status
+    except HTTPError as error:
+        raise RemoteServiceError(
+            f"Talkies health check returned HTTP {error.code}"
+        ) from error
+    except URLError as error:
+        raise RemoteServiceError("connect to Talkies health check") from error
+    except OSError as error:
+        raise RemoteServiceError("read Talkies health check") from error
+    if status_code < 200 or status_code >= 300:
+        raise RemoteServiceError(f"Talkies health check returned HTTP {status_code}")
+    if len(raw_response) > MAX_PROVIDER_RESPONSE_BYTES:
+        raise ProtocolError("Talkies health response exceeds size limit")
+    try:
+        payload = require_json_object(decode_json(raw_response))
+    except json.JSONDecodeError as error:
+        raise ProtocolError("Talkies health check returned invalid JSON") from error
+    except ValueError as error:
+        raise ProtocolError("Talkies health check must be a JSON object") from error
+    device = payload.get(_DEVICE_FIELD)
+    if not isinstance(device, str) or not device.strip():
+        raise ProtocolError("Talkies health check must advertise its device")
+    return device.strip().lower()
+
+
 def parse_model_inventory(payload: Mapping[str, object]) -> frozenset[str]:
     """Validate the minimal OpenAI-compatible model inventory contract."""
     return frozenset(_model_inventory_entries(payload))
+
+
+def parse_asr_model_inventory(payload: Mapping[str, object]) -> frozenset[str]:
+    """Return only validated ASR model slugs from a Talkies inventory."""
+    entries = _model_inventory_entries(payload)
+    model_ids: set[str] = set()
+    for model_id, entry in entries.items():
+        modality = entry.get(_MODALITY_FIELD)
+        if not isinstance(modality, str) or not modality.strip():
+            raise ProtocolError("Talkies model inventory modality must be text")
+        if modality.strip().lower() == _ASR_MODALITY:
+            model_ids.add(model_id)
+    if not model_ids:
+        raise ProtocolError("Talkies model inventory exposes no ASR models")
+    return frozenset(model_ids)
 
 
 def parse_model_max_concurrency(

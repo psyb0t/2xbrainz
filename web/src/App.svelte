@@ -18,11 +18,23 @@
     savePreferences,
     type LayoutPreferences
   } from './lib/preferences';
+  import {
+    applicableRuntimeSettings,
+    clearRuntimeSettings,
+    defaultRuntimeSettings,
+    loadRuntimeSettings,
+    MAX_SESSION_BRIEF_CHARACTERS,
+    runtimeSettingsMessage,
+    saveRuntimeSettings,
+    settingsFromSnapshot,
+    type BrowserRuntimeSettings
+  } from './lib/runtimeSettings';
 
   const RECONNECT_DELAY_MS = 1_500;
   const FOLLOW_DISTANCE_PX = 72;
   const KEYBOARD_RESIZE_STEP = 2;
   type GuidancePanel = 'reply' | 'coach' | 'story';
+  type SettingsTab = 'context' | 'models' | 'audio';
   const PROVIDER_FLOWS: ReadonlyArray<{
     kind: ProviderOutputKind;
     label: string;
@@ -45,7 +57,9 @@
   let systemIndex = 0;
   let selectionDirty = false;
   let shouldFollowConversation = true;
-  let providerPanelOpen = false;
+  let settingsTab: SettingsTab = 'context';
+  let runtimeSettings: BrowserRuntimeSettings | null = null;
+  let runtimeSettingsInitialized = false;
   let modelPickerFlow: ProviderOutputKind | null = null;
   let modelFilter = '';
   let modelOptions: HTMLElement;
@@ -66,12 +80,15 @@
 
   function connect(): void {
     connection = 'connecting';
+    runtimeSettingsInitialized = false;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     socket = new WebSocket(`${protocol}//${window.location.host}/ws`);
     socket.addEventListener('open', () => {
       connection = 'connected';
       sendDebug({ type: 'client_debug', event: 'websocket_opened' });
-      if (settingsDialog?.open) send({ type: 'audio_metering', enabled: true });
+      if (settingsDialog?.open && settingsTab === 'audio') {
+        send({ type: 'audio_metering', enabled: true });
+      }
     });
     socket.addEventListener('message', handleMessage);
     socket.addEventListener('close', scheduleReconnect);
@@ -91,6 +108,7 @@
       return;
     }
     snapshot = value;
+    initializeRuntimeSettings();
     const debugSignature = snapshotDebugSignature(snapshot);
     if (debugSignature !== lastSnapshotDebugSignature) {
       lastSnapshotDebugSignature = debugSignature;
@@ -101,7 +119,7 @@
       });
     }
     if (!selectionDirty) syncSelectedDevices();
-    if (snapshot.requiresAudioSetup && !settingsDialog.open) openAudioSettings();
+    if (snapshot.requiresAudioSetup && !settingsDialog.open) openSettings('audio');
     await tick();
     if (shouldFollowConversation) {
       conversationScroller.scrollTop = conversationScroller.scrollHeight;
@@ -142,14 +160,18 @@
     send({ type: 'control', command });
   }
 
-  function updateProvider(flow: ProviderOutputKind, model: string, reasoningEffort: string): void {
-    if (!model) return;
-    send({
-      type: 'provider_settings',
-      flow,
-      model,
-      reasoning_effort: reasoningEffort
-    });
+  function initializeRuntimeSettings(): void {
+    if (
+      runtimeSettingsInitialized ||
+      snapshot.provider.models.length === 0 ||
+      snapshot.settings.talkiesModels.length === 0
+    )
+      return;
+    const saved = loadRuntimeSettings(localStorage);
+    runtimeSettings =
+      saved === null ? settingsFromSnapshot(snapshot) : applicableRuntimeSettings(saved, snapshot);
+    runtimeSettingsInitialized = true;
+    send(runtimeSettingsMessage(runtimeSettings));
   }
 
   function filteredModels(): string[] {
@@ -158,9 +180,15 @@
     return snapshot.provider.models.filter((model) => model.toLowerCase().includes(query));
   }
 
-  function toggleProviderPanel(): void {
-    providerPanelOpen = !providerPanelOpen;
-    if (!providerPanelOpen) modelPickerFlow = null;
+  function selectedModel(flow: ProviderOutputKind): string {
+    return runtimeSettings?.providers[flow].model ?? snapshot.provider.assignments[flow].model;
+  }
+
+  function selectedReasoning(flow: ProviderOutputKind): string {
+    return (
+      runtimeSettings?.providers[flow].reasoningEffort ??
+      snapshot.provider.assignments[flow].reasoningEffort
+    );
   }
 
   async function openModelPicker(flow: ProviderOutputKind): Promise<void> {
@@ -176,45 +204,40 @@
   function chooseModel(model: string): void {
     if (modelPickerFlow === null) return;
     const flow = modelPickerFlow;
-    const assignment = snapshot.provider.assignments[flow];
-    updateProvider(flow, model, assignment.reasoningEffort);
-    optimisticallyAssign(flow, model, assignment.reasoningEffort);
+    if (runtimeSettings === null) return;
+    runtimeSettings = {
+      ...runtimeSettings,
+      providers: {
+        ...runtimeSettings.providers,
+        [flow]: { ...runtimeSettings.providers[flow], model }
+      }
+    };
     modelPickerFlow = null;
   }
 
   function chooseReasoning(flow: ProviderOutputKind, event: Event): void {
     const target = event.currentTarget;
     if (!(target instanceof HTMLSelectElement)) return;
-    const model = snapshot.provider.assignments[flow].model;
-    updateProvider(flow, model, target.value);
-    optimisticallyAssign(flow, model, target.value);
-  }
-
-  function optimisticallyAssign(
-    flow: ProviderOutputKind,
-    model: string,
-    reasoningEffort: string
-  ): void {
-    snapshot = {
-      ...snapshot,
-      provider: {
-        ...snapshot.provider,
-        assignments: {
-          ...snapshot.provider.assignments,
-          [flow]: { model, reasoningEffort }
-        }
+    if (runtimeSettings === null) return;
+    runtimeSettings = {
+      ...runtimeSettings,
+      providers: {
+        ...runtimeSettings.providers,
+        [flow]: { ...runtimeSettings.providers[flow], reasoningEffort: target.value }
       }
     };
   }
 
-  function openAudioSettings(): void {
+  function openSettings(tab: SettingsTab = 'context'): void {
+    settingsTab = tab;
+    runtimeSettings ??= settingsFromSnapshot(snapshot);
     syncSelectedDevices();
     selectionDirty = false;
     if (!settingsDialog.open) settingsDialog.showModal();
-    send({ type: 'audio_metering', enabled: true });
+    send({ type: 'audio_metering', enabled: tab === 'audio' });
   }
 
-  function closeAudioSettings(): void {
+  function closeSettings(): void {
     if (snapshot.requiresAudioSetup) return;
     send({ type: 'audio_metering', enabled: false });
     settingsDialog.close();
@@ -225,24 +248,56 @@
     else send({ type: 'audio_metering', enabled: false });
   }
 
-  function saveAudioSelection(): void {
-    send({
-      type: 'audio_selection',
-      microphone_index: microphoneIndex,
-      system_index: systemIndex
-    });
+  function selectSettingsTab(tab: SettingsTab): void {
+    settingsTab = tab;
+    send({ type: 'audio_metering', enabled: tab === 'audio' });
+  }
+
+  function saveSettings(): void {
+    if (runtimeSettings === null) return;
+    const microphone = snapshot.audioSetup.microphones.find(
+      (device) => device.index === microphoneIndex
+    );
+    const system = snapshot.audioSetup.systemMonitors.find(
+      (device) => device.index === systemIndex
+    );
+    runtimeSettings = {
+      ...runtimeSettings,
+      microphoneNode: microphone?.nodeName ?? null,
+      systemNode: system?.nodeName ?? null
+    };
+    saveRuntimeSettings(localStorage, runtimeSettings);
+    send(runtimeSettingsMessage(runtimeSettings));
     selectionDirty = false;
     send({ type: 'audio_metering', enabled: false });
     settingsDialog.close();
   }
 
-  function syncSelectedDevices(): void {
-    microphoneIndex = selectedIndex(snapshot.audioSetup.microphones);
-    systemIndex = selectedIndex(snapshot.audioSetup.systemMonitors);
+  function resetSettings(): void {
+    clearRuntimeSettings(localStorage);
+    runtimeSettings = defaultRuntimeSettings(snapshot);
+    syncSelectedDevices();
+    send(runtimeSettingsMessage(runtimeSettings));
   }
 
-  function selectedIndex(devices: AudioMeter[]): number {
-    return devices.find((device) => device.isSelected)?.index ?? devices[0]?.index ?? 0;
+  function syncSelectedDevices(): void {
+    microphoneIndex = selectedIndex(
+      snapshot.audioSetup.microphones,
+      runtimeSettings?.microphoneNode ?? null
+    );
+    systemIndex = selectedIndex(
+      snapshot.audioSetup.systemMonitors,
+      runtimeSettings?.systemNode ?? null
+    );
+  }
+
+  function selectedIndex(devices: AudioMeter[], savedNode: string | null): number {
+    return (
+      devices.find((device) => device.nodeName === savedNode)?.index ??
+      devices.find((device) => device.isSelected)?.index ??
+      devices[0]?.index ??
+      0
+    );
   }
 
   function setPreference<K extends keyof LayoutPreferences>(
@@ -391,105 +446,7 @@
       </div>
     </div>
     <div class="header-actions">
-      <button class="quiet-button" onclick={openAudioSettings}>Sources</button>
-      <div class="model-picker">
-        <span>Provider routing</span>
-        <button
-          class="model-picker-trigger"
-          aria-label="Models"
-          aria-expanded={providerPanelOpen}
-          onclick={toggleProviderPanel}>3 flow models</button
-        >
-        {#if providerPanelOpen}
-          <div class="model-picker-popover">
-            <div class="model-picker-heading">
-              <div>
-                <strong>Flow models</strong>
-                <span>Independent routing for every generation job</span>
-              </div>
-              <button
-                class="collapse-button"
-                aria-label="Close model settings"
-                onclick={() => {
-                  providerPanelOpen = false;
-                  modelPickerFlow = null;
-                }}>Close</button
-              >
-            </div>
-            <div class="provider-assignments">
-              {#each PROVIDER_FLOWS as flow}
-                <section class="provider-assignment">
-                  <div class="provider-assignment-copy">
-                    <strong>{flow.label}</strong>
-                    <span>{flow.description}</span>
-                  </div>
-                  <div class="provider-assignment-controls">
-                    <button
-                      class="model-picker-trigger"
-                      aria-label={`${flow.label} model`}
-                      aria-expanded={modelPickerFlow === flow.kind}
-                      title={snapshot.provider.assignments[flow.kind].model}
-                      onclick={() => openModelPicker(flow.kind)}
-                      >{snapshot.provider.assignments[flow.kind].model || 'Choose model'}</button
-                    >
-                    <label class="compact-select">
-                      <span>{flow.label} reasoning</span>
-                      <select
-                        aria-label={`${flow.label} reasoning`}
-                        value={snapshot.provider.assignments[flow.kind].reasoningEffort}
-                        onchange={(event) => chooseReasoning(flow.kind, event)}
-                      >
-                        <option value="none">Default</option>
-                        <option value="minimal">Minimal</option>
-                        <option value="low">Low</option>
-                        <option value="medium">Medium</option>
-                        <option value="high">High</option>
-                      </select>
-                    </label>
-                  </div>
-                </section>
-              {/each}
-            </div>
-            {#if modelPickerFlow !== null}
-              <div class="model-search">
-                <div class="model-picker-heading">
-                  <strong
-                    >Choose {PROVIDER_FLOWS.find((flow) => flow.kind === modelPickerFlow)
-                      ?.label}</strong
-                  >
-                  <span>{filteredModels().length} of {snapshot.provider.models.length}</span>
-                </div>
-                <input
-                  aria-label="Filter models"
-                  placeholder="Filter models…"
-                  bind:this={modelFilterInput}
-                  bind:value={modelFilter}
-                  onkeydown={(event) => event.key === 'Escape' && (modelPickerFlow = null)}
-                />
-                <div class="model-options" role="listbox" bind:this={modelOptions}>
-                  {#each filteredModels() as model}
-                    <button
-                      class="model-option"
-                      role="option"
-                      aria-selected={model === snapshot.provider.assignments[modelPickerFlow].model}
-                      class:selected={model ===
-                        snapshot.provider.assignments[modelPickerFlow].model}
-                      title={model}
-                      onclick={() => chooseModel(model)}
-                    >
-                      <span>{model}</span>
-                      {#if model === snapshot.provider.assignments[modelPickerFlow].model}<b
-                          >Current</b
-                        >{/if}
-                    </button>
-                  {:else}<p>No matching models.</p>{/each}
-                </div>
-                <div class="model-picker-hint">Type to filter · Esc returns to flows</div>
-              </div>
-            {/if}
-          </div>
-        {/if}
-      </div>
+      <button class="quiet-button" onclick={() => openSettings()}>Settings</button>
       {#if snapshot.sessionState === 'running'}
         <button class="stop-button" onclick={() => control('pause')}>Stop listening</button>
       {:else}
@@ -676,7 +633,7 @@
 </div>
 
 <dialog
-  class="source-modal"
+  class="settings-modal"
   bind:this={settingsDialog}
   oncancel={handleDialogCancel}
   onclose={() => send({ type: 'audio_metering', enabled: false })}
@@ -684,96 +641,217 @@
   <div class="modal-shell">
     <header class="modal-header">
       <div>
-        <span class="eyebrow">Audio routing</span>
-        <h2>Choose live sources</h2>
+        <span class="eyebrow">Operator configuration</span>
+        <h2>Settings</h2>
       </div>
       <div class="modal-actions">
-        <button class="quiet-button" onclick={() => send({ type: 'audio_rescan' })}
-          >Redetect devices</button
-        >
         {#if !snapshot.requiresAudioSetup}<button
             class="icon-button"
-            aria-label="Close source settings"
-            onclick={closeAudioSettings}>×</button
+            aria-label="Close settings"
+            onclick={closeSettings}>×</button
           >{/if}
       </div>
     </header>
-    <p class="modal-intro">
-      Speak and play system audio. Every compatible source is metered live so you can select by
-      behavior, not by guessing a device name.
-    </p>
-    <div class="device-columns">
-      <fieldset>
-        <legend>Microphone input</legend>
-        <div class="device-list">
-          {#each snapshot.audioSetup.microphones as device (device.nodeName)}
-            <label
-              class:selected={microphoneIndex === device.index}
-              class:unavailable={!device.isAvailable}
-              class="device-card"
+    <nav class="settings-tabs" aria-label="Settings sections">
+      <button class:active={settingsTab === 'context'} onclick={() => selectSettingsTab('context')}
+        >Context</button
+      >
+      <button class:active={settingsTab === 'models'} onclick={() => selectSettingsTab('models')}
+        >Models</button
+      >
+      <button class:active={settingsTab === 'audio'} onclick={() => selectSettingsTab('audio')}
+        >Audio</button
+      >
+    </nav>
+    <div class="settings-content">
+      {#if runtimeSettings !== null && settingsTab === 'context'}
+        <section class="settings-section">
+          <div>
+            <span class="eyebrow">Conversation framing</span>
+            <h3>Session context</h3>
+            <p>Optional trusted background appended to every generation prompt.</p>
+          </div>
+          <label class="context-field">
+            <span>Session brief</span>
+            <textarea
+              aria-label="Session brief"
+              maxlength={MAX_SESSION_BRIEF_CHARACTERS}
+              bind:value={runtimeSettings.sessionBrief}
+              placeholder="Example: Product interview for a senior role at a software company."
+            ></textarea>
+            <small>{runtimeSettings.sessionBrief.length}/{MAX_SESSION_BRIEF_CHARACTERS}</small>
+          </label>
+          <label class="toggle-field">
+            <input type="checkbox" bind:checked={runtimeSettings.webResearchEnabled} />
+            <span
+              ><strong>Web research for Reply</strong><small
+                >Search and follow relevant public documentation when useful.</small
+              ></span
             >
+          </label>
+        </section>
+      {:else if runtimeSettings !== null && settingsTab === 'models'}
+        <section class="settings-section model-settings-section">
+          <div>
+            <span class="eyebrow">Independent routing</span>
+            <h3>Generation models</h3>
+            <p>Each flow has its own model and reasoning level.</p>
+          </div>
+          <div class="provider-assignments">
+            {#each PROVIDER_FLOWS as flow}
+              <section class="provider-assignment">
+                <div class="provider-assignment-copy">
+                  <strong>{flow.label}</strong>
+                  <span>{flow.description}</span>
+                </div>
+                <div class="provider-assignment-controls">
+                  <button
+                    class="model-picker-trigger"
+                    aria-label={`${flow.label} model`}
+                    aria-expanded={modelPickerFlow === flow.kind}
+                    title={selectedModel(flow.kind)}
+                    onclick={() => openModelPicker(flow.kind)}>{selectedModel(flow.kind)}</button
+                  >
+                  <label class="compact-select">
+                    <span>{flow.label} reasoning</span>
+                    <select
+                      aria-label={`${flow.label} reasoning`}
+                      value={selectedReasoning(flow.kind)}
+                      onchange={(event) => chooseReasoning(flow.kind, event)}
+                    >
+                      <option value="none">Default</option>
+                      <option value="minimal">Minimal</option>
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                    </select>
+                  </label>
+                </div>
+              </section>
+            {/each}
+          </div>
+          {#if modelPickerFlow !== null}
+            <div class="model-search">
+              <div class="model-picker-heading">
+                <strong>Choose model</strong>
+                <span>{filteredModels().length} of {snapshot.provider.models.length}</span>
+              </div>
               <input
-                type="radio"
-                name="microphone"
-                value={device.index}
-                bind:group={microphoneIndex}
-                onchange={() => (selectionDirty = true)}
+                aria-label="Filter models"
+                placeholder="Filter models…"
+                bind:this={modelFilterInput}
+                bind:value={modelFilter}
               />
-              <span class="device-copy"
-                ><strong>{device.label}</strong><small
-                  >{device.nodeName} · node {device.nodeId}</small
-                ></span
-              >
-              {#if device.isDefault}<span class="default-badge">Default</span>{/if}
-              <span class="device-level"><span style={`width:${device.level}%`}></span></span>
-              <b>{device.isAvailable ? `${device.level}%` : 'Unavailable'}</b>
-            </label>
-          {:else}<p class="empty-devices">No compatible microphone inputs are visible.</p>{/each}
-        </div>
-      </fieldset>
-      <fieldset>
-        <legend>System audio</legend>
-        <div class="device-list">
-          {#each snapshot.audioSetup.systemMonitors as device (device.nodeName)}
-            <label
-              class:selected={systemIndex === device.index}
-              class:unavailable={!device.isAvailable}
-              class="device-card"
+              <div class="model-options" role="listbox" bind:this={modelOptions}>
+                {#each filteredModels() as model}
+                  <button
+                    role="option"
+                    aria-selected={model === selectedModel(modelPickerFlow)}
+                    class:selected={model === selectedModel(modelPickerFlow)}
+                    onclick={() => chooseModel(model)}
+                  >
+                    <span>{model}</span>{#if model === selectedModel(modelPickerFlow)}<b>Current</b
+                      >{/if}
+                  </button>
+                {:else}<p>No matching models.</p>{/each}
+              </div>
+            </div>
+          {/if}
+          <label class="compact-select asr-model-select">
+            <span>Transcription model</span>
+            <select aria-label="Transcription model" bind:value={runtimeSettings.talkiesModel}>
+              {#each snapshot.settings.talkiesModels as model}<option value={model}>{model}</option
+                >{/each}
+            </select>
+          </label>
+        </section>
+      {:else if settingsTab === 'audio'}
+        <section class="settings-section audio-settings-section">
+          <div class="audio-settings-heading">
+            <div>
+              <span class="eyebrow">Audio routing</span>
+              <h3>Live sources</h3>
+            </div>
+            <button class="quiet-button" onclick={() => send({ type: 'audio_rescan' })}
+              >Redetect devices</button
             >
-              <input
-                type="radio"
-                name="system"
-                value={device.index}
-                bind:group={systemIndex}
-                onchange={() => (selectionDirty = true)}
-              />
-              <span class="device-copy"
-                ><strong>{device.label}</strong><small
-                  >{device.nodeName} · node {device.nodeId}</small
-                ></span
-              >
-              {#if device.isDefault}<span class="default-badge">Default</span>{/if}
-              <span class="device-level"><span style={`width:${device.level}%`}></span></span>
-              <b>{device.isAvailable ? `${device.level}%` : 'Unavailable'}</b>
-            </label>
-          {:else}<p class="empty-devices">
-              No compatible system-audio monitors are visible.
-            </p>{/each}
-        </div>
-      </fieldset>
+          </div>
+          <p class="modal-intro">
+            Speak and play system audio. Every compatible source is metered live.
+          </p>
+          <div class="device-columns">
+            <fieldset>
+              <legend>Microphone input</legend>
+              <div class="device-list">
+                {#each snapshot.audioSetup.microphones as device (device.nodeName)}
+                  <label
+                    class:selected={microphoneIndex === device.index}
+                    class:unavailable={!device.isAvailable}
+                    class="device-card"
+                  >
+                    <input
+                      type="radio"
+                      name="microphone"
+                      value={device.index}
+                      bind:group={microphoneIndex}
+                      onchange={() => (selectionDirty = true)}
+                    />
+                    <span class="device-copy"
+                      ><strong>{device.label}</strong><small
+                        >{device.nodeName} · node {device.nodeId}</small
+                      ></span
+                    >
+                    {#if device.isDefault}<span class="default-badge">Default</span>{/if}
+                    <span class="device-level"><span style={`width:${device.level}%`}></span></span>
+                    <b>{device.isAvailable ? `${device.level}%` : 'Unavailable'}</b>
+                  </label>
+                {:else}<p class="empty-devices">
+                    No compatible microphone inputs are visible.
+                  </p>{/each}
+              </div>
+            </fieldset>
+            <fieldset>
+              <legend>System audio</legend>
+              <div class="device-list">
+                {#each snapshot.audioSetup.systemMonitors as device (device.nodeName)}
+                  <label
+                    class:selected={systemIndex === device.index}
+                    class:unavailable={!device.isAvailable}
+                    class="device-card"
+                  >
+                    <input
+                      type="radio"
+                      name="system"
+                      value={device.index}
+                      bind:group={systemIndex}
+                      onchange={() => (selectionDirty = true)}
+                    />
+                    <span class="device-copy"
+                      ><strong>{device.label}</strong><small
+                        >{device.nodeName} · node {device.nodeId}</small
+                      ></span
+                    >
+                    {#if device.isDefault}<span class="default-badge">Default</span>{/if}
+                    <span class="device-level"><span style={`width:${device.level}%`}></span></span>
+                    <b>{device.isAvailable ? `${device.level}%` : 'Unavailable'}</b>
+                  </label>
+                {:else}<p class="empty-devices">
+                    No compatible system-audio monitors are visible.
+                  </p>{/each}
+              </div>
+            </fieldset>
+          </div>
+        </section>
+      {/if}
     </div>
     <footer class="modal-footer">
+      <button class="quiet-button" onclick={resetSettings}>Reset defaults</button>
       <span
         >{snapshot.requiresAudioSetup
-          ? 'Choose both sources to begin.'
-          : 'Changes apply immediately; a disconnected channel retries independently.'}</span
+          ? 'Choose both audio sources to begin.'
+          : 'Saved in this browser only.'}</span
       >
-      <button
-        class="primary-button"
-        disabled={snapshot.audioSetup.microphones.length === 0 ||
-          snapshot.audioSetup.systemMonitors.length === 0}
-        onclick={saveAudioSelection}>Save sources</button
-      >
+      <button class="primary-button" onclick={saveSettings}>Save settings</button>
     </footer>
   </div>
 </dialog>

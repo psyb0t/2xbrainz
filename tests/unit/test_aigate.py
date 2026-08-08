@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import unittest
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from email.message import Message
+from typing import Any
 from unittest.mock import patch
 
 import two_x_brainz.aigate as aigate
 from two_x_brainz.aigate import AIGateClient
 from two_x_brainz.constants import (
     DEFAULT_PROVIDER_GENERATION_DEADLINE,
+    MAX_COMMENTARY_TEXT_CHARACTERS,
     MAX_COMMENTARY_TOKENS,
     MAX_DRAFT_TEXT_CHARACTERS,
     MAX_PROVIDER_RESPONSE_BYTES,
@@ -30,7 +33,8 @@ from two_x_brainz.json_support import require_json_array, require_json_object
 
 _download_research_page = aigate._download_research_page  # pyright: ignore[reportPrivateUsage]
 _ResearchPage = aigate._ResearchPage  # pyright: ignore[reportPrivateUsage]
-_select_research_result = aigate._select_research_result  # pyright: ignore[reportPrivateUsage]
+_StreamControl = aigate._StreamControl  # pyright: ignore[reportPrivateUsage]
+_matching_research_results = aigate._matching_research_results  # pyright: ignore[reportPrivateUsage]
 
 
 class AIGateClientTests(unittest.TestCase):
@@ -164,7 +168,7 @@ class AIGateClientTests(unittest.TestCase):
 
     def test_runtime_reasoning_effort_is_snapshotted_into_request(self) -> None:
         payloads: list[dict[str, object]] = []
-        activities: list[dict[str, object]] = []
+        activities: list[Mapping[str, object]] = []
 
         def post(client: AIGateClient, payload: dict[str, object]) -> object:
             del client
@@ -179,6 +183,8 @@ class AIGateClientTests(unittest.TestCase):
 
         self.assertEqual(payloads[0]["reasoning_effort"], "high")
         self.assertEqual(activities[0]["phase"], "request_started")
+        self.assertEqual(activities[0]["generation_id"], "draft-id")
+        self.assertEqual(activities[0]["context_revision"], 1)
         self.assertEqual(activities[-1]["phase"], "request_completed")
         self.assertNotIn("messages", activities[0])
 
@@ -214,6 +220,50 @@ class AIGateClientTests(unittest.TestCase):
         phases = [event["phase"] for event in activities]
         self.assertIn("request_cancelled", phases)
         self.assertNotIn("request_failed", phases)
+
+    def test_stream_cancellation_does_not_wait_for_blocking_worker(self) -> None:
+        worker_started = threading.Event()
+        worker_stopped = threading.Event()
+
+        def blocking_worker(
+            client: AIGateClient,
+            payload: dict[str, object],
+            loop: asyncio.AbstractEventLoop,
+            queue: asyncio.Queue[object],
+            stop_event: Any,
+        ) -> None:
+            del client, payload, loop, queue
+            worker_started.set()
+            stop_event.wait(1)
+            worker_stopped.set()
+
+        async def scenario() -> None:
+            client = _client()
+            client.streaming_enabled = True
+            with patch.object(AIGateClient, "_stream_worker", new=blocking_worker):
+                task = asyncio.create_task(client.draft(_draft_request()))
+                while not worker_started.is_set():
+                    await asyncio.sleep(0)
+                task.cancel()
+                async with asyncio.timeout(0.1):
+                    with self.assertRaises(asyncio.CancelledError):
+                        await task
+                while not worker_stopped.is_set():
+                    await asyncio.sleep(0)
+
+        asyncio.run(scenario())
+
+    def test_stream_cancellation_closes_attached_and_late_responses(self) -> None:
+        for attach_before_stop in (True, False):
+            with self.subTest(attach_before_stop=attach_before_stop):
+                response = _ClosableResponse()
+                control = _StreamControl()
+                if attach_before_stop:
+                    control.attach(response)
+                control.set()
+                if not attach_before_stop:
+                    control.attach(response)
+                self.assertTrue(response.closed.is_set())
 
     def test_failed_request_exposes_a_bounded_reason(self) -> None:
         activities: list[dict[str, object]] = []
@@ -430,6 +480,50 @@ class AIGateClientTests(unittest.TestCase):
             self.assertIn("Operator-provided session brief", prompt)
             self.assertIn("Interview for a product role.", prompt)
 
+    def test_draft_prompt_requires_first_person_speakable_output(self) -> None:
+        payloads: list[dict[str, object]] = []
+
+        def post(client: AIGateClient, payload: dict[str, object]) -> object:
+            del client
+            payloads.append(payload)
+            return _completion("I can say this directly.")
+
+        with patch.object(AIGateClient, "_post", new=post):
+            asyncio.run(_client().draft(_draft_request()))
+
+        messages = require_json_array(payloads[0]["messages"])
+        prompt = require_json_object(messages[0])["content"]
+        assert isinstance(prompt, str)
+        self.assertIn("first-person perspective", prompt)
+        self.assertIn("ready to speak as-is", prompt)
+        self.assertIn("do not address the local user as 'you'", prompt)
+
+    def test_runtime_context_applies_to_future_requests(self) -> None:
+        payloads: list[dict[str, object]] = []
+
+        def post(client: AIGateClient, payload: dict[str, object]) -> object:
+            del client
+            payloads.append(payload)
+            return _completion("short result")
+
+        client = _client()
+        client.configure_context(
+            session_brief="Focus on the operator's product role.",
+            web_research_enabled=True,
+        )
+        with patch.object(AIGateClient, "_post", new=post):
+            asyncio.run(client.draft(_draft_request()))
+
+        messages = require_json_array(payloads[0]["messages"])
+        prompt = require_json_object(messages[0])["content"]
+        assert isinstance(prompt, str)
+        self.assertIn("Operator-provided session brief", prompt)
+        self.assertIn("Focus on the operator's product role.", prompt)
+        self.assertIn("call research_web", prompt)
+        self.assertIn("MUST call research_web before drafting", prompt)
+        self.assertIn("not a substitute", prompt)
+        self.assertIn("tools", payloads[0])
+
     def test_draft_rejects_empty_visible_content(self) -> None:
         with (
             patch.object(AIGateClient, "_post", return_value=_completion("")),
@@ -497,6 +591,10 @@ class AIGateClientTests(unittest.TestCase):
         self.assertIn("no more than 120 words", summary_prompt)
         self.assertIn("unless a speaker explicitly corrects it", summary_prompt)
         self.assertIn("Do not infer qualifiers", summary_prompt)
+        self.assertIn("instead of declaring it unresolved", summary_prompt)
+        self.assertIn("only when a speaker explicitly questions it", summary_prompt)
+        self.assertIn("directly answers a prior question", summary_prompt)
+        self.assertIn("calling the request unanswered", summary_prompt)
         self.assertIn("not a heading or label", summary_prompt)
 
     def test_insight_rejects_markdown_provider_content(self) -> None:
@@ -509,6 +607,63 @@ class AIGateClientTests(unittest.TestCase):
             self.assertRaisesRegex(ProtocolError, "Markdown structure"),
         ):
             asyncio.run(_client().insight(_insight_request(InsightKind.SUMMARY)))
+
+    def test_insight_retries_one_format_violation_with_a_correction(self) -> None:
+        payloads: list[dict[str, object]] = []
+        activities: list[dict[str, object]] = []
+
+        def post(client: AIGateClient, payload: dict[str, object]) -> object:
+            payloads.append(payload)
+            if len(payloads) == 1:
+                return _completion("# Coach")
+            return _completion("Ask for one concrete example of the tradeoff.")
+
+        def capture_activity(activity: Mapping[str, object]) -> None:
+            activities.append(dict(activity))
+
+        client = _client()
+        client.activity_sink = capture_activity
+        with patch.object(AIGateClient, "_post", new=post):
+            result = asyncio.run(
+                client.insight(_insight_request(InsightKind.COMMENTARY))
+            )
+
+        self.assertEqual(
+            result.text,
+            "Ask for one concrete example of the tradeoff.",
+        )
+        self.assertEqual(len(payloads), 2)
+        retry_messages = require_json_array(payloads[1]["messages"])
+        correction = require_json_object(retry_messages[-1])
+        self.assertEqual(correction["role"], "system")
+        correction_content = correction["content"]
+        self.assertIsInstance(correction_content, str)
+        assert isinstance(correction_content, str)
+        self.assertIn("previous answer violated", correction_content)
+        self.assertNotIn("tools", payloads[1])
+        self.assertIn(
+            "format_retry_started",
+            [activity["phase"] for activity in activities],
+        )
+
+    def test_insight_retries_oversized_content_with_a_correction(self) -> None:
+        oversized_content = "x" * (MAX_COMMENTARY_TEXT_CHARACTERS + 1)
+        client = _client()
+
+        with patch.object(
+            AIGateClient,
+            "_post",
+            side_effect=[
+                _completion(oversized_content),
+                _completion("Ask for one concrete example."),
+            ],
+        ) as post:
+            result = asyncio.run(
+                client.insight(_insight_request(InsightKind.COMMENTARY))
+            )
+
+        self.assertEqual(result.text, "Ask for one concrete example.")
+        self.assertEqual(post.call_count, 2)
 
     def test_provider_content_converts_safe_inline_markdown_to_plain_text(self) -> None:
         with (
@@ -594,6 +749,29 @@ class AIGateClientTests(unittest.TestCase):
         assert isinstance(content, str)
         self.assertLess(content.index("running summary"), content.index("remote:"))
 
+    def test_commentary_prompt_requires_conversation_continuity(self) -> None:
+        payloads: list[dict[str, object]] = []
+
+        def post(client: AIGateClient, payload: dict[str, object]) -> object:
+            del client
+            payloads.append(payload)
+            return _completion("Concise coaching.")
+
+        with patch.object(AIGateClient, "_post", new=post):
+            asyncio.run(_client().insight(_insight_request(InsightKind.COMMENTARY)))
+
+        messages = require_json_array(payloads[0]["messages"])
+        prompt = require_json_object(messages[0])["content"]
+        assert isinstance(prompt, str)
+        self.assertIn("whole conversation", prompt)
+        self.assertIn("explicit commitment", prompt)
+        self.assertIn("corrected fact", prompt)
+        self.assertIn("unresolved question", prompt)
+        self.assertIn("latest turn requests a recap", prompt)
+        self.assertIn("every active corrected fact and commitment", prompt)
+        self.assertIn("directly answers a prior question", prompt)
+        self.assertIn("do not say it is still owed", prompt)
+
     def test_draft_runs_allowed_tool_calls_in_parallel_then_returns_a_reply(
         self,
     ) -> None:
@@ -641,12 +819,99 @@ class AIGateClientTests(unittest.TestCase):
             ],
             ["research_web", "execute_code"],
         )
+        research_function = require_json_object(
+            require_json_object(tool_schemas[0])["function"]
+        )
+        research_parameters = require_json_object(research_function["parameters"])
+        self.assertIn("anyOf", research_parameters)
+        self.assertNotIn("oneOf", research_parameters)
         followup_payload = post.call_args_list[1].args[0]
         self.assertIn("tools", followup_payload)
         messages = require_json_array(followup_payload["messages"])
         self.assertEqual(require_json_object(messages[-4])["role"], "assistant")
         self.assertEqual(require_json_object(messages[-3])["role"], "tool")
         self.assertEqual(require_json_object(messages[-1])["role"], "tool")
+
+    def test_draft_retries_one_malformed_research_call_then_uses_the_tool(
+        self,
+    ) -> None:
+        activities: list[dict[str, object]] = []
+        malformed_call = _research_tool_call_with_arguments("research-bad", {})
+
+        async def run_tool_call(*arguments: object) -> str:
+            del arguments
+            return "bounded research result"
+
+        client = _client(web_research_enabled=True)
+        client.activity_sink = lambda event: activities.append(dict(event))
+        with (
+            patch.object(
+                AIGateClient,
+                "_post",
+                side_effect=[
+                    _tool_completion(malformed_call),
+                    _tool_completion(
+                        _research_tool_call("research-good", "example technology")
+                    ),
+                    _completion("Grounded reply."),
+                ],
+            ) as post,
+            patch.object(AIGateClient, "_run_tool_call", new=run_tool_call),
+        ):
+            result = asyncio.run(client.draft(_draft_request()))
+
+        self.assertEqual(result.text, "Grounded reply.")
+        self.assertEqual(post.call_count, 3)
+        retry_payload = post.call_args_list[1].args[0]
+        self.assertIn("tools", retry_payload)
+        retry_messages = require_json_array(retry_payload["messages"])
+        correction = next(
+            require_json_object(message)
+            for message in retry_messages
+            if require_json_object(message).get("role") == "system"
+            and "previous tool call violated"
+            in str(require_json_object(message).get("content"))
+        )
+        self.assertEqual(correction["role"], "system")
+        correction_text = correction["content"]
+        self.assertIsInstance(correction_text, str)
+        assert isinstance(correction_text, str)
+        self.assertIn("previous tool call violated", correction_text)
+        self.assertNotIn("Could we review this?", correction_text)
+        retry_activity = next(
+            event for event in activities if event["phase"] == "tool_call_retry_started"
+        )
+        self.assertEqual(retry_activity["error_type"], "ProtocolError")
+        self.assertIn("query or URL", str(retry_activity["error_message"]))
+        self.assertNotIn("request_failed", [event["phase"] for event in activities])
+
+    def test_draft_rejects_a_second_malformed_tool_call_without_executing_it(
+        self,
+    ) -> None:
+        activities: list[dict[str, object]] = []
+        malformed_call = _research_tool_call_with_arguments("research-bad", {})
+        client = _client(web_research_enabled=True)
+        client.activity_sink = lambda event: activities.append(dict(event))
+
+        with (
+            patch.object(
+                AIGateClient,
+                "_post",
+                side_effect=[
+                    _tool_completion(malformed_call),
+                    _tool_completion(malformed_call),
+                ],
+            ) as post,
+            patch.object(AIGateClient, "_run_tool_call") as run_tool_call,
+            self.assertRaisesRegex(ProtocolError, "query or URL"),
+        ):
+            asyncio.run(client.draft(_draft_request()))
+
+        self.assertEqual(post.call_count, 2)
+        run_tool_call.assert_not_awaited()
+        phases = [event["phase"] for event in activities]
+        self.assertEqual(phases.count("tool_call_retry_started"), 1)
+        self.assertEqual(phases.count("request_failed"), 1)
 
     def test_draft_researches_and_reads_a_matching_public_result(self) -> None:
         page_url = "https://example.com/project"
@@ -795,6 +1060,193 @@ class AIGateClientTests(unittest.TestCase):
             [index_url, documentation_url],
         )
 
+    def test_research_tries_the_next_matching_page_when_the_first_is_blocked(
+        self,
+    ) -> None:
+        blocked_url = "https://blocked.example/rfc-9264-linkset"
+        readable_url = "https://readable.example/rfc-9264-linkset"
+        search_payload = {
+            "result": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps(
+                            {
+                                "results": [
+                                    {
+                                        "title": "RFC 9264 Linkset format",
+                                        "url": blocked_url,
+                                        "snippet": "Machine-readable Linkset format.",
+                                    },
+                                    {
+                                        "title": "RFC 9264 Linkset format reference",
+                                        "url": readable_url,
+                                        "snippet": "Machine-readable Linkset format.",
+                                    },
+                                ]
+                            }
+                        ),
+                    }
+                ]
+            }
+        }
+        client = _client(web_research_enabled=True)
+        with (
+            patch.object(
+                AIGateClient,
+                "_post",
+                side_effect=[
+                    _tool_completion(
+                        _research_tool_call("research-1", "RFC 9264 Linkset format")
+                    ),
+                    _completion("Grounded reply."),
+                ],
+            ),
+            patch.object(
+                AIGateClient,
+                "_post_mcp",
+                return_value=search_payload,
+            ),
+            patch(
+                "two_x_brainz.aigate._download_research_page",
+                side_effect=[
+                    RemoteServiceError("research_web page returned HTTP 403"),
+                    _ResearchPage(
+                        markdown="RFC 9264 defines the Linkset media type.",
+                        links=(),
+                    ),
+                ],
+            ) as download,
+        ):
+            result = asyncio.run(client.draft(_draft_request()))
+
+        self.assertEqual(result.text, "Grounded reply.")
+        self.assertEqual(
+            [call.args[0] for call in download.call_args_list],
+            [blocked_url, readable_url],
+        )
+
+    def test_research_reports_failure_after_all_matching_pages_are_blocked(
+        self,
+    ) -> None:
+        first_url = "https://first.example/rfc-9264-linkset"
+        second_url = "https://second.example/rfc-9264-linkset"
+        search_payload = {
+            "result": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps(
+                            {
+                                "results": [
+                                    {
+                                        "title": "RFC 9264 Linkset format",
+                                        "url": first_url,
+                                        "snippet": "Machine-readable Linkset format.",
+                                    },
+                                    {
+                                        "title": "RFC 9264 Linkset reference",
+                                        "url": second_url,
+                                        "snippet": "Machine-readable Linkset format.",
+                                    },
+                                ]
+                            }
+                        ),
+                    }
+                ]
+            }
+        }
+        activities: list[dict[str, object]] = []
+        client = _client(web_research_enabled=True)
+        client.activity_sink = lambda event: activities.append(dict(event))
+        with (
+            patch.object(
+                AIGateClient,
+                "_post",
+                side_effect=[
+                    _tool_completion(
+                        _research_tool_call("research-1", "RFC 9264 Linkset format")
+                    ),
+                    _completion("Careful fallback."),
+                ],
+            ),
+            patch.object(
+                AIGateClient,
+                "_post_mcp",
+                return_value=search_payload,
+            ),
+            patch(
+                "two_x_brainz.aigate._download_research_page",
+                side_effect=[
+                    RemoteServiceError("research_web page returned HTTP 403"),
+                    RemoteServiceError("research_web page request timed out"),
+                ],
+            ) as download,
+        ):
+            result = asyncio.run(client.draft(_draft_request()))
+
+        self.assertEqual(result.text, "Careful fallback.")
+        self.assertEqual(download.call_count, 2)
+        failed = next(event for event in activities if event["phase"] == "tool_failed")
+        tool_result = require_json_object(json.loads(str(failed["tool_result"])))
+        self.assertEqual(tool_result["error"], "tool unavailable")
+        self.assertEqual(tool_result["error_type"], "RemoteServiceError")
+        self.assertIn("any clearly matching", str(tool_result["reason"]))
+
+    def test_research_treats_a_standalone_url_query_as_a_page_fetch(self) -> None:
+        page_url = "https://example.com/docs/routing.md"
+        client = _client(web_research_enabled=True)
+        with (
+            patch.object(
+                AIGateClient,
+                "_post",
+                side_effect=[
+                    _tool_completion(_research_tool_call("research-doc", page_url)),
+                    _completion("Grounded reply."),
+                ],
+            ),
+            patch(
+                "two_x_brainz.aigate._download_research_page",
+                return_value=_ResearchPage(
+                    markdown="Routing validates requests before dispatch.",
+                    links=(),
+                ),
+            ) as download,
+        ):
+            result = asyncio.run(client.draft(_draft_request()))
+
+        self.assertEqual(result.text, "Grounded reply.")
+        download.assert_called_once_with(page_url)
+
+    def test_research_prefers_a_public_url_over_a_redundant_query(self) -> None:
+        page_url = "https://example.com/docs/routing.md"
+        client = _client(web_research_enabled=True)
+        call = _research_tool_call_with_arguments(
+            "research-doc",
+            {"query": "example routing documentation", "url": page_url},
+        )
+        with (
+            patch.object(
+                AIGateClient,
+                "_post",
+                side_effect=[
+                    _tool_completion(call),
+                    _completion("Grounded reply."),
+                ],
+            ),
+            patch(
+                "two_x_brainz.aigate._download_research_page",
+                return_value=_ResearchPage(
+                    markdown="Routing validates requests before dispatch.",
+                    links=(),
+                ),
+            ) as download,
+        ):
+            result = asyncio.run(client.draft(_draft_request()))
+
+        self.assertEqual(result.text, "Grounded reply.")
+        download.assert_called_once_with(page_url)
+
     def test_fetch_rejects_a_url_not_returned_by_search(self) -> None:
         activities: list[dict[str, object]] = []
         client = _client(web_research_enabled=True)
@@ -911,17 +1363,19 @@ class AIGateClientTests(unittest.TestCase):
                 ],
             }
         )
-        selected = _select_research_result(
+        selected = _matching_research_results(
             exact_result,
             "psyb0t aigate github",
         )
 
         self.assertEqual(
             selected,
-            {
-                "title": "psyb0t/aigate",
-                "url": "https://github.com/psyb0t/aigate",
-            },
+            (
+                {
+                    "title": "psyb0t/aigate",
+                    "url": "https://github.com/psyb0t/aigate",
+                },
+            ),
         )
 
         ambiguous_result = json.dumps(
@@ -941,11 +1395,12 @@ class AIGateClientTests(unittest.TestCase):
                 ],
             }
         )
-        self.assertIsNone(
-            _select_research_result(
+        self.assertEqual(
+            _matching_research_results(
                 ambiguous_result,
                 "airgate workflows single endpoint",
-            )
+            ),
+            (),
         )
 
     def test_research_page_extracts_main_text_and_drops_boilerplate(self) -> None:
@@ -1269,6 +1724,14 @@ class _StreamingHTTPResponse:
         return iter(self._lines)
 
 
+class _ClosableResponse:
+    def __init__(self) -> None:
+        self.closed = threading.Event()
+
+    def close(self) -> None:
+        self.closed.set()
+
+
 def _stream_event(delta: dict[str, object]) -> bytes:
     payload = {"choices": [{"delta": delta}]}
     return f"data: {json.dumps(payload, separators=(',', ':'))}\n".encode()
@@ -1357,25 +1820,25 @@ def _search_tool_call(identifier: str, query: str) -> dict[str, object]:
 
 
 def _research_tool_call(identifier: str, query: str) -> dict[str, object]:
+    return _research_tool_call_with_arguments(identifier, {"query": query})
+
+
+def _research_tool_call_with_arguments(
+    identifier: str,
+    arguments: dict[str, object],
+) -> dict[str, object]:
     return {
         "id": identifier,
         "type": "function",
         "function": {
             "name": "research_web",
-            "arguments": json.dumps({"query": query}),
+            "arguments": json.dumps(arguments),
         },
     }
 
 
 def _research_url_tool_call(identifier: str, url: str) -> dict[str, object]:
-    return {
-        "id": identifier,
-        "type": "function",
-        "function": {
-            "name": "research_web",
-            "arguments": json.dumps({"url": url}),
-        },
-    }
+    return _research_tool_call_with_arguments(identifier, {"url": url})
 
 
 def _code_tool_call(identifier: str, expression: str) -> dict[str, object]:

@@ -81,23 +81,20 @@ thing.
 ## Quick start
 
 **1. Set up AIGate, then write a `.env`.** Grab [`.env.example`](.env.example)
-for the full list. AIGate keeps Talkies on a private network and serves it at
-`/talkies/`; 2xbrainz derives that path from the one AIGate API root:
+for the full list. AIGate keeps Talkies on a private network and serves CPU and
+CUDA instances at `/talkies/` and `/talkies-cuda/`. 2xbrainz derives the right
+route from the selected AIGate model alias and the one AIGate API root:
 
 ```bash
 TWOXBRAINZ_AIGATE_URL=http://localhost:4000/v1
-TWOXBRAINZ_AIGATE_REPLY_MODEL=cerebras-glm-4.7
-TWOXBRAINZ_AIGATE_REPLY_REASONING_EFFORT=none
-TWOXBRAINZ_AIGATE_COACH_MODEL=your-coaching-model
-TWOXBRAINZ_AIGATE_COACH_REASONING_EFFORT=none
-TWOXBRAINZ_AIGATE_SUMMARY_MODEL=your-summary-model
-TWOXBRAINZ_AIGATE_SUMMARY_REASONING_EFFORT=none
 TWOXBRAINZ_AIGATE_TOKEN=your-gateway-token
-TWOXBRAINZ_TALKIES_MODEL=nemotron-3.5-asr-0.6b
 ```
 
+That is the entire required application configuration. Models, reasoning,
+research, call context, and audio sources live in the browser Settings dialog.
+
 **2. Inspect the audio nodes if you want to.** `make run` presents the
-compatible microphone and system-output nodes in its in-app Sources view,
+compatible microphone and system-output nodes in its in-app Settings dialog,
 so this is only for checking what PipeWire exposes:
 
 ```bash
@@ -120,13 +117,12 @@ audio capture source: either an **`Audio/Source`** monitor (`*.monitor`) or a
 directly capturable **`Audio/Sink`**. It excludes `Stream/*` application entries.
 The PipeWire configured default microphone and default output are marked
 `[DEFAULT]` and sorted first. That is a recommendation, not proof of
-per-application routing. Audio Setup meters **every displayed candidate at the
+per-application routing. The Audio Settings tab meters **every displayed candidate at the
 same time**: speak into the mic and play system audio, then select the two rows
-whose independent meters react. The chosen stable node names are saved to
-`$XDG_CONFIG_HOME/2xbrainz/audio-selection.json` (or
-`~/.config/2xbrainz/audio-selection.json`) with mode `0600`. If either saved
-node is unavailable later, its channel waits and retries while the other
-channel keeps running.
+whose independent meters react. The chosen stable node names are saved in
+browser-local storage. If either saved node is unavailable later, Settings opens
+on Audio so the missing route can be replaced while the other channel remains
+available.
 
 **3. Go.**
 
@@ -134,9 +130,9 @@ channel keeps running.
 make run
 ```
 
-Open `http://127.0.0.1:7860`. The browser starts idle and opens Sources when no
+Open `http://127.0.0.1:7860`. The browser starts idle and opens Settings when no
 usable pair is saved. Select a microphone and system-audio source, then press
-**Start listening**. The saved pair is reused on later runs. Sources remains
+**Start listening**. The saved pair is reused on later runs. Settings remains
 available throughout the session; redetection and changes apply to the affected
 capture channel without restarting the page or discarding the conversation.
 
@@ -168,21 +164,35 @@ The app opens **idle**. It does not open either PipeWire capture process or send
 audio to Talkies until you press **Start listening**. **Stop listening** pauses
 both capture gates but keeps the browser, transcript, story, and guidance alive.
 
-The top bar provides:
+The top bar opens a tabbed **Settings** dialog:
 
-- three searchable AIGate model pickers—one each for Reply, Private coach, and
+- **Context** owns the optional call brief and the Reply research toggle;
+- **Models** owns three searchable AIGate model pickers—one each for Reply,
+  Private coach, and
   Story so far—with result counts, readable scrolling inventories, visible
   current-model markers, and automatic positioning on each selected model.
-  Every flow also has its own reasoning effort (`Default`, `Minimal`, `Low`,
-  `Medium`, or `High`); all six choices persist across runs; and
-- separate live Reply, Private coach, and Story-so-far generation flows. Each is
-  one continuous chronological stream: status, visible reasoning, tool activity,
-  and streamed Markdown appear inline in arrival order. Every reasoning and tool
-  row starts independently collapsed; there are no per-generation cards or
-  grouped trace boxes. Cumulative reasoning and output snapshots coalesce per
-  flow even while Reply, Coach, and Story run concurrently, so token updates do
-  not become duplicate `Thinking` rows. It never fabricates or claims access to
-  hidden chain-of-thought.
+  Every flow has its own reasoning effort (`Default`, `Minimal`, `Low`,
+  `Medium`, or `High`), and the tab also selects the Talkies ASR model; and
+- **Audio** owns device discovery, per-candidate meters, and the microphone and
+  system-audio selections.
+
+Saving applies the complete settings snapshot atomically and stores it in this
+browser. Reset discards browser overrides and returns to backend-defined
+defaults. The built-in ASR default is
+`local-talkies-cuda-nemotron-3.5-asr-0.6b`; startup checks both its inventory
+entry and the CUDA service's `device=cuda` health claim before recording. A
+stale model falls back to an available backend default; a stale
+audio pair requires a fresh selection. Credentials and service URLs are never
+stored in browser settings.
+
+Separate live Reply, Private coach, and Story-so-far generation flows each use
+one continuous chronological stream: status, visible reasoning, tool activity,
+and streamed Markdown appear inline in arrival order. Every reasoning and tool
+row starts independently collapsed; there are no per-generation cards or
+grouped trace boxes. Cumulative reasoning and output snapshots coalesce per
+flow even while Reply, Coach, and Story run concurrently, so token updates do
+not become duplicate `Thinking` rows. It never fabricates or claims access to
+hidden chain-of-thought.
 
 Conversation, Reply, Private coach, and Story so far remain separate scrollable,
 collapsible, resizable panels. Expanded panels consume all height released by
@@ -190,7 +200,7 @@ collapsed siblings, and their layout persists in browser-local storage. Each fee
 auto-follows new events only while it is already at the bottom, so scrolling back
 through the full activity history is not interrupted.
 
-**Sources** opens audio settings. Every visible microphone and system-audio
+The **Audio** Settings tab shows every visible microphone and system-audio
 candidate has its own live meter. While the modal is open, the inventory
 automatically refreshes; **Redetect devices** requests an immediate refresh.
 Disconnected Bluetooth or USB nodes disappear and returning nodes reappear.
@@ -230,8 +240,8 @@ allowlisted MCP endpoints. The application derives
 `ws(s)://<aigate-host>[/prefix]/talkies/v1/audio/transcriptions/stream` from
 `TWOXBRAINZ_AIGATE_URL`, which must end in `/v1`.
 
-For optional current-context help, set `TWOXBRAINZ_WEB_RESEARCH_ENABLED=true`
-and enable AIGate with `SEARXNG=1` (`PISTON=1` additionally enables arithmetic).
+For optional current-context help, enable research in Settings and enable
+AIGate with `SEARXNG=1` (`PISTON=1` additionally enables arithmetic).
 The reply model sees only `research_web` and bounded arithmetic-only
 `execute_code`; it never receives AIGate's full tool catalog. `research_web`
 accepts either a focused query or an exact discovered URL. It searches through
@@ -248,9 +258,9 @@ Obvious structured private identifiers are rejected before a query leaves the
 app; do not enable research for conversations whose unfamiliar terms are
 themselves private.
 
-Set `TWOXBRAINZ_SESSION_BRIEF` to optional trusted context such as the purpose
-of the call and the local user's role. The bounded brief frames replies,
-coaching, and the running story without becoming transcript or log content.
+The Context tab accepts optional trusted context such as the purpose of the call
+and the local user's role. The bounded brief frames replies, coaching, and the
+running story without becoming transcript or log content.
 
 Full reference: [configuration](docs/configuration.md).
 
@@ -312,6 +322,7 @@ make help          # every target
 make lint          # ruff + pyright + shellcheck
 make test          # unit + integration, offline and deterministic
 make test-browser  # compiled UI in a real browser; self-cleaning containers
+make test-real-evaluation # generated audio + real ASR/LLM quality scorecard
 make build         # production image
 make replay        # the bundled fixture
 ```
@@ -323,11 +334,12 @@ failure. `make test-browser` starts uniquely named `--rm` fixture and browser
 containers, verifies the compiled console through the digest-pinned stealth
 browser, and stops both from an exit trap even when an assertion or interrupt
 fails. The targets that do hit real services (`make live-fixture`,
-`make test-real`, `make live-product-fixture`, `make benchmark`) are deliberately
-separate, need a real `.env`, and are not part of `make test` or CI.
+`make test-real`, `make test-real-evaluation`, `make live-product-fixture`,
+`make benchmark`) are deliberately separate, need a real `.env`, and are not
+part of `make test` or CI.
 `make test-real` sends Reply, Coach, and Story prompt checks concurrently through
-three distinct defaults (`cerebras-glm-4.7`, `claudebox-sonnet`, and
-`pibox-zai-glm-5-turbo`). It also verifies that AIGate advertises at least two
+three distinct defaults (`claudebox-sonnet`, `pibox-zai-glm-5-turbo`, and
+`groq-gpt-oss-120b`). It also verifies that AIGate advertises at least two
 requests for the selected Talkies model and completes two native ASR streams
 concurrently against the bundled CC0 WAV. Use `make test-real-talkies` to run
 only that provider check. The Reply check requires the model itself to recognize
@@ -335,6 +347,17 @@ that public documentation is needed, call `research_web`, consume the fetched
 page, and finish a one-line spoken response. See
 [docs/configuration.md](docs/configuration.md#real-provider-test-tiers) for the
 full contract.
+
+`make test-real-evaluation` generates an eight-turn, two-voice conversation with
+slang, corrections, false starts, two timed interruptions, and an unfamiliar
+public RFC topic. It transcribes opposing turns in pairs, feeds the recognized
+text—not the reference script—through the production coordinator, and hard-gates
+final Reply, Coach, and Story content plus completed web research. Its redacted
+suite directory contains three independent attempts by default, their reference
+and recognized transcripts, per-turn word error rates, provider overlap and
+stream-latency measurements, event traces, JSON scorecards, readable Markdown
+reports, and an aggregate JSON result. Use `EVALUATION_REPEATS=1` through `5` to
+override the repeat count.
 
 Picking an ASR model? [docs/asr-evaluation.md](docs/asr-evaluation.md) covers the
 benchmark targets and the fixture's provenance.

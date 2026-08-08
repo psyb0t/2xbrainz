@@ -23,6 +23,15 @@ class BrowserSmokeScriptTests(unittest.TestCase):
         self.assertIn("stop --time 5 2xbrainz-browser-fixture-test-run", docker_log)
         self.assertIn(f"image rm {_APP_IMAGE}", docker_log)
         self.assertIn("--rm", docker_log)
+        self.assertIn(
+            "--network container:2xbrainz-browser-fixture-test-run",
+            docker_log,
+        )
+        self.assertIn(
+            "--network container:2xbrainz-browser-check-test-run",
+            docker_log,
+        )
+        self.assertNotIn("--network host", docker_log)
 
     def test_failed_browser_assertion_still_cleans_every_owned_resource(self) -> None:
         result, docker_log = _run_script('{"success":false}')
@@ -61,7 +70,6 @@ def _run_script(
         fixture_log_directory.mkdir()
         _write_fixture_log(fixture_log_directory / "stream-observability.jsonl")
         _write_executable(binary_directory / "docker", _fake_docker())
-        _write_executable(binary_directory / "curl", _fake_curl())
         environment = {
             **os.environ,
             "PATH": f"{binary_directory}:{os.environ['PATH']}",
@@ -114,49 +122,69 @@ def _fake_docker() -> str:
                 printf '%s\n' "$BROWSER_TEST_APP_IMAGE"
             fi
         fi
-        """
-    )
-
-
-def _fake_curl() -> str:
-    return textwrap.dedent(
-        """\
-        #!/bin/bash
-        set -euo pipefail
-        output_file=""
-        previous=""
-        for argument in "$@"; do
-            if [[ "$previous" == "--output" ]]; then
-                output_file="$argument"
-                break
+        if [[ "$1" == "run" ]]; then
+            method=""
+            url=""
+            previous=""
+            for argument in "$@"; do
+                if [[ "$previous" == "POST" || "$previous" == "GET" ]]; then
+                    method="$previous"
+                    url="$argument"
+                    break
+                fi
+                previous="$argument"
+            done
+            if [[ "$method" == "POST" ]]; then
+                printf '%s\n' "$FAKE_BROWSER_RESPONSE"
+            elif [[ "$url" == *"/screenshot/"* ]]; then
+                printf '\\x89PNG\\r\\n\\x1a\\n'
+            elif [[ "$method" == "GET" ]]; then
+                printf '%s\n' '{"status":"ok"}'
             fi
-            previous="$argument"
-        done
-        if [[ -n "$output_file" ]]; then
-            printf '\\x89PNG\\r\\n\\x1a\\n' >"$output_file"
-            exit 0
-        fi
-        if [[ " $* " == *" --request POST "* ]]; then
-            printf '%s\n' "$FAKE_BROWSER_RESPONSE"
-        else
-            printf '%s\n' '{"status":"ok"}'
         fi
         """
     )
 
 
 def _successful_response() -> str:
-    return (
-        '{"success":true,"data":{"outputs":{"ui":{"result":'
-        '{"appShell":true,"connected":true,"providerFeeds":3,'
-        '"providerAssignments":3,'
-        '"modelFilter":true,"modelPopoverBounded":true,'
-        '"modelListScrollable":true,"modelOptionReadable":true,'
-        '"modelSelectedInView":true,"modelResultCount":"120 of 120",'
-        '"generationCards":0,"replyItems":6,"collapsedTraceRows":true,'
-        '"replyText":"Start at the gateway, then follow validation and routing.",'
-        '"streamOrder":["stream-status","stream-event","stream-event",'
-        '"stream-status","stream-event","stream-response"],"cleanText":true}}}}}'
+    result = {
+        "appShell": True,
+        "connected": True,
+        "providerFeeds": 3,
+        "providerAssignments": 3,
+        "modelFilter": True,
+        "settingsModalBounded": True,
+        "settingsTabs": 3,
+        "modelListScrollable": True,
+        "modelOptionReadable": True,
+        "modelSelectedInView": True,
+        "modelResultCount": "120 of 120",
+        "persistedDraftModel": "provider-example-model-001",
+        "selectedDraftModel": "provider-example-model-001",
+        "generationCards": 0,
+        "replyItems": 6,
+        "collapsedTraceRows": True,
+        "replyText": "Start at the gateway, then follow validation and routing.",
+        "streamOrder": [
+            "stream-status",
+            "stream-event",
+            "stream-event",
+            "stream-status",
+            "stream-event",
+            "stream-response",
+        ],
+        "cleanText": True,
+    }
+    return json.dumps(
+        {
+            "success": True,
+            "data": {
+                "outputs": {
+                    "ui": {"result": result},
+                    "reset": {"result": {"settingsCleared": True}},
+                }
+            },
+        }
     )
 
 
