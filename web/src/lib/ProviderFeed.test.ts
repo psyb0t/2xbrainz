@@ -112,6 +112,61 @@ describe('provider feed', () => {
     expect(screen.getByText('First reply continues.')).toBeTruthy();
   });
 
+  it('completes a streamed response in place after an intervening reasoning event', () => {
+    const view = renderFeed([
+      {
+        phase: 'output_streaming',
+        flow_id: 'interleaved-flow',
+        output_kind: 'draft',
+        model: 'model-a',
+        output: 'Partial reply'
+      },
+      {
+        phase: 'reasoning_streaming',
+        flow_id: 'interleaved-flow',
+        output_kind: 'draft',
+        model: 'model-a',
+        reasoning: 'Verifying the final wording.'
+      },
+      {
+        phase: 'request_completed',
+        flow_id: 'interleaved-flow',
+        output_kind: 'draft',
+        model: 'model-a',
+        output: 'Complete reply.'
+      }
+    ]);
+
+    expect(view.container.querySelectorAll('.stream-response')).toHaveLength(1);
+    expect(view.container.querySelector('.stream-response.streaming')).toBeNull();
+    expect(screen.queryByText('Partial reply')).toBeNull();
+    expect(screen.getByText('Complete reply.')).toBeTruthy();
+    expect(screen.getByText('Verifying the final wording.')).toBeTruthy();
+  });
+
+  it('does not leave an empty streamed response generating after cancellation', () => {
+    const view = renderFeed([
+      {
+        phase: 'output_streaming',
+        flow_id: 'cancelled-flow',
+        output_kind: 'draft',
+        model: 'model-a',
+        output: ''
+      },
+      {
+        phase: 'request_cancelled',
+        flow_id: 'cancelled-flow',
+        output_kind: 'draft',
+        model: 'model-a'
+      }
+    ]);
+
+    expect(view.container.querySelector('.stream-response')).toBeNull();
+    expect(view.container.querySelector('.streaming')).toBeNull();
+    expect(screen.queryByText('Generating…')).toBeNull();
+    expect(screen.getByText('request cancelled')).toBeTruthy();
+  });
+
   it('stops following while scrolled up and resumes at the bottom', async () => {
     const view = renderFeed(FIRST_FLOW);
     const feed = requireFeed(view.container);

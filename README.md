@@ -19,7 +19,7 @@ Nothing is sent for you. Nothing is spoken for you. It drafts, you decide.
 - [Try it with zero setup](#try-it-with-zero-setup)
 - [Quick start](#quick-start)
 - [Driving it while it runs](#driving-it-while-it-runs)
-- [Deployment shapes](#deployment-shapes)
+- [AIGate integration](#aigate-integration)
 - [Architecture](#architecture)
 - [Data handling](#data-handling)
 - [Development](#development)
@@ -166,7 +166,7 @@ both capture gates but keeps the browser, transcript, story, and guidance alive.
 
 The top bar opens a tabbed **Settings** dialog:
 
-- **Context** owns the optional call brief and the Reply research toggle;
+- **Context** owns the optional call brief; Reply's Claudebox tools are always available;
 - **Models** owns three searchable AIGate model pickers—one each for Reply,
   Private coach, and
   Story so far—with result counts, readable scrolling inventories, visible
@@ -240,23 +240,37 @@ allowlisted MCP endpoints. The application derives
 `ws(s)://<aigate-host>[/prefix]/talkies/v1/audio/transcriptions/stream` from
 `TWOXBRAINZ_AIGATE_URL`, which must end in `/v1`.
 
-For optional current-context help, enable research in Settings and enable
-AIGate with `SEARXNG=1` (`PISTON=1` additionally enables arithmetic).
-The reply model sees only `research_web` and bounded arithmetic-only
-`execute_code`; it never receives AIGate's full tool catalog. `research_web`
-accepts either a focused query or an exact discovered URL. It searches through
-AIGate, selects a clearly matching public result, downloads that page locally,
-and returns bounded, link-preserving Markdown extracted with Trafilatura. HTML
-tables, lists, and prose retain their links; raw Markdown pages are supported;
-and relative links are resolved so the model can follow relevant `docs/*.md`
-pages in the next tool round. It does not depend on AIGate's browser MCP.
-Redirects, credentials, unsupported content, oversized pages, and non-public DNS
-destinations are rejected. The model may issue up to three distinct research or
-calculation calls concurrently in each of two bounded rounds. Tool and provider
-failures appear with a bounded reason in the relevant Reply activity stream.
-Obvious structured private identifiers are rejected before a query leaves the
-app; do not enable research for conversations whose unfamiliar terms are
-themselves private.
+Reply runs through AIGate's OpenAI-compatible streaming endpoint backed by
+Claudebox. Every Start creates a fresh UUID workspace and Claude Code session;
+later Reply requests from that listening session continue in the same workspace. The
+agent receives the complete bounded current transcript and running summary on
+every request. It can use its native research tools, shallow-clone named Git
+repositories into that isolated workspace, download relevant documentation,
+and follow linked pages or repository docs before composing a grounded spoken
+reply. Independent research may run concurrently. The default
+`claudebox-sonnet` Reply assignment always starts at high reasoning; the UI
+offers only low, medium, or high for Claudebox agent models.
+
+Reply uses `/claudebox/openai/v1/chat/completions` directly, without a LiteLLM
+hop. It sends `X-Aicodebox-Workspace`, appends its operating instructions with
+`X-Aicodebox-Append-System-Prompt`, and sends `X-Aicodebox-Continue: true` only
+after a successful first turn. Appending is important: an OpenAI `system`
+message would replace Claude Code's native agent instructions. Requests omit
+OpenAI `tools`, `tool_choice`, and `response_format`, and explicitly send
+`X-Aicodebox-No-Tools: 0`, so Claude Code retains its internal tools.
+
+Ordinary replies use incremental OpenAI SSE content deltas. A turn containing
+an explicit or spoken GitHub or GitLab repository reference is buffered because the deployed
+Claudebox tool stream can close before its final content chunk; the completed
+answer still enters the same Reply feed. A bounded continuation recovers an
+ordinary stream that closes without `[DONE]` after native tool work.
+Claudebox performs repository, shell, and web work internally; its OpenAI stream
+does not expose private reasoning or native tool-event details, so 2xbrainz does
+not fabricate them. If new speech supersedes accepted native research, the stale
+generation is hidden immediately while its Claudebox operation drains; the
+replacement then continues in the same workspace with the complete updated
+transcript. Coach and Story remain independent streaming AIGate chat-completion
+calls.
 
 The Context tab accepts optional trusted context such as the purpose of the call
 and the local user's role. The bounded brief frames replies, coaching, and the
@@ -278,12 +292,15 @@ PipeWire system ─────┘     (same ASR model)    └─ local web cons
 - **The coordinator** owns reconciliation, turn state, cancellation, and throwing
   away stale results. It writes one timeline entry per finalized turn and starts
   reply, private coaching, and rolling-story work concurrently after a remote
-  final. Every provider call has a hard 60-second deadline, so a wedged model
-  cannot hold the session hostage. Cancelling an unfinished provider request
+  final. Coach and Story have a hard 60-second deadline. Repository research
+  has a 120-second outbound allowance and a 240-second replacement budget so an
+  accepted superseded agent run can release its workspace before the updated
+  request continues. Cancelling an unfinished provider request
   never removes finalized transcript state; the next silence-triggered request
   is rebuilt from the complete current transcript. Only unfinished model output,
   reasoning, and tool work are discarded.
-- **The text provider** only ever sees a minimized speaker-tagged transcript.
+- **The text providers** receive a bounded speaker-tagged transcript. Reply also
+  receives the accepted running summary in its persistent Claudebox session.
 - **The web console** is the sole live operator surface. Its loopback-only
   WebSocket carries controls and SSE-style incremental activity in one
   bidirectional channel. The parallel reconstruction log carries
@@ -322,6 +339,7 @@ make help          # every target
 make lint          # ruff + pyright + shellcheck
 make test          # unit + integration, offline and deterministic
 make test-browser  # compiled UI in a real browser; self-cleaning containers
+make test-real-audio-research # generated audio + interrupted Claudebox research
 make test-real-evaluation # generated audio + real ASR/LLM quality scorecard
 make build         # production image
 make replay        # the bundled fixture
@@ -332,21 +350,30 @@ and audio boundaries are mocked or local protocol fixtures. Every `test*`
 target removes the exact local Docker image tags it builds, on success or
 failure. `make test-browser` starts uniquely named `--rm` fixture and browser
 containers, verifies the compiled console through the digest-pinned stealth
-browser, and stops both from an exit trap even when an assertion or interrupt
-fails. The targets that do hit real services (`make live-fixture`,
-`make test-real`, `make test-real-evaluation`, `make live-product-fixture`,
-`make benchmark`) are deliberately separate, need a real `.env`, and are not
-part of `make test` or CI.
+browser, drives successful, cancelled, failed, and interleaved provider streams,
+fails on browser console errors, captures UI screenshots, and stops both from an
+exit trap even when an assertion or interrupt fails. The targets that do hit
+real services (`make test-real`, `make test-real-audio-research`,
+`make test-real-evaluation`, `make benchmark`) are
+deliberately separate, need a real `.env`, and are not part of `make test` or
+CI.
 `make test-real` sends Reply, Coach, and Story prompt checks concurrently through
 three distinct defaults (`claudebox-sonnet`, `pibox-zai-glm-5-turbo`, and
 `groq-gpt-oss-120b`). It also verifies that AIGate advertises at least two
 requests for the selected Talkies model and completes two native ASR streams
 concurrently against the bundled CC0 WAV. Use `make test-real-talkies` to run
-only that provider check. The Reply check requires the model itself to recognize
-that public documentation is needed, call `research_web`, consume the fetched
-page, and finish a one-line spoken response. See
+only that provider check. The Reply check requires Claudebox to leave an actual
+`psyb0t/aigate` checkout in its session workspace, verifies the remote URL in
+`.git/config`, and requires repository-specific information in the response. See
 [docs/configuration.md](docs/configuration.md#real-provider-test-tiers) for the
 full contract.
+
+`make test-real-audio-research` generates two related Talkies TTS utterances,
+streams them through CUDA Nemotron and the production VAD/coordinator, releases
+the second while the first Claudebox repository investigation is active, and
+requires the replacement to retain both recognized turns in the same workspace.
+It passes only after that workspace contains a verified `psyb0t/aigate`
+checkout and the final spoken reply describes multiple repository capabilities.
 
 `make test-real-evaluation` generates an eight-turn, two-voice conversation with
 slang, corrections, false starts, two timed interruptions, and an unfamiliar

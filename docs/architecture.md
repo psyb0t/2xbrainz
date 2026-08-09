@@ -70,24 +70,18 @@ intentionally configures the same model for microphone and system audio. A
 mixed-model installation needs separate Talkies processes and a measured
 resource budget.
 
-`make live-fixture` exercises the same production `live` process without the
-host PipeWire boundary. It asks the configured direct Talkies API to synthesize
-two known, ephemeral WAV fixtures, then supplies their normalized PCM through
-two harness-owned `pw-record` device processes. Its default overlap scenario
-starts short remote speech after local speech is active and proves that a
-remote final remains in the timeline but cannot start a reply draft. It checks
-real Talkies TTS, native ASR, capture timing, turn records, commentary, and
-summary while using a deterministic local AIGate protocol fixture.
-
 `make test-real` separately exercises the configured real AIGate model using
 fixed synthetic text only. It drives a four-turn interview through the same
 coordinator used by `live`: commitment and risk, an interviewer question, a
 specific mitigation, and a final verification question must remain coherent in
-the running summary and final reply request. `make live-interview-fixture`
-performs that schedule with real Talkies TTS/ASR and a deterministic AIGate
-boundary. `make live-product-fixture` substitutes real AIGate and holds each
-opposing WAV release until the preceding required generation is complete. Each
-explicit real fixture leaves an ordered, redacted JSONL reconstruction trace under
+the running summary and final reply request. `make test-real-audio-research`
+adds the complete audio path: it synthesizes two related utterances, streams
+them through real Talkies ASR and the production VAD/coordinator, and releases
+the second only after the first Claudebox repository investigation starts. The
+first generation is superseded; its already accepted native operation drains,
+then the replacement continues in the same workspace with both recognized
+turns and must leave a verified `psyb0t/aigate` checkout. Each explicit real
+fixture leaves an ordered, redacted JSONL reconstruction trace under
 `.testing/fixture-traces/`, including provider context and every emitted CLI
 record plus structured runtime diagnostics and terminal assertion outcome for
 its synthetic session. This makes prompt/provider failures distinct from
@@ -130,9 +124,11 @@ independent multi-turn finals without recreating either capture process.
 - A result is visible only when its generation ID and transcript revision still
   match the coordinator's active state; a changed revision discards stale
   background output.
-- Every provider job carries the fixed 60-second application deadline. An
-  expired draft, commentary, or summary becomes a typed failed result and
-  cannot hold capture or later turns hostage.
+- Coach and Story jobs carry a fixed 60-second application deadline. Claudebox
+  repository calls allow 120 seconds per outbound operation and 240 seconds for
+  a replacement to wait for an accepted superseded run before continuing in
+  the same workspace. Expiry becomes a typed failed result and cannot stop
+  capture or later turns.
 - An expected PipeWire or Talkies stream failure marks only its audio channel
   `reconnecting`, clears that channel's meter, and retries it. The peer channel,
   web server, transcript, and provider state remain alive. Switching a route
@@ -194,18 +190,29 @@ independent multi-turn finals without recreating either capture process.
   reply priority, overlap suppression, cancellation, provider deadlines,
   stale-result rejection, and bounded completed result queues. Reply guidance
   is display-only: it never becomes an input to a later provider request.
-- [`aigate.py`](../src/two_x_brainz/aigate.py) is a narrow implementation of
-  the OpenAI-compatible chat-completions contract used by AIGate. It applies
+- [`claudebox.py`](../src/two_x_brainz/claudebox.py) runs Reply through
+  AIGate's direct OpenAI-compatible Claudebox stream. Each Start creates a UUID
+  workspace and fresh Claude Code session; later drafts continue in that workspace. Every
+  call resends the complete bounded transcript plus accepted running summary.
+  The agent may use its native tools to shallow-clone named repositories, fetch
+  documentation, and follow relevant links. Requests omit OpenAI client tools,
+  explicitly set `X-Aicodebox-No-Tools: 0`, and append instructions with
+  `X-Aicodebox-Append-System-Prompt` rather than replacing Claude Code's native
+  agent prompt with an OpenAI system message. Plain OpenAI SSE content deltas
+  update the Reply feed immediately. Explicit or spoken repository research is
+  buffered around the deployed Claudebox tool-stream limitation, and an
+  incomplete ordinary stream gets one bounded same-workspace recovery. Native
+  tool and private reasoning events remain internal to Claudebox. Superseded
+  accepted native work drains without becoming visible; its replacement waits
+  and continues in the same workspace. Starting a new listening session detaches
+  any old workspace task and never waits for it.
+- [`aigate.py`](../src/two_x_brainz/aigate.py) is the OpenAI-compatible
+  chat-completions provider used by Coach and Story. It applies
   application-owned token and text-length limits before provider output enters
   application state, then parses CommonMark into a text-only subset. Production
   requests consume bounded SSE and publish correlated activity for Reply,
   Private coach, and Story-so-far flows: streamed output, explicitly exposed
-  provider reasoning, and bounded validated allowlisted-tool inputs/results.
-  Reply research is restricted to application-owned `research_web` and bounded
-  arithmetic. Research accepts a focused query or an exact discovered public
-  URL, preserves Markdown tables and links, and exposes resolved link targets so
-  a relevant documentation page can be read in the second bounded tool round.
-  Same-round tool calls run concurrently without exposing AIGate's full catalog.
+  provider reasoning and bounded activity records.
   Safe inline presentation becomes visible text; structural Markdown and HTML
   are rejected without rendering provider-controlled markup. Providers that do
   not send a visible reasoning field are reported as such; private hidden

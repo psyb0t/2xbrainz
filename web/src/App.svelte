@@ -176,8 +176,12 @@
 
   function filteredModels(): string[] {
     const query = modelFilter.trim().toLowerCase();
-    if (!query) return snapshot.provider.models;
-    return snapshot.provider.models.filter((model) => model.toLowerCase().includes(query));
+    const flowModels =
+      modelPickerFlow === 'draft'
+        ? snapshot.provider.models.filter((model) => model.startsWith('claudebox-'))
+        : snapshot.provider.models;
+    if (!query) return flowModels;
+    return flowModels.filter((model) => model.toLowerCase().includes(query));
   }
 
   function selectedModel(flow: ProviderOutputKind): string {
@@ -681,14 +685,6 @@
             ></textarea>
             <small>{runtimeSettings.sessionBrief.length}/{MAX_SESSION_BRIEF_CHARACTERS}</small>
           </label>
-          <label class="toggle-field">
-            <input type="checkbox" bind:checked={runtimeSettings.webResearchEnabled} />
-            <span
-              ><strong>Web research for Reply</strong><small
-                >Search and follow relevant public documentation when useful.</small
-              ></span
-            >
-          </label>
         </section>
       {:else if runtimeSettings !== null && settingsTab === 'models'}
         <section class="settings-section model-settings-section">
@@ -719,8 +715,10 @@
                       value={selectedReasoning(flow.kind)}
                       onchange={(event) => chooseReasoning(flow.kind, event)}
                     >
-                      <option value="none">Default</option>
-                      <option value="minimal">Minimal</option>
+                      {#if flow.kind !== 'draft'}
+                        <option value="none">Default</option>
+                        <option value="minimal">Minimal</option>
+                      {/if}
                       <option value="low">Low</option>
                       <option value="medium">Medium</option>
                       <option value="high">High</option>

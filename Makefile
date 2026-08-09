@@ -28,13 +28,9 @@ BENCHMARK_REFERENCE_FILE ?=
 TALKIES_MODEL ?=
 AIGATE_URL ?=
 FIXTURE_TTS_MODEL ?= kokoro-82m-nvidia
-FIXTURE_TTS_VOICE ?= af_heart
-FIXTURE_AIGATE_MODEL ?= groq-gpt-oss-120b
 FIXTURE_AIGATE_DRAFT_MODEL ?= claudebox-sonnet
 FIXTURE_AIGATE_COMMENTARY_MODEL ?= pibox-zai-glm-5-turbo
 FIXTURE_AIGATE_SUMMARY_MODEL ?= groq-gpt-oss-120b
-FIXTURE_REAL_AIGATE ?= false
-FIXTURE_AUDIO_SCENARIO ?= overlap
 EVALUATION_SCENARIO ?= tests/fixtures/slang-interrupted-project-chat.json
 EVALUATION_RUN ?=
 EVALUATION_USER_VOICE ?= af_heart
@@ -87,7 +83,7 @@ define RUN_WITH_IMAGE_CLEANUP
 endef
 
 .DEFAULT_GOAL := help
-.PHONY: help version dev-image shell dep pkg-lock pkg-add pkg-remove pkg-update pkg-upgrade web-pkg-lock web-check web-format web-build lint lint-fix format test test-unit test-integration test-coverage test-browser test-real test-real-talkies test-real-evaluation evaluation-report build run validate-web-network logs doctor replay devices live-fixture live-interview-fixture live-product-fixture benchmark benchmark-with-draft benchmark-candidates benchmark-candidates-with-draft clean
+.PHONY: help version dev-image shell dep pkg-lock pkg-add pkg-remove pkg-update pkg-upgrade web-pkg-lock web-check web-format web-build lint lint-fix format test test-unit test-integration test-coverage test-browser test-real test-real-talkies test-real-audio-research test-real-evaluation evaluation-report build run validate-web-network logs doctor replay devices benchmark benchmark-with-draft benchmark-candidates benchmark-candidates-with-draft clean
 
 help: ## Show supported development commands.
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -166,11 +162,14 @@ test-browser: ## Run a real-browser console smoke and remove its containers and 
 	BROWSER_TEST_IMAGE="$(BROWSER_TEST_IMAGE)" \
 	./scripts/browser_smoke.sh
 
-test-real: ## Check real AIGate prompts and two-stream Talkies concurrency.
+test-real: test-real-audio-research ## Check prompts, concurrency, and interrupted research.
 	$(call RUN_WITH_IMAGE_CLEANUP,(test -f "$(ENV_FILE)" || { echo "$(ENV_FILE) is required and must be gitignored" >&2; exit 1; }) && (test -f "$(BENCHMARK_AUDIO)" || { echo "BENCHMARK_AUDIO must name a WAV file" >&2; exit 1; }) && mkdir -p "$(FIXTURE_TRACE_DIRECTORY)" && $(BUILD_REAL_TEST_IMAGE) && docker run --rm --init $(RUNTIME_LIMITS) --read-only --tmpfs /tmp:rw$(comma)noexec$(comma)nosuid$(comma)size=512m --user "$$(id -u):$$(id -g)" --cap-drop ALL --security-opt no-new-privileges:true --network "$(LIVE_NETWORK)" $(FIXTURE_DOCKER_HOST_ARGUMENTS) --env-file "$(ENV_FILE)" $(AIGATE_URL_ARGUMENT) -e TWOXBRAINZ_FIXTURE_DRAFT_MODEL="$(FIXTURE_AIGATE_DRAFT_MODEL)" -e TWOXBRAINZ_FIXTURE_COMMENTARY_MODEL="$(FIXTURE_AIGATE_COMMENTARY_MODEL)" -e TWOXBRAINZ_FIXTURE_SUMMARY_MODEL="$(FIXTURE_AIGATE_SUMMARY_MODEL)" -e TWOXBRAINZ_FIXTURE_TRACE_DIR=/fixture-traces -v "$(FIXTURE_TRACE_DIRECTORY):/fixture-traces:rw" -v "$(PROJECT_ROOT)/tests/integration/real_aigate_prompts.py:/fixture/real_aigate_prompts.py:ro" --entrypoint python $(REAL_TEST_IMAGE) /fixture/real_aigate_prompts.py && docker run --rm --init $(RUNTIME_LIMITS) --read-only --tmpfs /tmp:rw$(comma)noexec$(comma)nosuid$(comma)size=512m --user "$$(id -u):$$(id -g)" --cap-drop ALL --security-opt no-new-privileges:true --network "$(LIVE_NETWORK)" $(FIXTURE_DOCKER_HOST_ARGUMENTS) --env-file "$(ENV_FILE)" $(AIGATE_URL_ARGUMENT) $(FIXTURE_TALKIES_MODEL_ARGUMENT) -e TWOXBRAINZ_FIXTURE_TRACE_DIR=/fixture-traces -e TWOXBRAINZ_CONCURRENCY_AUDIO=/fixture/audio.wav -v "$(FIXTURE_TRACE_DIRECTORY):/fixture-traces:rw" -v "$(abspath $(BENCHMARK_AUDIO)):/fixture/audio.wav:ro" -v "$(PROJECT_ROOT)/tests/integration/real_talkies_concurrency.py:/fixture/real_talkies_concurrency.py:ro" --entrypoint python $(REAL_TEST_IMAGE) /fixture/real_talkies_concurrency.py,$(REAL_TEST_IMAGE))
 
 test-real-talkies: ## Prove two concurrent Talkies streams through real AIGate.
 	$(call RUN_WITH_IMAGE_CLEANUP,(test -f "$(ENV_FILE)" || { echo "$(ENV_FILE) is required and must be gitignored" >&2; exit 1; }) && (test -f "$(BENCHMARK_AUDIO)" || { echo "BENCHMARK_AUDIO must name a WAV file" >&2; exit 1; }) && mkdir -p "$(FIXTURE_TRACE_DIRECTORY)" && $(BUILD_REAL_TEST_IMAGE) && docker run --rm --init $(RUNTIME_LIMITS) --read-only --tmpfs /tmp:rw$(comma)noexec$(comma)nosuid$(comma)size=512m --user "$$(id -u):$$(id -g)" --cap-drop ALL --security-opt no-new-privileges:true --network "$(LIVE_NETWORK)" $(FIXTURE_DOCKER_HOST_ARGUMENTS) --env-file "$(ENV_FILE)" $(AIGATE_URL_ARGUMENT) $(FIXTURE_TALKIES_MODEL_ARGUMENT) -e TWOXBRAINZ_FIXTURE_TRACE_DIR=/fixture-traces -e TWOXBRAINZ_CONCURRENCY_AUDIO=/fixture/audio.wav -v "$(FIXTURE_TRACE_DIRECTORY):/fixture-traces:rw" -v "$(abspath $(BENCHMARK_AUDIO)):/fixture/audio.wav:ro" -v "$(PROJECT_ROOT)/tests/integration/real_talkies_concurrency.py:/fixture/real_talkies_concurrency.py:ro" --entrypoint python $(REAL_TEST_IMAGE) /fixture/real_talkies_concurrency.py,$(REAL_TEST_IMAGE))
+
+test-real-audio-research: ## Prove audio interruption and same-workspace Claudebox research.
+	$(call RUN_WITH_IMAGE_CLEANUP,(test -f "$(ENV_FILE)" || { echo "$(ENV_FILE) is required and must be gitignored" >&2; exit 1; }) && mkdir -p "$(FIXTURE_TRACE_DIRECTORY)" && $(BUILD_REAL_TEST_IMAGE) && docker run --rm --init $(RUNTIME_LIMITS) --read-only --tmpfs /tmp:rw$(comma)noexec$(comma)nosuid$(comma)size=512m --tmpfs /fixture-work:rw$(comma)exec$(comma)nosuid$(comma)size=512m --user "$$(id -u):$$(id -g)" --cap-drop ALL --security-opt no-new-privileges:true --network "$(LIVE_NETWORK)" $(FIXTURE_DOCKER_HOST_ARGUMENTS) --env-file "$(ENV_FILE)" $(AIGATE_URL_ARGUMENT) $(FIXTURE_TALKIES_MODEL_ARGUMENT) -e TWOXBRAINZ_FIXTURE_DRAFT_MODEL="$(FIXTURE_AIGATE_DRAFT_MODEL)" -e TWOXBRAINZ_FIXTURE_TTS_MODEL="$(FIXTURE_TTS_MODEL)" -e TWOXBRAINZ_FIXTURE_WORK_DIR=/fixture-work -e TWOXBRAINZ_FIXTURE_TRACE_DIR=/fixture-traces -v "$(FIXTURE_TRACE_DIRECTORY):/fixture-traces:rw" -v "$(PROJECT_ROOT)/tests/integration/live_talkies_tts_fixture.py:/fixture/live_talkies_tts_fixture.py:ro" -v "$(PROJECT_ROOT)/tests/integration/real_aigate_prompts.py:/fixture/real_aigate_prompts.py:ro" -v "$(PROJECT_ROOT)/tests/integration/real_interrupted_audio_research.py:/fixture/real_interrupted_audio_research.py:ro" --entrypoint python $(REAL_TEST_IMAGE) /fixture/real_interrupted_audio_research.py,$(REAL_TEST_IMAGE))
 
 test-real-evaluation: ## Score a generated slang conversation through real Talkies and AIGate.
 	$(call RUN_WITH_IMAGE_CLEANUP,(test -f "$(ENV_FILE)" || { echo "$(ENV_FILE) is required and must be gitignored" >&2; exit 1; }) && (test -f "$(EVALUATION_SCENARIO)" || { echo "EVALUATION_SCENARIO must name a JSON file" >&2; exit 1; }) && mkdir -p "$(FIXTURE_TRACE_DIRECTORY)" && $(BUILD_REAL_TEST_IMAGE) && docker run --rm --init $(RUNTIME_LIMITS) --read-only --tmpfs /tmp:rw$(comma)noexec$(comma)nosuid$(comma)size=512m --tmpfs /fixture-work:rw$(comma)exec$(comma)nosuid$(comma)size=512m --user "$$(id -u):$$(id -g)" --cap-drop ALL --security-opt no-new-privileges:true --network "$(LIVE_NETWORK)" $(FIXTURE_DOCKER_HOST_ARGUMENTS) --env-file "$(ENV_FILE)" $(AIGATE_URL_ARGUMENT) $(FIXTURE_TALKIES_MODEL_ARGUMENT) -e TWOXBRAINZ_FIXTURE_DRAFT_MODEL="$(FIXTURE_AIGATE_DRAFT_MODEL)" -e TWOXBRAINZ_FIXTURE_COMMENTARY_MODEL="$(FIXTURE_AIGATE_COMMENTARY_MODEL)" -e TWOXBRAINZ_FIXTURE_SUMMARY_MODEL="$(FIXTURE_AIGATE_SUMMARY_MODEL)" -e TWOXBRAINZ_EVALUATION_SCENARIO=/fixture/scenario.json -e TWOXBRAINZ_EVALUATION_USER_VOICE="$(EVALUATION_USER_VOICE)" -e TWOXBRAINZ_EVALUATION_REMOTE_VOICE="$(EVALUATION_REMOTE_VOICE)" -e TWOXBRAINZ_EVALUATION_REPEATS="$(EVALUATION_REPEATS)" -e TWOXBRAINZ_FIXTURE_TTS_MODEL="$(FIXTURE_TTS_MODEL)" -e TWOXBRAINZ_FIXTURE_WORK_DIR=/fixture-work -e TWOXBRAINZ_FIXTURE_TRACE_DIR=/fixture-traces -v "$(FIXTURE_TRACE_DIRECTORY):/fixture-traces:rw" -v "$(abspath $(EVALUATION_SCENARIO)):/fixture/scenario.json:ro" -v "$(PROJECT_ROOT)/tests/integration/live_talkies_tts_fixture.py:/fixture/live_talkies_tts_fixture.py:ro" -v "$(PROJECT_ROOT)/tests/integration/real_conversation_evaluation.py:/fixture/real_conversation_evaluation.py:ro" --entrypoint python $(REAL_TEST_IMAGE) /fixture/real_conversation_evaluation.py,$(REAL_TEST_IMAGE))
@@ -204,18 +203,6 @@ replay: build ## Replay the bundled conversation fixture in the production image
 devices: build ## List host PipeWire nodes from the production container.
 	@test -n "$${XDG_RUNTIME_DIR:-}" || (echo "XDG_RUNTIME_DIR is required" >&2; exit 1)
 	docker run --rm --init $(RUNTIME_LIMITS) --read-only --tmpfs /tmp:rw,noexec,nosuid,size=512m --user "$$(id -u):$$(id -g)" --cap-drop ALL --security-opt no-new-privileges:true -e XDG_RUNTIME_DIR=/pipewire-runtime -v "$${XDG_RUNTIME_DIR}:/pipewire-runtime:ro" $(APP_IMAGE) devices
-
-live-fixture: build ## Exercise overlapping Talkies TTS fixture devices; AIGate stays mocked.
-	@test -f "$(ENV_FILE)" || (echo "$(ENV_FILE) is required and must be gitignored" >&2; exit 1)
-	@mkdir -p "$(FIXTURE_TRACE_DIRECTORY)"
-	docker run --rm --init $(RUNTIME_LIMITS) --read-only --tmpfs /tmp:rw,noexec,nosuid,size=512m --tmpfs /fixture-work:rw,exec,nosuid,size=512m --user "$$(id -u):$$(id -g)" --cap-drop ALL --security-opt no-new-privileges:true --network "$(LIVE_NETWORK)" $(FIXTURE_DOCKER_HOST_ARGUMENTS) --env-file "$(ENV_FILE)" $(AIGATE_URL_ARGUMENT) $(FIXTURE_TALKIES_MODEL_ARGUMENT) -e TWOXBRAINZ_FIXTURE_AIGATE_MODEL="$(FIXTURE_AIGATE_MODEL)" -e TWOXBRAINZ_FIXTURE_REAL_AIGATE="$(FIXTURE_REAL_AIGATE)" -e TWOXBRAINZ_FIXTURE_AUDIO_SCENARIO="$(FIXTURE_AUDIO_SCENARIO)" -e TWOXBRAINZ_FIXTURE_TTS_MODEL="$(FIXTURE_TTS_MODEL)" -e TWOXBRAINZ_FIXTURE_TTS_VOICE="$(FIXTURE_TTS_VOICE)" -e TWOXBRAINZ_FIXTURE_WORK_DIR=/fixture-work -e TWOXBRAINZ_FIXTURE_TRACE_DIR=/fixture-traces -v "$(FIXTURE_TRACE_DIRECTORY):/fixture-traces:rw" -v "$(PROJECT_ROOT)/tests/integration/live_talkies_tts_fixture.py:/fixture/live_talkies_tts_fixture.py:ro" --entrypoint python $(APP_IMAGE) /fixture/live_talkies_tts_fixture.py
-
-live-interview-fixture: FIXTURE_AUDIO_SCENARIO := interview
-live-interview-fixture: live-fixture ## Exercise four-turn Talkies audio with deterministic AIGate.
-
-live-product-fixture: FIXTURE_REAL_AIGATE := true
-live-product-fixture: FIXTURE_AUDIO_SCENARIO := interview
-live-product-fixture: live-fixture ## Exercise four-turn real Talkies capture and real AIGate story handling.
 
 benchmark: build ## Verify one Talkies model; set TALKIES_MODEL to override .env.
 	@test -f "$(BENCHMARK_AUDIO)" || (echo "BENCHMARK_AUDIO must name a WAV file" >&2; exit 1)

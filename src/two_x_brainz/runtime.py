@@ -23,8 +23,15 @@ from two_x_brainz.capture import (
     SilenceTurnSegmenter,
     audio_level_percent,
 )
+from two_x_brainz.claudebox import ClaudeboxReplyClient
 from two_x_brainz.config import Settings
-from two_x_brainz.constants import DEFAULT_WEB_CONSOLE_PORT, JSON_RECORD_SCHEMA_VERSION
+from two_x_brainz.constants import (
+    CLAUDEBOX_REASONING_EFFORTS,
+    CLAUDEBOX_REPLY_MODELS,
+    DEFAULT_CLAUDEBOX_REPLACEMENT_DEADLINE,
+    DEFAULT_WEB_CONSOLE_PORT,
+    JSON_RECORD_SCHEMA_VERSION,
+)
 from two_x_brainz.contracts import (
     ASRStreamStats,
     AudioFrame,
@@ -37,6 +44,7 @@ from two_x_brainz.contracts import (
 from two_x_brainz.coordinator import ConversationCoordinator
 from two_x_brainz.errors import (
     CaptureError,
+    ConfigurationError,
     ProtocolError,
     RemoteServiceError,
 )
@@ -124,13 +132,18 @@ async def run_live(
         )
         models = await inventory_client.list_models()
         selection = _initial_provider_selection(settings, models)
+        reply_provider = _claudebox_reply_client(settings, selection.draft)
         providers = {
-            flow: _aigate_client(
+            ProviderFlow.COMMENTARY: _aigate_client(
                 settings,
-                selection.assignment(flow),
-                web_research_enabled=(flow is ProviderFlow.DRAFT),
-            )
-            for flow in ProviderFlow
+                selection.commentary,
+                web_research_enabled=False,
+            ),
+            ProviderFlow.SUMMARY: _aigate_client(
+                settings,
+                selection.summary,
+                web_research_enabled=False,
+            ),
         }
         talkies_model = settings.talkies_model
         inventory_stream_config = TalkiesStreamConfig(
@@ -147,6 +160,33 @@ async def run_live(
         ) -> bool:
             nonlocal selection, talkies_model
             async with selection_lock:
+                if runtime_settings.providers.draft.model not in CLAUDEBOX_REPLY_MODELS:
+                    _write_provider_activity_event(
+                        {
+                            "phase": "settings_failed",
+                            "output_kind": ProviderFlow.DRAFT.value,
+                            "model": runtime_settings.providers.draft.model,
+                            "error_type": ConfigurationError.__name__,
+                            "error_message": ("Reply requires a Claudebox agent model"),
+                        }
+                    )
+                    return False
+                if (
+                    runtime_settings.providers.draft.reasoning_effort
+                    not in CLAUDEBOX_REASONING_EFFORTS
+                ):
+                    _write_provider_activity_event(
+                        {
+                            "phase": "settings_failed",
+                            "output_kind": ProviderFlow.DRAFT.value,
+                            "model": runtime_settings.providers.draft.model,
+                            "error_type": ConfigurationError.__name__,
+                            "error_message": (
+                                "Claudebox reasoning must be low, medium, or high"
+                            ),
+                        }
+                    )
+                    return False
                 if runtime_settings.talkies_model != talkies_model:
                     candidate = TalkiesClient(
                         TalkiesStreamConfig(
@@ -173,11 +213,13 @@ async def run_live(
                         return False
                 for flow in ProviderFlow:
                     assignment = runtime_settings.providers.assignment(flow)
-                    providers[flow].configure(
-                        assignment.model,
-                        assignment.reasoning_effort,
+                    provider = (
+                        reply_provider
+                        if flow is ProviderFlow.DRAFT
+                        else providers[flow]
                     )
-                    providers[flow].configure_context(
+                    provider.configure(assignment.model, assignment.reasoning_effort)
+                    provider.configure_context(
                         session_brief=runtime_settings.session_brief,
                         web_research_enabled=(
                             runtime_settings.web_research_enabled
@@ -210,9 +252,10 @@ async def run_live(
             callback=configure_runtime_settings,
         )
         coordinator = ConversationCoordinator(
-            draft_provider=providers[ProviderFlow.DRAFT],
+            draft_provider=reply_provider,
             commentary_provider=providers[ProviderFlow.COMMENTARY],
             summary_provider=providers[ProviderFlow.SUMMARY],
+            draft_generation_deadline=DEFAULT_CLAUDEBOX_REPLACEMENT_DEADLINE,
         )
         controller = SessionController(start_paused=True)
         session_id = str(uuid4())
@@ -304,6 +347,8 @@ def _initial_provider_selection(
         raise RemoteServiceError(
             "a configured AIGate flow model is not available from the current inventory"
         )
+    if reply_model not in CLAUDEBOX_REPLY_MODELS:
+        raise ConfigurationError("Reply requires a Claudebox agent model")
     return ProviderSelection(
         draft=ProviderAssignment(
             reply_model,
@@ -335,6 +380,20 @@ def _aigate_client(
         reasoning_effort=assignment.reasoning_effort,
         activity_sink=_write_provider_activity_event,
         streaming_enabled=True,
+    )
+
+
+def _claudebox_reply_client(
+    settings: Settings,
+    assignment: ProviderAssignment,
+) -> ClaudeboxReplyClient:
+    return ClaudeboxReplyClient(
+        base_url=settings.aigate_url,
+        model=assignment.model,
+        token=settings.aigate_token,
+        session_brief=settings.session_brief,
+        reasoning_effort=assignment.reasoning_effort,
+        activity_sink=_write_provider_activity_event,
     )
 
 
@@ -521,6 +580,8 @@ async def handle_control_line(
     """Apply one trusted-local console line through the existing strict parser."""
     command = parse_session_command(line)
     if command is not None:
+        if command is SessionCommand.RESUME and controller.state is SessionState.PAUSED:
+            await coordinator.start_session()
         changed = _apply_session_command(command, controller)
         if changed and command is not SessionCommand.RESUME:
             await coordinator.stop()

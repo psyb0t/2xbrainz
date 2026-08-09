@@ -479,6 +479,11 @@ class ConversationCoordinatorTests(unittest.TestCase):
                 ImmediateProvider(),
                 generation_deadline=timedelta(),
             )
+        with self.assertRaisesRegex(ValueError, "draft_generation_deadline"):
+            ConversationCoordinator(
+                ImmediateProvider(),
+                draft_generation_deadline=timedelta(),
+            )
 
     def test_draft_lifecycle_emits_running_then_completed(self) -> None:
         asyncio.run(self._assert_draft_lifecycle_completion())
@@ -684,9 +689,11 @@ class ConversationCoordinatorTests(unittest.TestCase):
 
     async def _assert_draft_deadline_publishes_failed_result(self) -> None:
         provider = DeadlineProvider()
+        draft_deadline = _TEST_PROVIDER_DEADLINE * 2
         coordinator = ConversationCoordinator(
             provider,
             generation_deadline=_TEST_PROVIDER_DEADLINE,
+            draft_generation_deadline=draft_deadline,
         )
         await coordinator.ingest(
             _event(SpeakerRole.REMOTE, TranscriptEventType.FINAL, 1)
@@ -699,7 +706,7 @@ class ConversationCoordinatorTests(unittest.TestCase):
         self.assertEqual(len(provider.requests), 1)
         self.assertEqual(
             provider.requests[0].deadline_seconds,
-            _TEST_PROVIDER_DEADLINE.total_seconds(),
+            draft_deadline.total_seconds(),
         )
 
     async def _assert_background_deadlines_publish_failed_results(self) -> None:

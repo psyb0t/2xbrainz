@@ -15,7 +15,7 @@ import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from email.message import Message
-from typing import IO, Protocol
+from typing import IO, Protocol, runtime_checkable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urldefrag, urljoin, urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
@@ -454,6 +454,15 @@ class DraftProvider(Protocol):
 
     async def draft(self, request: DraftRequest) -> DraftResult:
         """Return a draft tied to the supplied immutable context revision."""
+        ...
+
+
+@runtime_checkable
+class SessionDraftProvider(DraftProvider, Protocol):
+    """A draft provider with one externally controlled session lifecycle."""
+
+    async def start_session(self) -> str:
+        """Create and return the provider workspace session identity."""
         ...
 
 

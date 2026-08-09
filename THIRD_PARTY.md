@@ -9,7 +9,7 @@ source distributions and lockfiles remain the authoritative dependency lists.
 | License | Runtime components |
 | --- | --- |
 | MIT | annotated-doc, annotated-types, anyio, charset-normalizer, fastapi, markdown-it-py, mdurl, pydantic, pydantic-core, pysilero-vad, pytz, rich, six, Svelte, svelte-streamdown, typing-inspection, tzlocal, urllib3 |
-| BSD-3-Clause | Babel, click, dateparser, h11, idna, lxml, lxml-html-clean, starlette, uvicorn, websockets |
+| BSD-3-Clause | Babel, click, dateparser, h11, httpcore, httpx, idna, lxml, lxml-html-clean, starlette, uvicorn, websockets |
 | BSD-2-Clause | justext, Pygments |
 | Apache-2.0 | courlan, htmldate, trafilatura |
 | Apache-2.0 OR BSD-3-Clause | python-dateutil |

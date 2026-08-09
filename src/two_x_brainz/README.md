@@ -48,13 +48,22 @@ continuous ASR to Talkies.
 - `coordinator.py` — timeline entries, reply priority, overlap suppression,
   cancellation, and stale-result rejection for drafts, commentary, and
   summaries.
-- `aigate.py` — AIGate chat provider for drafts, commentary, and summaries. It
-  exposes only application-owned `research_web` and bounded arithmetic to reply
-  drafts when explicitly enabled. Research accepts a query or exact discovered
-  URL, returns link-preserving Markdown, and allows a relevant documentation link
-  to be followed in the second bounded round. Same-round calls execute
-  concurrently. Production calls consume bounded OpenAI-style SSE and publish
-  correlated output,
+- `claudebox.py` — direct AIGate OpenAI-streaming Reply provider. One Start creates a
+  UUID workspace and fresh Claude Code session; later successful drafts continue
+  there. Requests omit OpenAI `tools`, `tool_choice`, and `response_format`, and
+  send `X-Aicodebox-No-Tools: 0` so Claude Code retains its native tools. Agent
+  instructions use `X-Aicodebox-Append-System-Prompt`; sending them as an OpenAI
+  system message would replace Claude Code's native agent prompt. The
+  agent receives the complete bounded conversation and can clone named Git
+  repositories or fetch and follow documentation in the persistent workspace.
+  Ordinary OpenAI-compatible SSE exposes incremental reply text. Explicit or
+  spoken repository references use a buffered completion, and incomplete ordinary streams
+  receive one bounded continuation recovery. Neither path exposes
+  Claudebox's private reasoning or native tool events. Superseding accepted
+  native work hides its stale result immediately, lets the operation release its
+  workspace, and then continues the replacement with the complete transcript.
+- `aigate.py` — AIGate chat provider for commentary and summaries. Production
+  calls consume bounded OpenAI-style SSE and publish correlated output,
   provider-visible reasoning, and validated tool activity without claiming
   access to hidden chain-of-thought;
   `make test-real` probes its real-model prompt contracts and a four-turn
@@ -103,7 +112,9 @@ continuous ASR to Talkies.
 - Provider commentary and summaries may be multi-sentence but must still be
   plain prose. They use the same text-only parser boundary and reject Markdown
   structure and HTML.
-- Every provider request carries the fixed 60-second application deadline.
+- Coach and Story requests carry a fixed 60-second application deadline.
+  Claudebox repository operations have a 120-second outbound allowance and a
+  240-second replacement budget for draining accepted superseded workspace work.
   Deadline expiry yields an empty typed failure for the same generation and
   never prevents later ASR turns from scheduling new work.
 - Docker host mappings can cover only a host-resolved fully-qualified Talkies
@@ -222,13 +233,11 @@ browser smoke uses a real local fake AIGate HTTP service to stream SSE reasoning
 a fragmented search tool call, an MCP result, and follow-up output through the
 production client and compiled Svelte UI. It asserts chronological DOM text and
 the backend/frontend DEBUG trail before cleaning up its owned containers and
-test image. The opt-in
-`make live-fixture` route generates temporary Talkies WAVs and drives the
-production capture adapter through a controlled overlap; `make
-live-interview-fixture` adds four alternating fixture turns, and `make
-live-product-fixture` runs that interview with real AIGate commentary, draft,
-and summary generation. Both it and `make test-real` create local reconstruction
-traces for their fixed synthetic scenarios under `.testing/fixture-traces/`.
+test image. `make test-real-audio-research` generates two Talkies WAVs, streams
+them through real CUDA Nemotron and the production VAD/coordinator, interrupts
+active native repository work, and requires the replacement to continue in the
+same Claudebox workspace with both recognized turns. It and `make test-real`
+create local reconstruction traces under `.testing/fixture-traces/`.
 `make test-real-evaluation` extends that path to eight generated, slang-heavy
 turns. It drives paired real Talkies streams, interrupts provider work during
 output and tool phases, resumes from the complete recognized transcript, and

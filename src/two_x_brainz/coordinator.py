@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from uuid import uuid4
 
-from two_x_brainz.aigate import DraftProvider, InsightProvider
+from two_x_brainz.aigate import DraftProvider, InsightProvider, SessionDraftProvider
 from two_x_brainz.constants import (
     DEFAULT_PROVIDER_GENERATION_DEADLINE,
     MAX_DRAFT_RESULT_BACKLOG,
@@ -54,13 +54,22 @@ class ConversationCoordinator:
         commentary_provider: InsightProvider | None = None,
         summary_provider: InsightProvider | None = None,
         generation_deadline: timedelta = DEFAULT_PROVIDER_GENERATION_DEADLINE,
+        draft_generation_deadline: timedelta | None = None,
     ) -> None:
         if generation_deadline <= timedelta():
             raise ValueError("generation_deadline must be positive")
+        if (
+            draft_generation_deadline is not None
+            and draft_generation_deadline <= timedelta()
+        ):
+            raise ValueError("draft_generation_deadline must be positive")
         self._draft_provider = draft_provider
         self._commentary_provider = commentary_provider
         self._summary_provider = summary_provider or commentary_provider
         self._generation_deadline_seconds = generation_deadline.total_seconds()
+        self._draft_generation_deadline_seconds = (
+            draft_generation_deadline or generation_deadline
+        ).total_seconds()
         self._transcript = TranscriptStore()
         self._turns = TurnManager()
         self._ingest_lock = asyncio.Lock()
@@ -188,6 +197,13 @@ class ConversationCoordinator:
         await self._cancel_active(GenerationStatus.CANCELLED)
         await self._cancel_insights(GenerationStatus.CANCELLED)
 
+    async def start_session(self) -> str | None:
+        """Reset provider work before starting a new listening lifecycle."""
+        await self.stop()
+        if not isinstance(self._draft_provider, SessionDraftProvider):
+            return None
+        return await self._draft_provider.start_session()
+
     async def _start_draft(
         self,
         turn: TurnEvent,
@@ -207,7 +223,7 @@ class ConversationCoordinator:
             trigger_turn_id=trigger_turn_id,
             context_revision=transcript.revision,
             transcript=transcript,
-            deadline_seconds=self._generation_deadline_seconds,
+            deadline_seconds=self._draft_generation_deadline_seconds,
         )
         self._active_generation_id = request.generation_id
         self._active_draft_request = request

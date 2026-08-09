@@ -17,13 +17,13 @@ class MakefileIntegrationTests(unittest.TestCase):
         self.assertNotIn("--output", result.stdout)
 
     def test_default_host_network_does_not_require_host_python(self) -> None:
-        for target in ("run", "benchmark", "test-real", "live-fixture"):
+        for target in ("run", "benchmark", "test-real"):
             with self.subTest(target=target):
                 result = _dry_run(target)
                 self.assertNotIn("python3 -m two_x_brainz.docker_hosts", result.stdout)
 
     def test_named_network_uses_the_validated_host_mapping_helper(self) -> None:
-        for target in ("run", "benchmark", "test-real", "live-fixture"):
+        for target in ("run", "benchmark", "test-real"):
             with self.subTest(target=target):
                 result = _dry_run(target, "LIVE_NETWORK=app-network")
                 self.assertIn("python3 -m two_x_brainz.docker_hosts", result.stdout)
@@ -81,6 +81,7 @@ class MakefileIntegrationTests(unittest.TestCase):
         self.assertIn("for image in 2xbrainz-test-real:local", result.stdout)
         self.assertIn("real_aigate_prompts.py", result.stdout)
         self.assertIn("real_talkies_concurrency.py", result.stdout)
+        self.assertIn("real_interrupted_audio_research.py", result.stdout)
         self.assertIn("TWOXBRAINZ_CONCURRENCY_AUDIO=/fixture/audio.wav", result.stdout)
         self.assertIn("commons-audio-cc0.wav:/fixture/audio.wav:ro", result.stdout)
         self.assertNotIn("for image in 2xbrainz:local", result.stdout)
@@ -99,6 +100,29 @@ class MakefileIntegrationTests(unittest.TestCase):
             result.stdout,
         )
         self.assertIn("for image in 2xbrainz-test-real:local", result.stdout)
+
+    def test_real_audio_research_uses_full_fixture_and_cleans_image(self) -> None:
+        result = _dry_run(
+            "test-real-audio-research",
+            "TALKIES_MODEL=local-talkies-cuda-nemotron-3.5-asr-0.6b",
+            "FIXTURE_AIGATE_DRAFT_MODEL=claudebox-sonnet",
+        )
+
+        self.assertIn("real_interrupted_audio_research.py", result.stdout)
+        self.assertIn("live_talkies_tts_fixture.py", result.stdout)
+        self.assertIn("real_aigate_prompts.py", result.stdout)
+        self.assertIn(
+            'TWOXBRAINZ_FIXTURE_TALKIES_MODEL="local-talkies-cuda-nemotron-3.5-asr-0.6b"',
+            result.stdout,
+        )
+        self.assertIn(
+            'TWOXBRAINZ_FIXTURE_DRAFT_MODEL="claudebox-sonnet"',
+            result.stdout,
+        )
+        self.assertIn("--tmpfs /fixture-work:rw,exec,nosuid,size=512m", result.stdout)
+        self.assertIn("for image in 2xbrainz-test-real:local", result.stdout)
+        self.assertNotIn("docker image rm --force", result.stdout)
+        self.assertNotIn("docker image prune", result.stdout)
 
     def test_real_evaluation_mounts_scenario_and_cleans_its_image(self) -> None:
         result = _dry_run(

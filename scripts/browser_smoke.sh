@@ -41,6 +41,7 @@ log_file="${BROWSER_TEST_LOG_FILE:-/tmp/2xbrainz-browser-smoke-${run_id}.log}"
 fixture_log_directory="${BROWSER_TEST_FIXTURE_LOG_DIRECTORY:-$project_root/.testing/browser-smoke/$run_id}"
 fixture_log_file="$fixture_log_directory/stream-observability.jsonl"
 picker_screenshot_file="$fixture_log_directory/model-picker-open.png"
+feed_screenshot_file="$fixture_log_directory/provider-feed.png"
 fixture_script="$project_root/tests/integration/browser_console_fixture.py"
 fixture_url="http://127.0.0.1:${fixture_port}/"
 browser_api_url="http://127.0.0.1:${browser_api_port}"
@@ -205,8 +206,14 @@ import json
 import sys
 
 response = json.load(sys.stdin)
-assert response["success"] is True
-result = response["data"]["outputs"]["ui"]["result"]
+assert response.get("success") is True, f"browser request failed: {response!r}"
+data = response.get("data")
+assert isinstance(data, dict), f"browser response data is invalid: {response!r}"
+failure = data.get("step_results", data)
+assert data.get("success") is True, f"browser script failed: {failure!r}"
+outputs = data.get("outputs")
+assert isinstance(outputs, dict), f"browser script returned no outputs: {data!r}"
+result = outputs["ui"]["result"]
 assert result["appShell"] is True
 assert result["connected"] is True
 assert result["providerFeeds"] == 3
@@ -218,12 +225,17 @@ assert result["modelListScrollable"] is True
 assert result["modelOptionReadable"] is True
 assert result["modelSelectedInView"] is True
 assert result["modelResultCount"] == "120 of 120"
-assert result["persistedDraftModel"] == "provider-example-model-001"
-assert result["selectedDraftModel"] == "provider-example-model-001"
+assert result["persistedDraftModel"] == "claudebox-provider-example-model-001"
+assert result["selectedDraftModel"] == "claudebox-provider-example-model-001"
 assert result["generationCards"] == 0
 assert result["replyItems"] == 6
 assert result["collapsedTraceRows"] is True
 assert result["replyText"] == "Start at the gateway, then follow validation and routing."
+assert result["allFeedsIdle"] is True
+assert result["coachCancelled"] is True
+assert result["storyFailed"] is True
+assert result["failureReasonVisible"] is True
+assert result["storyResponses"] == 2
 assert result["streamOrder"] == [
     "stream-status",
     "stream-event",
@@ -236,14 +248,33 @@ assert result["cleanText"] is True
 '
 }
 
-validate_reset_response() {
+validate_console_response() {
 	python3 -c '
 import json
 import sys
 
 response = json.load(sys.stdin)
 assert response["success"] is True
-result = response["data"]["outputs"]["reset"]["result"]
+entries = response["data"]["log"]
+errors = [entry for entry in entries if entry.get("type") == "error"]
+assert not errors, f"browser console errors: {errors}"
+'
+}
+
+validate_reset_response() {
+	python3 -c '
+import json
+import sys
+
+response = json.load(sys.stdin)
+assert response.get("success") is True, f"browser request failed: {response!r}"
+data = response.get("data")
+assert isinstance(data, dict), f"browser response data is invalid: {response!r}"
+failure = data.get("step_results", data)
+assert data.get("success") is True, f"browser reset script failed: {failure!r}"
+outputs = data.get("outputs")
+assert isinstance(outputs, dict), f"browser reset returned no outputs: {data!r}"
+result = outputs["reset"]["result"]
 assert result["settingsCleared"] is True
 '
 }
@@ -315,6 +346,9 @@ docker run --detach --rm --init \
 	"$browser_image" >/dev/null
 wait_for_url "$browser_container" "$browser_api_url/health" 60
 
+printf '%s' '{"action":"enable_console_log"}' |
+	container_http_request "$browser_container" POST "$browser_api_url" 30 >/dev/null
+
 payload="$(python3 -c '
 import json
 import sys
@@ -343,7 +377,7 @@ print(json.dumps({
         {"action": "sleep", "duration": 0.5},
         {
             "action": "eval",
-            "expression": "(() => { const modal = document.querySelector(\".settings-modal\"); const rect = modal?.getBoundingClientRect(); const list = document.querySelector(\".model-options\"); const listRect = list?.getBoundingClientRect(); const listStyle = list ? getComputedStyle(list) : null; const option = document.querySelector(\".model-options button\"); const optionRect = option?.getBoundingClientRect(); const optionStyle = option ? getComputedStyle(option) : null; const selected = document.querySelector(\".model-options button.selected\"); const selectedRect = selected?.getBoundingClientRect(); const feed = document.querySelector(\".reply-card .provider-feed\"); const rows = [...document.querySelectorAll(\".reply-card .stream-event\")]; const output = document.querySelector(\".reply-card .stream-response\")?.textContent?.trim() ?? \"\"; const text = feed?.textContent ?? \"\"; const saved = JSON.parse(localStorage.getItem(\"2xbrainz.web.settings.v1\") ?? \"null\"); return { appShell: !!document.querySelector(\".app-shell\"), connected: !!document.querySelector(\".connection-dot.online\"), providerFeeds: document.querySelectorAll(\".provider-feed\").length, providerAssignments: document.querySelectorAll(\".provider-assignment\").length, settingsTabs: document.querySelectorAll(\".settings-tabs button\").length, modelFilter: !!document.querySelector(\"input[aria-label=\\\"Filter models\\\"]\"), settingsModalBounded: !!rect && rect.width < innerWidth && rect.height < innerHeight, modelListScrollable: !!list && !!listStyle && list.scrollHeight > list.clientHeight && listStyle.overflowY === \"scroll\", modelOptionReadable: !!optionRect && !!optionStyle && optionRect.height >= 36 && parseFloat(optionStyle.fontSize) >= 14, modelSelectedInView: !!selectedRect && !!listRect && selectedRect.top >= listRect.top && selectedRect.bottom <= listRect.bottom, modelResultCount: document.querySelector(\".model-search .model-picker-heading span\")?.textContent?.trim() ?? \"\", persistedDraftModel: saved?.providers?.draft?.model ?? \"\", selectedDraftModel: document.querySelector(\".provider-assignment .model-picker-trigger\")?.textContent?.trim() ?? \"\", generationCards: document.querySelectorAll(\".generation-entry\").length, replyItems: document.querySelectorAll(\".reply-card .stream-item\").length, collapsedTraceRows: rows.length === 3 && rows.every((row) => !row.open), replyText: output, streamOrder: [...(feed?.children ?? [])].map((item) => item.classList[0]), cleanText: !text.includes(\"WeWe\") && !text.includes(\"<unk>\") }; })()",
+            "expression": "(() => { const modal = document.querySelector(\".settings-modal\"); const rect = modal?.getBoundingClientRect(); const list = document.querySelector(\".model-options\"); const listRect = list?.getBoundingClientRect(); const listStyle = list ? getComputedStyle(list) : null; const option = document.querySelector(\".model-options button\"); const optionRect = option?.getBoundingClientRect(); const optionStyle = option ? getComputedStyle(option) : null; const selected = document.querySelector(\".model-options button.selected\"); const selectedRect = selected?.getBoundingClientRect(); const feed = document.querySelector(\".reply-card .provider-feed\"); const rows = [...document.querySelectorAll(\".reply-card .stream-event\")]; const output = document.querySelector(\".reply-card .stream-response\")?.textContent?.trim() ?? \"\"; const text = feed?.textContent ?? \"\"; const saved = JSON.parse(localStorage.getItem(\"2xbrainz.web.settings.v1\") ?? \"null\"); return { appShell: !!document.querySelector(\".app-shell\"), connected: !!document.querySelector(\".connection-dot.online\"), providerFeeds: document.querySelectorAll(\".provider-feed\").length, providerAssignments: document.querySelectorAll(\".provider-assignment\").length, settingsTabs: document.querySelectorAll(\".settings-tabs button\").length, modelFilter: !!document.querySelector(\"input[aria-label=\\\"Filter models\\\"]\"), settingsModalBounded: !!rect && rect.width < innerWidth && rect.height < innerHeight, modelListScrollable: !!list && !!listStyle && list.scrollHeight > list.clientHeight && listStyle.overflowY === \"scroll\", modelOptionReadable: !!optionRect && !!optionStyle && optionRect.height >= 36 && parseFloat(optionStyle.fontSize) >= 14, modelSelectedInView: !!selectedRect && !!listRect && selectedRect.top >= listRect.top && selectedRect.bottom <= listRect.bottom, modelResultCount: document.querySelector(\".model-search .model-picker-heading span\")?.textContent?.trim() ?? \"\", persistedDraftModel: saved?.providers?.draft?.model ?? \"\", selectedDraftModel: document.querySelector(\".provider-assignment .model-picker-trigger\")?.textContent?.trim() ?? \"\", generationCards: document.querySelectorAll(\".generation-entry\").length, replyItems: document.querySelectorAll(\".reply-card .stream-item\").length, collapsedTraceRows: rows.length === 3 && rows.every((row) => !row.open), replyText: output, allFeedsIdle: document.querySelectorAll(\".provider-feed .streaming\").length === 0, coachCancelled: !!document.querySelector(\".coach-card .stream-status.cancelled\"), storyFailed: !!document.querySelector(\".story-card .stream-status.failed\"), failureReasonVisible: document.querySelector(\".story-card\")?.textContent?.includes(\"fixture provider deadline exceeded\") === true, storyResponses: document.querySelectorAll(\".story-card .stream-response\").length, streamOrder: [...(feed?.children ?? [])].map((item) => item.classList[0]), cleanText: !text.includes(\"WeWe\") && !text.includes(\"<unk>\") }; })()",
             "output_id": "ui",
         },
     ],
@@ -368,6 +402,7 @@ print(json.dumps({
     "steps": [
         {"action": "click", "selector": ".model-options button.selected"},
         {"action": "click", "selector": ".modal-footer .quiet-button"},
+        {"action": "click", "selector": "button[aria-label=\"Close settings\"]"},
         {
             "action": "eval",
             "expression": "(() => ({ settingsCleared: localStorage.getItem(\"2xbrainz.web.settings.v1\") === null }))()",
@@ -379,5 +414,15 @@ print(json.dumps({
 reset_response="$(printf '%s' "$reset_payload" |
 	container_http_request "$browser_container" POST "$browser_api_url" 30)"
 validate_reset_response <<<"$reset_response"
+container_http_request \
+	"$browser_container" \
+	GET \
+	"$browser_api_url/screenshot/browser?whLargest=512" \
+	30 \
+	</dev/null >"$feed_screenshot_file"
+validate_png "$feed_screenshot_file"
+console_response="$(printf '%s' '{"action":"get_console_log"}' |
+	container_http_request "$browser_container" POST "$browser_api_url" 30)"
+validate_console_response <<<"$console_response"
 validate_fixture_log
-log INFO "browser smoke passed screenshot=$picker_screenshot_file"
+log INFO "browser smoke passed picker_screenshot=$picker_screenshot_file feed_screenshot=$feed_screenshot_file"

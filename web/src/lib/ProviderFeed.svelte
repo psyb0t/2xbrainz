@@ -105,6 +105,7 @@
       }
 
       settleStatus(result, flowId);
+      if (isTerminalPhase(phase)) settleOutput(result, flowId, phase !== 'request_completed');
       if (phase === 'stream_completed') continue;
       if (event.reasoning !== undefined) {
         result.push({
@@ -146,10 +147,12 @@
       }
 
       if (event.output !== undefined) {
-        const previous = result.at(-1);
-        if (previous?.type === 'output' && previous.flowId === flowId) {
-          result[result.length - 1] = {
-            ...previous,
+        const existingIndex = outputIndex(result, flowId);
+        if (existingIndex !== undefined) {
+          const existing = result[existingIndex];
+          if (existing.type !== 'output') continue;
+          result[existingIndex] = {
+            ...existing,
             phase,
             content: event.output,
             streaming: phase === 'output_streaming'
@@ -204,6 +207,32 @@
 
   function isToolPhase(phase: string): boolean {
     return phase === 'tool_started' || phase === 'tool_completed' || phase === 'tool_failed';
+  }
+
+  function isTerminalPhase(phase: string): boolean {
+    return (
+      phase === 'request_completed' || phase === 'request_failed' || phase === 'request_cancelled'
+    );
+  }
+
+  function outputIndex(items: StreamItem[], flowId: string): number | undefined {
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      const item = items[index];
+      if (item.flowId === flowId && item.type === 'output') return index;
+    }
+    return undefined;
+  }
+
+  function settleOutput(items: StreamItem[], flowId: string, discardEmpty: boolean): void {
+    const index = outputIndex(items, flowId);
+    if (index === undefined) return;
+    const item = items[index];
+    if (item.type !== 'output') return;
+    if (discardEmpty && item.content.length === 0) {
+      items.splice(index, 1);
+      return;
+    }
+    item.streaming = false;
   }
 
   function adjacentToolIndex(

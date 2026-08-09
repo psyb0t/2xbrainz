@@ -34,9 +34,46 @@ class BrowserSmokeScriptTests(unittest.TestCase):
         self.assertNotIn("--network host", docker_log)
 
     def test_failed_browser_assertion_still_cleans_every_owned_resource(self) -> None:
-        result, docker_log = _run_script('{"success":false}')
+        response = json.dumps(
+            {
+                "success": True,
+                "data": {
+                    "success": False,
+                    "step_results": [
+                        {"action": "click", "error": "selector was not found"}
+                    ],
+                },
+            },
+        )
+        result, docker_log = _run_script(response)
 
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn("selector was not found", result.stdout)
+        self.assertIn("stop --time 5 2xbrainz-browser-check-test-run", docker_log)
+        self.assertIn("stop --time 5 2xbrainz-browser-fixture-test-run", docker_log)
+        self.assertIn(f"image rm {_APP_IMAGE}", docker_log)
+
+    def test_browser_console_error_fails_and_cleans_every_owned_resource(self) -> None:
+        console_response = json.dumps(
+            {
+                "success": True,
+                "data": {
+                    "log": [
+                        {
+                            "type": "error",
+                            "text": "Uncaught Error: each_key_duplicate",
+                        }
+                    ]
+                },
+            }
+        )
+        result, docker_log = _run_script(
+            _successful_response(),
+            console_response=console_response,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("browser console errors", result.stdout)
         self.assertIn("stop --time 5 2xbrainz-browser-check-test-run", docker_log)
         self.assertIn("stop --time 5 2xbrainz-browser-fixture-test-run", docker_log)
         self.assertIn(f"image rm {_APP_IMAGE}", docker_log)
@@ -55,6 +92,7 @@ class BrowserSmokeScriptTests(unittest.TestCase):
 def _run_script(
     response: str,
     *,
+    console_response: str | None = None,
     wrong_browser_image: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], str]:
     environment_path = os.environ.get("UV_PROJECT_ENVIRONMENT")
@@ -81,6 +119,8 @@ def _run_script(
             "BROWSER_TEST_FIXTURE_LOG_DIRECTORY": str(fixture_log_directory),
             "FAKE_DOCKER_LOG": str(docker_log),
             "FAKE_BROWSER_RESPONSE": response,
+            "FAKE_BROWSER_CONSOLE_RESPONSE": console_response
+            or '{"success":true,"data":{"log":[]}}',
             "FAKE_WRONG_BROWSER_IMAGE": "1" if wrong_browser_image else "0",
         }
         result = subprocess.run(
@@ -135,7 +175,14 @@ def _fake_docker() -> str:
                 previous="$argument"
             done
             if [[ "$method" == "POST" ]]; then
-                printf '%s\n' "$FAKE_BROWSER_RESPONSE"
+                payload="$(cat)"
+                if [[ "$payload" == *'enable_console_log'* ]]; then
+                    printf '%s\n' '{"success":true,"data":{"enabled":true}}'
+                elif [[ "$payload" == *'get_console_log'* ]]; then
+                    printf '%s\n' "$FAKE_BROWSER_CONSOLE_RESPONSE"
+                else
+                    printf '%s\n' "$FAKE_BROWSER_RESPONSE"
+                fi
             elif [[ "$url" == *"/screenshot/"* ]]; then
                 printf '\\x89PNG\\r\\n\\x1a\\n'
             elif [[ "$method" == "GET" ]]; then
@@ -159,12 +206,17 @@ def _successful_response() -> str:
         "modelOptionReadable": True,
         "modelSelectedInView": True,
         "modelResultCount": "120 of 120",
-        "persistedDraftModel": "provider-example-model-001",
-        "selectedDraftModel": "provider-example-model-001",
+        "persistedDraftModel": "claudebox-provider-example-model-001",
+        "selectedDraftModel": "claudebox-provider-example-model-001",
         "generationCards": 0,
         "replyItems": 6,
         "collapsedTraceRows": True,
         "replyText": "Start at the gateway, then follow validation and routing.",
+        "allFeedsIdle": True,
+        "coachCancelled": True,
+        "storyFailed": True,
+        "failureReasonVisible": True,
+        "storyResponses": 2,
         "streamOrder": [
             "stream-status",
             "stream-event",
@@ -179,10 +231,11 @@ def _successful_response() -> str:
         {
             "success": True,
             "data": {
+                "success": True,
                 "outputs": {
                     "ui": {"result": result},
                     "reset": {"result": {"settingsCleared": True}},
-                }
+                },
             },
         }
     )

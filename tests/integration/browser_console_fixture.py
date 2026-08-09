@@ -32,7 +32,7 @@ from two_x_brainz.provider_selection import ProviderSelection
 from two_x_brainz.terminal import LiveTerminal
 from two_x_brainz.web import WebConsole, WebRuntimeSettings
 
-_FIXTURE_MODEL = "provider-example-model-087"
+_FIXTURE_MODEL = "claudebox-provider-example-model-087"
 _SSE_DELAY_SECONDS = 0.03
 
 logger = logging.getLogger(__name__)
@@ -167,6 +167,7 @@ def _reply_events() -> tuple[bytes, ...]:
     return (
         _sse_event({"reasoning_content": "Using the bounded search result."}),
         _sse_event({"content": "Start at the gateway, "}),
+        _sse_event({"reasoning_content": "Checking the final sequence."}),
         _sse_event({"content": "then follow validation and routing."}),
     )
 
@@ -218,7 +219,9 @@ async def _accept_provider_settings(
 
 def _seed_console(console: WebConsole) -> None:
     console.configure_runtime_settings(
-        models=tuple(f"provider-example-model-{index:03d}" for index in range(120)),
+        models=tuple(
+            f"claudebox-provider-example-model-{index:03d}" for index in range(120)
+        ),
         talkies_models=("fixture-asr",),
         talkies_model="fixture-asr",
         session_brief=None,
@@ -242,28 +245,78 @@ def _seed_console(console: WebConsole) -> None:
             "text": "Could you walk through the request flow?",
         }
     )
-    for output_kind, flow_id, output in (
-        (
-            "commentary",
-            "fixture-coach",
-            "Keep the explanation concrete and sequential.",
-        ),
-        (
-            "summary",
-            "fixture-story",
-            "The discussion is mapping an abstract request flow.",
-        ),
+    for activity in (
+        {
+            "flow_id": "fixture-coach",
+            "output_kind": "commentary",
+            "phase": "request_started",
+        },
+        {
+            "flow_id": "fixture-coach",
+            "output_kind": "commentary",
+            "phase": "output_streaming",
+            "output": "",
+        },
+        {
+            "flow_id": "fixture-coach",
+            "output_kind": "commentary",
+            "phase": "request_cancelled",
+        },
+        {
+            "flow_id": "fixture-story-completed",
+            "output_kind": "summary",
+            "phase": "request_started",
+        },
+        {
+            "flow_id": "fixture-story-completed",
+            "output_kind": "summary",
+            "phase": "output_streaming",
+            "output": "The discussion reached the gateway.",
+        },
+        {
+            "flow_id": "fixture-story-completed",
+            "output_kind": "summary",
+            "phase": "reasoning_streaming",
+            "reasoning": "Checking whether the summary is complete.",
+        },
+        {
+            "flow_id": "fixture-story-completed",
+            "output_kind": "summary",
+            "phase": "request_completed",
+            "output": "The discussion reached the gateway and routing stage.",
+        },
+        {
+            "flow_id": "fixture-story-failed",
+            "output_kind": "summary",
+            "phase": "request_started",
+        },
+        {
+            "flow_id": "fixture-story-failed",
+            "output_kind": "summary",
+            "phase": "output_streaming",
+            "output": "A later summary started but did not finish.",
+        },
+        {
+            "flow_id": "fixture-story-failed",
+            "output_kind": "summary",
+            "phase": "reasoning_streaming",
+            "reasoning": "Checking the later summary.",
+        },
+        {
+            "flow_id": "fixture-story-failed",
+            "output_kind": "summary",
+            "phase": "request_failed",
+            "error_type": "TimeoutError",
+            "error_message": "fixture provider deadline exceeded",
+        },
     ):
         console.record_provider_activity(
             {
                 "kind": "provider_activity",
-                "flow_id": flow_id,
-                "output_kind": output_kind,
-                "phase": "completed",
                 "model": _FIXTURE_MODEL,
-                "output": output,
                 "reasoning_exposed": False,
                 "tools_enabled": False,
+                **activity,
             }
         )
 

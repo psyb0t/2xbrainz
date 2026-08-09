@@ -8,14 +8,23 @@ import os
 import re
 import sys
 from collections.abc import Callable, Mapping
+from http import HTTPStatus
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.request import Request, urlopen
 
-from two_x_brainz.aigate import (
-    AIGateClient,
-    _AIGateToolCall,  # pyright: ignore[reportPrivateUsage]
-)
+from two_x_brainz.aigate import AIGateClient
+from two_x_brainz.claudebox import ClaudeboxReplyClient
 from two_x_brainz.config import Settings
-from two_x_brainz.constants import DEFAULT_PROVIDER_GENERATION_DEADLINE
+from two_x_brainz.constants import (
+    BEARER_PREFIX,
+    CLAUDEBOX_REPLY_MODELS,
+    DEFAULT_HTTP_TIMEOUT,
+    DEFAULT_PROVIDER_GENERATION_DEADLINE,
+    HEADER_AUTHORIZATION,
+    MAX_PROVIDER_RESPONSE_BYTES,
+)
 from two_x_brainz.contracts import (
     DraftRequest,
     DraftResult,
@@ -32,7 +41,11 @@ from two_x_brainz.contracts import (
 from two_x_brainz.coordinator import ConversationCoordinator
 from two_x_brainz.errors import ConfigurationError, ProtocolError, RemoteServiceError
 from two_x_brainz.fixture_trace import FixtureTrace, FixtureTraceError
-from two_x_brainz.json_support import require_json_object
+from two_x_brainz.json_support import (
+    decode_json,
+    require_json_array,
+    require_json_object,
+)
 
 _DRAFT_GENERATION_ID = "synthetic-draft-generation"
 _COMMENTARY_GENERATION_ID = "synthetic-commentary-generation"
@@ -83,13 +96,21 @@ _WEEKDAY_PATTERN = re.compile(
 )
 _PLAIN_PROSE_PREFIXES = ("#", "-", "*", ">", "1.")
 _PLAIN_PROSE_MARKERS = ("```", "**", "__", "[`", "](")
-_RESEARCH_QUERY = "IANA Example Domain"
 _RESEARCH_DRAFT_GENERATION_ID = "synthetic-research-draft-generation"
 _RESEARCH_REMOTE_TURN_ID = "synthetic-research-remote-turn"
-_RESEARCH_REMOTE_TEXT = (
-    "Before suggesting what I should say, verify what the documentation at "
-    "https://www.iana.org/help/example-domains says example domains are reserved for."
+_RESEARCH_REMOTE_PATTERN = re.compile(
+    r"^\s*url\s*=\s*https://github\.com/psyb0t/aigate(?:\.git)?\s*$",
+    re.MULTILINE,
 )
+_SAFE_WORKSPACE_ENTRY_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+_RESEARCH_REMOTE_TEXT = (
+    "Before suggesting what I should say, inspect the public Git repository at "
+    "https://github.com/psyb0t/aigate and explain what the project provides."
+)
+_RESEARCH_REPLY_MARKERS = ("aigate", "gateway", "provider", "model", "api")
+_CLAUDEBOX_FILES_PATH = "/claudebox/files"
+_MAX_WORKSPACE_SCAN_DEPTH = 3
+_MAX_WORKSPACE_DIRECTORIES = 64
 
 
 class PromptFixtureError(RuntimeError):
@@ -144,18 +165,27 @@ async def _run_with_trace(settings: Settings, trace: FixtureTrace) -> Path:
 
         return record
 
-    clients = tuple(
+    insight_clients = tuple(
         AIGateClient(
             base_url=settings.aigate_url,
             model=model,
             token=settings.aigate_token,
-            web_research_enabled=(model == draft_model),
+            web_research_enabled=False,
             activity_sink=activity_sink(model),
             streaming_enabled=True,
         )
-        for model in (draft_model, commentary_model, summary_model)
+        for model in (commentary_model, summary_model)
     )
-    draft_client, commentary_client, summary_client = clients
+    commentary_client, summary_client = insight_clients
+    if draft_model not in CLAUDEBOX_REPLY_MODELS:
+        raise PromptFixtureError("Reply fixture requires a Claudebox agent model")
+    draft_client = ClaudeboxReplyClient(
+        base_url=settings.aigate_url,
+        model=draft_model,
+        token=settings.aigate_token,
+        reasoning_effort="high",
+        activity_sink=activity_sink(draft_model),
+    )
     trace.event(
         "fixture_started",
         draft_model=draft_model,
@@ -163,20 +193,27 @@ async def _run_with_trace(settings: Settings, trace: FixtureTrace) -> Path:
         summary_model=summary_model,
         base_url=settings.aigate_url,
     )
-    await asyncio.gather(*(client.verify_configured_model() for client in clients))
+    await asyncio.gather(
+        *(client.verify_configured_model() for client in insight_clients)
+    )
+    workspace_session_id = await draft_client.start_session()
+    trace.event(
+        "claudebox_workspace_started",
+        workspace_session_id=workspace_session_id,
+    )
     trace.event(
         "model_inventory_verified",
         draft_model=draft_model,
         commentary_model=commentary_model,
         summary_model=summary_model,
     )
-    await _assert_real_research_tools(draft_client, trace)
     await _assert_model_driven_research(
         draft_client,
-        provider_activities[draft_model],
+        settings,
+        workspace_session_id,
         trace,
     )
-    draft_provider = _TracingProvider(draft_client, trace)
+    draft_provider = _TracingDraftProvider(draft_client, trace)
     commentary_provider = _TracingProvider(commentary_client, trace)
     summary_provider = _TracingProvider(summary_client, trace)
     transcript = _synthetic_transcript()
@@ -250,46 +287,10 @@ def _trace_provider_activity(
     trace.event("provider_activity", **fields)
 
 
-async def _assert_real_research_tools(
-    client: AIGateClient,
-    trace: FixtureTrace,
-) -> None:
-    research_result = await client._run_tool_call(  # pyright: ignore[reportPrivateUsage]
-        _AIGateToolCall(
-            identifier="real-research",
-            name="research_web",
-            arguments={"query": _RESEARCH_QUERY, "num_results": 5},
-        )
-    )
-    try:
-        payload = require_json_object(json.loads(research_result))
-        page = require_json_object(payload.get("page"))
-    except (ValueError, json.JSONDecodeError) as error:
-        raise PromptFixtureError(
-            "real AIGate research did not return a fetched page"
-        ) from error
-    if payload.get("status") != "page_fetched":
-        raise PromptFixtureError("real AIGate research did not fetch a matching page")
-    page_content = page.get("content")
-    page_url = page.get("url")
-    if not isinstance(page_content, str) or not page_content.strip():
-        raise PromptFixtureError(
-            "real AIGate research returned no readable page content"
-        )
-    if not isinstance(page_url, str) or not page_url.startswith(
-        ("http://", "https://")
-    ):
-        raise PromptFixtureError("real AIGate research returned an invalid page URL")
-    trace.event(
-        "research_tool_verified",
-        fetched_content_characters=len(page_content),
-        page_url=page_url,
-    )
-
-
 async def _assert_model_driven_research(
-    client: AIGateClient,
-    activities: list[Mapping[str, object]],
+    client: ClaudeboxReplyClient,
+    settings: Settings,
+    workspace_session_id: str,
     trace: FixtureTrace,
 ) -> None:
     result = await client.draft(
@@ -318,23 +319,161 @@ async def _assert_model_driven_research(
         result.text,
         requires_one_line=True,
     )
-    _assert_research_activity(activities)
+    if sum(marker in result.text.lower() for marker in _RESEARCH_REPLY_MARKERS) < 2:
+        raise PromptFixtureError(
+            "Reply agent did not return repository-specific AIGate information"
+        )
+    checkout = await asyncio.to_thread(
+        _find_research_checkout,
+        settings,
+        workspace_session_id,
+    )
     trace.event(
         "model_driven_research_verified",
         model=client.model,
+        checkout=checkout,
         reply=result.text,
     )
 
 
-def _assert_research_activity(activities: list[Mapping[str, object]]) -> None:
-    if not any(
-        activity.get("phase") == "tool_completed"
-        and activity.get("tool") == "research_web"
-        for activity in activities
-    ):
-        raise PromptFixtureError(
-            "Reply model did not autonomously complete required web research"
+def _read_workspace_entries(
+    settings: Settings,
+    *path_parts: str,
+) -> tuple[dict[str, object], ...]:
+    parsed = urlsplit(settings.aigate_url)
+    api_path = parsed.path.rstrip("/")
+    if not api_path.endswith("/v1"):
+        raise PromptFixtureError("AIGate URL must end in /v1")
+    gateway_path = api_path.removesuffix("/v1")
+    workspace_path = "/".join(quote(part, safe="") for part in path_parts)
+    endpoint = urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            f"{gateway_path}{_CLAUDEBOX_FILES_PATH}/{workspace_path}",
+            "",
+            "",
         )
+    )
+    headers = {
+        HEADER_AUTHORIZATION: f"{BEARER_PREFIX}{settings.aigate_token}",
+    }
+    request = Request(endpoint, headers=headers, method="GET")
+    try:
+        with urlopen(
+            request,
+            timeout=DEFAULT_HTTP_TIMEOUT.total_seconds(),
+        ) as response:
+            raw = response.read(MAX_PROVIDER_RESPONSE_BYTES + 1)
+            status_code = response.status
+    except HTTPError as error:
+        raise PromptFixtureError(
+            f"Claudebox workspace listing returned HTTP {error.code}"
+        ) from error
+    except TimeoutError as error:
+        raise PromptFixtureError("Claudebox workspace listing timed out") from error
+    except URLError as error:
+        raise PromptFixtureError("connect to Claudebox workspace listing") from error
+    except OSError as error:
+        raise PromptFixtureError("read Claudebox workspace listing") from error
+    if status_code != HTTPStatus.OK:
+        raise PromptFixtureError(
+            f"Claudebox workspace listing returned HTTP {status_code}"
+        )
+    if len(raw) > MAX_PROVIDER_RESPONSE_BYTES:
+        raise PromptFixtureError("Claudebox workspace listing exceeds the size limit")
+    try:
+        payload = require_json_object(decode_json(raw))
+        entries = require_json_array(payload.get("entries"))
+        return tuple(require_json_object(entry) for entry in entries)
+    except (json.JSONDecodeError, ValueError) as error:
+        raise PromptFixtureError(
+            "Claudebox workspace listing returned invalid JSON"
+        ) from error
+
+
+def _find_research_checkout(
+    settings: Settings,
+    workspace_session_id: str,
+) -> str:
+    pending: list[tuple[tuple[str, ...], int]] = [((workspace_session_id,), 0)]
+    scanned_directories = 0
+    while pending and scanned_directories < _MAX_WORKSPACE_DIRECTORIES:
+        directory_parts, depth = pending.pop(0)
+        scanned_directories += 1
+        entries = _read_workspace_entries(settings, *directory_parts)
+        for entry in entries:
+            name = entry.get("name")
+            if (
+                entry.get("type") != "dir"
+                or not isinstance(name, str)
+                or not _SAFE_WORKSPACE_ENTRY_PATTERN.fullmatch(name)
+                or name in {".", ".."}
+            ):
+                continue
+            checkout_parts = (*directory_parts, name)
+            git_config = _read_workspace_file(
+                settings,
+                *checkout_parts,
+                ".git",
+                "config",
+            )
+            if git_config is not None and _RESEARCH_REMOTE_PATTERN.search(git_config):
+                return "/".join(checkout_parts[1:])
+            if depth < _MAX_WORKSPACE_SCAN_DEPTH:
+                pending.append((checkout_parts, depth + 1))
+    raise PromptFixtureError(
+        "Reply agent did not create the required repository checkout"
+    )
+
+
+def _read_workspace_file(
+    settings: Settings,
+    *path_parts: str,
+) -> str | None:
+    parsed = urlsplit(settings.aigate_url)
+    gateway_path = parsed.path.rstrip("/").removesuffix("/v1")
+    encoded_path = "/".join(quote(part, safe="") for part in path_parts)
+    endpoint = urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            f"{gateway_path}{_CLAUDEBOX_FILES_PATH}/{encoded_path}",
+            "",
+            "",
+        )
+    )
+    request = Request(
+        endpoint,
+        headers={
+            HEADER_AUTHORIZATION: f"{BEARER_PREFIX}{settings.aigate_token}",
+        },
+        method="GET",
+    )
+    try:
+        with urlopen(
+            request,
+            timeout=DEFAULT_HTTP_TIMEOUT.total_seconds(),
+        ) as response:
+            raw = response.read(MAX_PROVIDER_RESPONSE_BYTES + 1)
+    except HTTPError as error:
+        if error.code == HTTPStatus.NOT_FOUND:
+            return None
+        raise PromptFixtureError(
+            f"Claudebox workspace file returned HTTP {error.code}"
+        ) from error
+    except TimeoutError as error:
+        raise PromptFixtureError("Claudebox workspace file timed out") from error
+    except URLError as error:
+        raise PromptFixtureError("connect to Claudebox workspace file") from error
+    except OSError as error:
+        raise PromptFixtureError("read Claudebox workspace file") from error
+    if len(raw) > MAX_PROVIDER_RESPONSE_BYTES:
+        raise PromptFixtureError("Claudebox workspace file exceeds the size limit")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise PromptFixtureError("Claudebox workspace file is not UTF-8") from error
 
 
 def _trace_directory() -> Path:
@@ -432,8 +571,45 @@ class _TracingProvider:
         return result
 
 
+class _TracingDraftProvider:
+    """Record direct-agent requests and results without hiding their context."""
+
+    def __init__(self, client: ClaudeboxReplyClient, trace: FixtureTrace) -> None:
+        self._client = client
+        self._trace = trace
+        self.draft_requests: list[DraftRequest] = []
+
+    async def draft(self, request: DraftRequest) -> DraftResult:
+        self.draft_requests.append(request)
+        self._trace.event(
+            "draft_request",
+            generation_id=request.generation_id,
+            trigger_turn_id=request.trigger_turn_id,
+            context_revision=request.context_revision,
+            transcript=_snapshot_record(request.transcript),
+        )
+        try:
+            result = await self._client.draft(request)
+        except (ConfigurationError, ProtocolError, RemoteServiceError) as error:
+            self._trace.event(
+                "draft_error",
+                generation_id=request.generation_id,
+                error_type=type(error).__name__,
+                error_message=str(error),
+            )
+            raise
+        self._trace.event(
+            "draft_result",
+            generation_id=result.generation_id,
+            status=result.status.value,
+            context_revision=result.context_revision,
+            text=result.text,
+        )
+        return result
+
+
 async def _assert_interview_story(
-    draft_provider: _TracingProvider,
+    draft_provider: _TracingDraftProvider,
     commentary_provider: _TracingProvider,
     summary_provider: _TracingProvider,
     trace: FixtureTrace,

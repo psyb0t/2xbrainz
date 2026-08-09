@@ -19,6 +19,14 @@ class EmptyProviderContentError(ProtocolError):
     """Raised when a completion contains no operator-visible text."""
 
 
+class IncompleteProviderStreamError(ProtocolError):
+    """Raised when a provider closes a stream without its terminal event."""
+
+
+class OversizedProviderOutputError(ProtocolError):
+    """Raised when valid provider output needs a bounded concise retry."""
+
+
 class RemoteServiceError(TwoXBrainzError):
     """Raised when a configured upstream service cannot complete a request."""
 

@@ -3,6 +3,35 @@
 All notable changes per release. Versions follow
 [semantic versioning](https://semver.org).
 
+## v3.1.0 — 2026-08-09
+
+Add persistent Claudebox repository research with interruption recovery, while
+keeping streamed guidance responsive and browser regressions visible.
+
+- Fix duplicate keyed response rows when terminal output follows intervening
+  reasoning or tool activity, preventing the Svelte console crash that froze
+  the live transcript and guidance feeds.
+- Settle or remove unfinished response rows on cancellation and failure instead
+  of leaving an empty `Generating…` entry active indefinitely, while preserving
+  any partial output already received.
+- Expand the deterministic compiled-browser fixture across successful,
+  cancelled, failed, and interleaved streams; fail on browser console errors;
+  and retain screenshots of the model picker and provider feeds.
+- Stream Reply through AIGate's OpenAI-compatible endpoint in one persistent
+  Claudebox workspace. Omit OpenAI tool declarations and explicitly enable
+  Claude Code's internal tools so the agent can clone and inspect repositories
+  while incremental spoken output remains visible in the provider feed.
+- Preserve Claude Code's native agent prompt by appending 2xbrainz instructions
+  through the Claudebox header instead of replacing it with an OpenAI system
+  message. Buffer explicit repository-URL research, recover incomplete ordinary
+  streams once, and verify live research against the checkout's Git remote.
+- Recognize spoken GitHub/GitLab repository references, keep superseded accepted
+  native research from publishing stale guidance, and continue its replacement
+  from the complete transcript in the same Claudebox workspace.
+- Add a real generated-audio interruption gate through CUDA Nemotron and direct
+  Claudebox research, including exact checkout proof and elapsed lifecycle trace;
+  remove the stale fixture targets that still passed deleted CLI audio flags.
+
 ## v3.0.0 — 2026-08-08
 
 Move all non-secret live configuration into the web console and add a

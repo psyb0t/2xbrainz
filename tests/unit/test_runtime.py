@@ -37,6 +37,7 @@ from two_x_brainz.errors import (
 from two_x_brainz.provider_selection import ProviderAssignment
 from two_x_brainz.runtime import (
     _aigate_client,  # pyright: ignore[reportPrivateUsage]
+    _claudebox_reply_client,  # pyright: ignore[reportPrivateUsage]
     _gated_frames,  # pyright: ignore[reportPrivateUsage]
     _initial_provider_selection,  # pyright: ignore[reportPrivateUsage]
     _supervise_audio_channel,  # pyright: ignore[reportPrivateUsage]
@@ -62,10 +63,10 @@ class RuntimeOutputTests(unittest.TestCase):
         settings = _settings("fallback-model")
         settings = replace(
             settings,
-            aigate_reply_model="cerebras-model",
+            aigate_reply_model="claudebox-sonnet",
             aigate_coach_model="coach-model",
             aigate_summary_model="summary-model",
-            aigate_reply_reasoning_effort="minimal",
+            aigate_reply_reasoning_effort="high",
             aigate_coach_reasoning_effort="low",
             aigate_summary_reasoning_effort="high",
         )
@@ -74,35 +75,32 @@ class RuntimeOutputTests(unittest.TestCase):
             settings,
             (
                 "fallback-model",
-                "cerebras-model",
+                "claudebox-sonnet",
                 "coach-model",
                 "summary-model",
             ),
         )
 
-        self.assertEqual(selection.draft.model, "cerebras-model")
-        self.assertEqual(selection.draft.reasoning_effort, "minimal")
+        self.assertEqual(selection.draft.model, "claudebox-sonnet")
+        self.assertEqual(selection.draft.reasoning_effort, "high")
         self.assertEqual(selection.commentary.model, "coach-model")
         self.assertEqual(selection.commentary.reasoning_effort, "low")
         self.assertEqual(selection.summary.model, "summary-model")
         self.assertEqual(selection.summary.reasoning_effort, "high")
 
-    def test_web_research_is_enabled_only_for_the_reply_client(self) -> None:
+    def test_reply_uses_claudebox_agent_and_insights_use_chat_clients(self) -> None:
         settings = _settings("model-a", web_research_enabled=True)
-        assignment = ProviderAssignment("model-a", "none")
+        reply_assignment = ProviderAssignment("claudebox-sonnet", "high")
+        insight_assignment = ProviderAssignment("model-a", "none")
 
-        reply = _aigate_client(
-            settings,
-            assignment,
-            web_research_enabled=True,
-        )
+        reply = _claudebox_reply_client(settings, reply_assignment)
         story = _aigate_client(
             settings,
-            assignment,
+            insight_assignment,
             web_research_enabled=False,
         )
 
-        self.assertTrue(reply.web_research_enabled)
+        self.assertEqual(reply.model, "claudebox-sonnet")
         self.assertFalse(story.web_research_enabled)
 
     def test_stream_snapshots_log_counts_without_raw_text_at_debug(self) -> None:
@@ -328,6 +326,31 @@ class RuntimeOutputTests(unittest.TestCase):
             },
         )
 
+    def test_each_changed_start_creates_one_fresh_reply_workspace(self) -> None:
+        provider = _SessionProvider()
+        controller = SessionController(start_paused=True)
+        coordinator = ConversationCoordinator(provider)
+
+        async def exercise() -> None:
+            with patch("builtins.print"):
+                self.assertFalse(
+                    await handle_control_line("resume", controller, coordinator)
+                )
+                self.assertFalse(
+                    await handle_control_line("resume", controller, coordinator)
+                )
+                self.assertFalse(
+                    await handle_control_line("pause", controller, coordinator)
+                )
+                self.assertFalse(
+                    await handle_control_line("resume", controller, coordinator)
+                )
+
+        asyncio.run(exercise())
+
+        self.assertEqual(provider.started_sessions, ["session-1", "session-2"])
+        self.assertEqual(controller.state.value, "running")
+
     def test_asr_statistics_record_has_a_fixed_safe_shape(self) -> None:
         event = ASRStreamStats(
             session_id="session-id",
@@ -493,3 +516,13 @@ class _LiveProvider:
             status=GenerationStatus.COMPLETED,
             text="A concise running summary.",
         )
+
+
+class _SessionProvider(_LiveProvider):
+    def __init__(self) -> None:
+        self.started_sessions: list[str] = []
+
+    async def start_session(self) -> str:
+        session_id = f"session-{len(self.started_sessions) + 1}"
+        self.started_sessions.append(session_id)
+        return session_id

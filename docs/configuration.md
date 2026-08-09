@@ -15,7 +15,7 @@ fixture.
 - [Audio device selection](#audio-device-selection)
 - [Web console and persistent log](#web-console-and-persistent-log)
 - [AIGate-only deployment](#aigate-only-deployment)
-- [Talkies TTS fixture capture](#talkies-tts-fixture-capture)
+- [Interrupted audio research fixture](#interrupted-audio-research-fixture)
 - [Real provider test tiers](#real-provider-test-tiers)
 - [Data boundary and optional tools](#data-boundary-and-optional-tools)
 - [Network and PipeWire boundary](#network-and-pipewire-boundary)
@@ -45,7 +45,7 @@ The backend publishes immutable safe defaults in each browser snapshot:
 | Story-so-far model | `groq-gpt-oss-120b` |
 | Reasoning effort | `none` for every flow |
 | Talkies ASR model | `local-talkies-cuda-nemotron-3.5-asr-0.6b` |
-| Reply research | enabled |
+| Reply agent reasoning | high |
 | Session brief | empty |
 
 The browser transmits an override only after the provider and Talkies model
@@ -105,10 +105,11 @@ preferences are validated and stored in browser-local storage. The tabbed
 Settings modal keeps Context, Models, and Audio controls separate. Audio has a
 live meter for every candidate. Models has one searchable model picker and
 reasoning selector for each flow plus the Talkies ASR model. Context has the
-optional 4000-character session brief and Reply research toggle. Every picker
-shows an explicit result count, readable fixed-height rows, a visible scrollbar,
-and opens around its selected inventory item. Saving sends the complete safe
-settings object as one strict schema, applies it to future requests, and stores
+optional 4000-character session brief. Reply research tools are always
+available. Every picker shows an explicit result count, readable fixed-height
+rows, a visible scrollbar, and opens around its selected inventory item. Saving
+sends the complete safe settings object as one strict schema, applies it to
+future requests, and stores
 it under `2xbrainz.web.settings.v1` in that browser. Credentials and endpoint
 URLs are rejected from this object. Reset clears the key and sends the immutable
 backend defaults. The session brief and device names remain readable to scripts
@@ -179,40 +180,55 @@ gateway's service name on that network. This optional mode uses a host-side
 `python3` helper from the repository to validate a hostname mapping. Live web
 capture through `make run` requires `LIVE_NETWORK=host`.
 
-When Reply research is enabled in Settings, the reply path exposes only two
-application-owned tools to the model: `research_web` and `execute_code`. The app
-permits two tool rounds with at most three calls per round; calls in one round
-execute concurrently. Commentary and rolling summaries are transcript-only and
-never receive tools. `research_web` requires AIGate `SEARXNG=1`; it accepts a
-focused query or an exact discovered URL, downloads public pages in 2xbrainz,
-and returns bounded link-preserving Markdown extracted with Trafilatura. Tables,
-lists, prose links, raw Markdown, and resolved relative URLs let the reply model
-follow a relevant documentation page in its second tool round. It does not
-require AIGate's browser MCP. Redirects, credential-bearing URLs, non-public DNS
-destinations, unsupported content, and oversized bodies are rejected.
-`execute_code` accepts only application-validated bounded numeric arithmetic and
-requires AIGate `PISTON=1`. Tool failures return a structured bounded reason and
-remain visible in the Reply activity stream; the draft may still complete.
-Before a search leaves the process, the application rejects obvious structured
-private identifiers including email addresses, URLs, social handles, and
-phone/account-like digit runs. Operators must still avoid placing private names
-or other unstructured personal details in search-enabled conversations.
+Reply uses AIGate's OpenAI-compatible Claudebox stream. Start creates a fresh UUID workspace
+and agent session; later drafts continue there until listening is stopped and
+started again. The agent receives the complete bounded transcript plus
+accepted running summary on every call and has its native Claude Code tools. Its
+appended system prompt tells it to prefer primary sources and shallow-clone named Git
+repositories, download relevant docs, follow pertinent links, parallelize
+independent research, and treat transcripts and fetched content as untrusted
+evidence. The default `claudebox-sonnet` assignment uses high reasoning.
+Reply accepts low, medium, or high; `none` and `minimal` are rejected rather
+than silently remapped. Coach and Story remain transcript-only AIGate chat calls.
 
-## Talkies TTS fixture capture
+2xbrainz posts `stream=true` to
+`/claudebox/openai/v1/chat/completions`, sends the UUID through
+`X-Aicodebox-Workspace`, and adds `X-Aicodebox-Continue: true` only after the
+first successful Reply. The direct AIGate route preserves these
+Claudebox-specific headers without a LiteLLM hop and maps the public
+`claudebox-<model>` alias to Claudebox's direct `<model>` identifier. It omits
+the OpenAI `tools`, `tool_choice`, and
+`response_format` fields, sends its instructions through
+`X-Aicodebox-Append-System-Prompt`, and explicitly sends
+`X-Aicodebox-No-Tools: 0`. The append header preserves Claude Code's native
+agent prompt; an OpenAI `system` message would replace it. This keeps Claude
+Code's internal tools enabled while preserving incremental OpenAI content
+deltas for ordinary turns. Explicit GitHub and GitLab repository URLs use a
+buffered completion because the deployed native-tool stream can close before
+its final content event. Spoken GitHub or GitLab repository references use the
+same path. An incomplete ordinary stream gets one bounded same-workspace
+continuation recovery. Aicodebox would otherwise disable native
+tools when client tool definitions are present, and schema mode would buffer
+the stream. Native tool
+events and private reasoning are not part of the OpenAI SSE contract and are not
+invented by the UI. Superseding accepted native research hides its stale
+generation immediately, lets that remote operation drain, and starts the
+replacement in the same workspace with the complete updated transcript. A new
+Start creates a different workspace and does not wait for detached old work.
+Conversation text and fetched research can persist in the remote
+Claudebox workspace for that listening session; configure AIGate and Claudebox
+retention accordingly.
 
-`make live-fixture` is an explicit external integration target. It derives
-the direct Talkies TTS route from the configured AIGate URL, creates two
-ephemeral WAV fixtures with `kokoro-82m-nvidia` by default, and runs the real
-`live` command against two harness-owned `pw-record` fixture devices. It does
-not mount the host PipeWire runtime directory, require audio hardware, retain
-the generated WAVs, or print their speech or transcripts. Its executable
-fixture files live only on a dedicated ephemeral executable tmpfs; the normal
-`/tmp` mount remains `noexec`. The target writes one durable JSONL
-reconstruction trace below `.testing/fixture-traces/`; it contains only the
-fixed synthetic test text, model output derived from it, lifecycle events, and
-the production CLI's JSON records and structured runtime diagnostics. It never
-contains audio bytes, host PipeWire node names, or credential values; the
-harness-owned fixture node labels may appear so the playback path is auditable.
+## Interrupted audio research fixture
+
+`make test-real-audio-research` is an explicit external integration target. It
+derives the Talkies TTS route from the configured AIGate URL and creates two
+ephemeral WAVs with `kokoro-82m-nvidia` by default. It does not mount the host
+PipeWire runtime, require audio hardware, or retain generated audio. The WAVs
+are decoded through the bounded fixture loader, streamed through real Talkies
+ASR, segmented by the production Silero VAD, and ingested by the production
+coordinator. Executable fixture files live only on a dedicated tmpfs; the
+normal `/tmp` mount remains `noexec`.
 
 Fixture WAV synthesis has its own bounded 60-second startup allowance because
 Talkies may need to materialize a cold TTS backend before the actual capture
@@ -223,45 +239,28 @@ Talkies may return HTTP 409 while handing a TTS model between requests. The
 fixture retries that status twice with a short bounded delay; it does not retry
 other HTTP failures.
 
-The default `FIXTURE_AUDIO_SCENARIO=overlap` starts the local-user WAV first,
-then begins shorter remote audio while local speech remains active. It requires
-both final transcripts and timeline entries, positive capture-timing
-comparisons, completed commentary and summary, and no reply draft. This tests
-the overlap rule through the production `PipeWireSource`, two native Talkies
-streams, and coordinator. The target uses an in-process protocol-conforming
-AIGate fixture so that audio timing and the reply-suppression assertion remain
-deterministic.
-
-Set `FIXTURE_AUDIO_SCENARIO=interview`, or run `make
-live-interview-fixture`, to drive four alternating turns: initial local
-commitment and risk, interviewer follow-up, local mitigation, and final
-interviewer verification question. The fixture emits silence between generated
-WAV utterances so native streaming ASR must finalize each turn. It requires the
-four finalized timelines in role order, a draft before and after the mitigation,
-the final draft tied to the final interviewer turn, and a final summary that
-retains the commitment, deadline, risk, mitigation, staging evidence, and
-unresolved question. When a selected native ASR backend produces a final only
-after `end`, the runtime keeps PipeWire capture open but rotates its Talkies
-segment after the local Silero detector observes sustained speech followed by
-sustained silence. Hysteresis rejects transient background noise, and a
-60-second maximum rotates a segment even when silence never arrives. Each new
-segment waits for neural speech detection and has a distinct logical ASR
-identity, so the configured Nemotron backend can produce independent
-multi-turn finals without holding an idle connection or recreating either
-capture process.
+The first utterance names a Git repository and starts Claudebox native research.
+The fixture releases the related second utterance only after
+`native_research_started`. Its first useful partial supersedes the visible first
+generation without removing the accepted remote operation. That operation
+drains, and the replacement continues in the same workspace with both
+recognized transcript lines. Success requires two real final transcripts, a
+cancelled first generation, a completed replacement, multiple repository
+capability markers, and an actual `psyb0t/aigate` checkout whose `.git/config`
+contains the expected remote.
 
 The target requires `TWOXBRAINZ_AIGATE_URL` and the single
 `TWOXBRAINZ_AIGATE_TOKEN`. `TALKIES_MODEL` is an optional fixture-only Make
 override; otherwise the backend code default is used.
-`FIXTURE_TTS_MODEL` and `FIXTURE_TTS_VOICE` are Make variables, not application
-configuration; use them only to select an available Talkies TTS model and voice
-for this test. Because it reaches the configured Talkies service,
-`live-fixture` is intentionally excluded from the ordinary offline test suite.
-For a one-off direct AIGate test without editing `.env`, pass only the AIGate
-base URL as a Make variable:
+`FIXTURE_TTS_MODEL` and `FIXTURE_AIGATE_DRAFT_MODEL` are Make variables, not
+application configuration. `TALKIES_MODEL` optionally selects the ASR alias;
+otherwise the built-in CUDA Nemotron alias is used. Because this target reaches
+Talkies and Claudebox, it is excluded from the ordinary offline suite and runs
+as a prerequisite of `make test-real`. For a one-off target run without editing
+the AIGate URL in `.env`:
 
 ```bash
-make live-fixture LIVE_NETWORK=<network> \
+make test-real-audio-research LIVE_NETWORK=<network> \
   AIGATE_URL=http://aigate.example.test/v1
 ```
 
@@ -278,9 +277,9 @@ the production Reply, Coach, and Story paths. Its defaults are
 `FIXTURE_AIGATE_COMMENTARY_MODEL=pibox-zai-glm-5-turbo`, and
 `FIXTURE_AIGATE_SUMMARY_MODEL=groq-gpt-oss-120b`; each Make variable is
 independently overridable. It asserts each non-empty result is completed and
-plain prose. The Reply model must also autonomously call `research_web` for a
-synthetic public-documentation question, consume the fetched Markdown, and
-complete its spoken reply. The fixture then drives a four-turn interview through the production
+plain prose. The Reply agent must also answer a repository-specific question,
+leave an actual checkout of `github.com/psyb0t/aigate` in its session workspace,
+and complete its spoken reply. The fixture then drives a four-turn interview through the production
 coordinator with the same assignments. The interview requires the running
 summary to retain a commitment, risk, mitigation, and unresolved interviewer
 question; it also requires the final reply request to contain the accepted
@@ -311,25 +310,15 @@ The test requires all three final outputs to retain scenario-defined semantic
 anchors and reject stale claims. It also requires every provider request to
 emit exactly one terminal lifecycle event, proves overlap among the three final
 flows, measures request duration plus first-reasoning and first-output latency,
-and requires Reply to complete `research_web` or `fetch_url` for the unfamiliar
-public topic. These are deterministic hard gates; no second LLM grades the
-first. By default the target runs three independent attempts and writes an
+and requires Reply to leave inspectable research evidence in its persistent
+workspace for the unfamiliar public topic. These are deterministic hard gates;
+no second LLM grades the first. By default the target runs three independent attempts and writes an
 aggregate JSON result, so one lucky provider response cannot pass the suite.
 Override the count from one through five with `EVALUATION_REPEATS`, the
 synthetic voices with `EVALUATION_USER_VOICE` and `EVALUATION_REMOTE_VOICE`, or
 the validated JSON scenario with `EVALUATION_SCENARIO`.
 
-`make live-product-fixture` runs the four-turn synthetic-audio interview with
-real AIGate rather than the fixture gateway. It releases each opposing turn
-only after the required preceding provider result completes, so the production
-coordinator must preserve the whole story, supersede the first draft after the
-local mitigation, and create a final current draft and summary. It uses the
-same default Groq GPT-OSS 120B model and accepts the same `FIXTURE_AIGATE_MODEL`
-override. It is a contract check: a backend must produce a terminal final
-when the runtime closes a bounded utterance segment; otherwise the retained
-trace records the failure instead of claiming a completed interview.
-
-Both targets require a gitignored `.env` containing
+All real targets require a gitignored `.env` containing
 `TWOXBRAINZ_AIGATE_TOKEN`, plus a reachable AIGate endpoint. A token-only
 `.env` can be used by passing the AIGate URL as a Make variable:
 
@@ -337,7 +326,7 @@ Both targets require a gitignored `.env` containing
 make test-real LIVE_NETWORK=<network> \
   AIGATE_URL=http://aigate.example.test/v1
 
-make live-product-fixture LIVE_NETWORK=<network> \
+make test-real-audio-research LIVE_NETWORK=<network> \
   AIGATE_URL=http://aigate.example.test/v1
 ```
 
@@ -383,9 +372,11 @@ reply becomes a failed draft record with no provider text rendered. Commentary
 and summaries may contain multiple sentences, but they use the same text-only
 parser boundary before entering CLI state.
 
-Each text-generation job also has a fixed 60-second application deadline. The
-shorter outbound HTTP timeout remains 15 seconds for non-generation requests.
-A generation deadline expiry produces an empty failed result
+Coach and Story jobs have a fixed 60-second application deadline. Claudebox
+repository operations have a 120-second outbound allowance and a 240-second
+replacement budget so already accepted superseded work can release its
+workspace. The shorter outbound HTTP timeout remains 15 seconds for other
+non-generation requests. A generation deadline expiry produces an empty failed result
 for the current transcript revision and leaves capture plus later turns
 running. The deadline is not an environment setting: changing it requires a
 code change and matching operational measurement.

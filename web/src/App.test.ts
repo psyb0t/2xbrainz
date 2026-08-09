@@ -48,9 +48,9 @@ Remote: Verify the release gates.`,
   story: 'The team is preparing a release.',
   sessionState: 'running',
   provider: {
-    models: ['model-a', 'model-b'],
+    models: ['claudebox-sonnet', 'claudebox-opus', 'model-a', 'model-b'],
     assignments: {
-      draft: { model: 'model-a', reasoningEffort: 'none' },
+      draft: { model: 'claudebox-sonnet', reasoningEffort: 'high' },
       commentary: { model: 'model-b', reasoningEffort: 'low' },
       summary: { model: 'model-a', reasoningEffort: 'medium' }
     },
@@ -111,7 +111,7 @@ Remote: Verify the release gates.`,
     webResearchEnabled: true,
     defaults: {
       assignments: {
-        draft: { model: 'model-a', reasoningEffort: 'none' },
+        draft: { model: 'claudebox-sonnet', reasoningEffort: 'high' },
         commentary: { model: 'model-b', reasoningEffort: 'low' },
         summary: { model: 'model-a', reasoningEffort: 'medium' }
       },
@@ -246,12 +246,12 @@ describe('operator console', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Models' }));
     await fireEvent.click(screen.getByRole('button', { name: 'Reply model' }));
     expect(screen.getByRole('textbox', { name: 'Filter models' })).toBeTruthy();
-    expect(screen.getByText('2 of 2')).toBeTruthy();
+    expect(screen.getByText('2 of 4')).toBeTruthy();
     expect(screen.getByText('Current')).toBeTruthy();
     await fireEvent.input(screen.getByRole('textbox', { name: 'Filter models' }), {
-      target: { value: 'model-b' }
+      target: { value: 'claudebox-opus' }
     });
-    await fireEvent.click(screen.getByRole('option', { name: 'model-b' }));
+    await fireEvent.click(screen.getByRole('option', { name: 'claudebox-opus' }));
     await fireEvent.change(screen.getByRole('combobox', { name: 'Reply reasoning' }), {
       target: { value: 'high' }
     });
@@ -261,12 +261,12 @@ describe('operator console', () => {
       expect.objectContaining({
         type: 'runtime_settings',
         providers: expect.objectContaining({
-          draft: { model: 'model-b', reasoning_effort: 'high' }
+          draft: { model: 'claudebox-opus', reasoning_effort: 'high' }
         }),
         talkies_model: 'asr-a'
       })
     );
-    expect(localStorage.getItem(RUNTIME_SETTINGS_KEY)).toContain('model-b');
+    expect(localStorage.getItem(RUNTIME_SETTINGS_KEY)).toContain('claudebox-opus');
     expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
   });
 
@@ -276,7 +276,7 @@ describe('operator console', () => {
       JSON.stringify({
         schemaVersion: 1,
         providers: {
-          draft: { model: 'model-b', reasoningEffort: 'high' },
+          draft: { model: 'claudebox-opus', reasoningEffort: 'high' },
           commentary: { model: 'model-b', reasoningEffort: 'low' },
           summary: { model: 'model-a', reasoningEffort: 'medium' }
         },
@@ -299,7 +299,7 @@ describe('operator console', () => {
       type: 'runtime_settings',
       schema_version: 1,
       providers: {
-        draft: { model: 'model-a', reasoning_effort: 'none' },
+        draft: { model: 'claudebox-sonnet', reasoning_effort: 'high' },
         commentary: { model: 'model-b', reasoning_effort: 'low' },
         summary: { model: 'model-a', reasoning_effort: 'medium' }
       },

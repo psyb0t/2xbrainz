@@ -4,10 +4,12 @@ import asyncio
 import importlib.util
 import json
 import unittest
+from email.message import Message
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 from two_x_brainz.config import Settings
 from two_x_brainz.contracts import (
@@ -37,7 +39,7 @@ def _load_prompt_module() -> Any:
 _PROMPTS = _load_prompt_module()
 
 
-def _settings(flow_model: str) -> Settings:
+def _settings(flow_model: str, *, token: str | None = None) -> Settings:
     return Settings(
         talkies_ws_url="ws://aigate.test/talkies/v1/audio/transcriptions/stream",
         talkies_model="test-asr-model",
@@ -46,7 +48,7 @@ def _settings(flow_model: str) -> Settings:
         aigate_reply_model=flow_model,
         aigate_coach_model=flow_model,
         aigate_summary_model=flow_model,
-        aigate_token=None,
+        aigate_token=token,
         log_level="INFO",
         log_file=Path("/tmp/2xbrainz-real-prompt-test.log"),
     )
@@ -85,28 +87,109 @@ class RealAIGatePromptContractTests(unittest.TestCase):
         ):
             _PROMPTS._fixture_models(_settings("fallback-model"))
 
-    def test_reply_research_requires_completed_research_tool_activity(self) -> None:
-        _PROMPTS._assert_research_activity(
-            [
-                {"phase": "tool_started", "tool": "research_web"},
-                {"phase": "tool_completed", "tool": "research_web"},
-            ]
-        )
+    def test_reply_research_requires_workspace_checkout(self) -> None:
+        settings = _settings("fallback-model", token="fixture-token")
+        entries = ({"name": "aigate_inspect", "type": "dir"},)
+        remote = '[remote "origin"]\nurl = https://github.com/psyb0t/aigate\n'
+        with (
+            patch.object(_PROMPTS, "_read_workspace_entries", return_value=entries),
+            patch.object(_PROMPTS, "_read_workspace_file", return_value=remote),
+        ):
+            checkout = _PROMPTS._find_research_checkout(settings, "workspace-id")
+        self.assertEqual(checkout, "aigate_inspect")
 
-        invalid_activities: tuple[list[dict[str, object]], ...] = (
-            [],
-            [{"phase": "tool_started", "tool": "research_web"}],
-            [{"phase": "tool_completed", "tool": "execute_code"}],
-        )
-        for activities in invalid_activities:
-            with (
-                self.subTest(activities=activities),
-                self.assertRaisesRegex(
-                    _PROMPTS.PromptFixtureError,
-                    "did not autonomously complete",
-                ),
+        with (
+            patch.object(_PROMPTS, "_read_workspace_entries", return_value=entries),
+            patch.object(
+                _PROMPTS,
+                "_read_workspace_file",
+                return_value='[remote "origin"]\nurl = https://example.invalid\n',
+            ),
+            self.assertRaisesRegex(
+                _PROMPTS.PromptFixtureError,
+                "required repository checkout",
+            ),
+        ):
+            _PROMPTS._find_research_checkout(settings, "workspace-id")
+
+    def test_reply_research_finds_nested_workspace_checkout(self) -> None:
+        settings = _settings("fallback-model", token="fixture-token")
+        listings: dict[tuple[str, ...], tuple[dict[str, object], ...]] = {
+            ("workspace-id",): ({"name": "repos", "type": "dir"},),
+            ("workspace-id", "repos"): ({"name": "aigate", "type": "dir"},),
+            ("workspace-id", "repos", "aigate"): (),
+        }
+        remote = '[remote "origin"]\nurl = https://github.com/psyb0t/aigate.git\n'
+
+        def read_entries(
+            _settings: Settings,
+            *path_parts: str,
+        ) -> tuple[dict[str, object], ...]:
+            return listings[path_parts]
+
+        def read_file(_settings: Settings, *path_parts: str) -> str | None:
+            if path_parts == (
+                "workspace-id",
+                "repos",
+                "aigate",
+                ".git",
+                "config",
             ):
-                _PROMPTS._assert_research_activity(activities)
+                return remote
+            return None
+
+        with (
+            patch.object(_PROMPTS, "_read_workspace_entries", side_effect=read_entries),
+            patch.object(_PROMPTS, "_read_workspace_file", side_effect=read_file),
+        ):
+            checkout = _PROMPTS._find_research_checkout(settings, "workspace-id")
+
+        self.assertEqual(checkout, "repos/aigate")
+
+    def test_workspace_listing_uses_authenticated_workspace_path(self) -> None:
+        response = _HTTPResponse(
+            json.dumps(
+                {
+                    "path": "workspace-id",
+                    "entries": [{"name": "aigate", "type": "dir"}],
+                }
+            ).encode()
+        )
+        settings = _settings("fallback-model", token="fixture-token")
+
+        with patch.object(_PROMPTS, "urlopen", return_value=response) as opener:
+            entries = _PROMPTS._read_workspace_entries(settings, "workspace-id")
+
+        request = opener.call_args.args[0]
+        self.assertEqual(
+            request.full_url,
+            "https://aigate.test/claudebox/files/workspace-id",
+        )
+        self.assertEqual(request.get_header("Authorization"), "Bearer fixture-token")
+        self.assertEqual(entries, ({"name": "aigate", "type": "dir"},))
+
+    def test_workspace_listing_rejects_http_and_invalid_json(self) -> None:
+        settings = _settings("fallback-model", token="fixture-token")
+        forbidden = HTTPError(
+            url="https://aigate.test/claudebox/files/workspace-id",
+            code=403,
+            msg="forbidden",
+            hdrs=Message(),
+            fp=None,
+        )
+        responses: tuple[tuple[object, str], ...] = (
+            (forbidden, "HTTP 403"),
+            (_HTTPResponse(b"not-json"), "invalid JSON"),
+        )
+        for response, expected in responses:
+            with (
+                self.subTest(expected=expected),
+                patch.object(_PROMPTS, "urlopen", side_effect=response)
+                if isinstance(response, BaseException)
+                else patch.object(_PROMPTS, "urlopen", return_value=response),
+                self.assertRaisesRegex(_PROMPTS.PromptFixtureError, expected),
+            ):
+                _PROMPTS._read_workspace_entries(settings, "workspace-id")
 
     def test_accepts_plain_completed_outputs(self) -> None:
         _PROMPTS._assert_completed_text(
@@ -255,3 +338,18 @@ class RealAIGatePromptContractTests(unittest.TestCase):
         self.assertTrue(
             all(record["kind"] == "provider_activity" for record in records[1:])
         )
+
+
+class _HTTPResponse:
+    def __init__(self, body: bytes, status: int = 200) -> None:
+        self._body = body
+        self.status = status
+
+    def __enter__(self) -> _HTTPResponse:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        del args
+
+    def read(self, limit: int) -> bytes:
+        return self._body[:limit]

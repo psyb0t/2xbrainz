@@ -27,7 +27,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.aigate_reply_model, DEFAULT_AIGATE_REPLY_MODEL)
         self.assertEqual(settings.aigate_coach_model, DEFAULT_AIGATE_COACH_MODEL)
         self.assertEqual(settings.aigate_summary_model, DEFAULT_AIGATE_SUMMARY_MODEL)
-        self.assertEqual(settings.aigate_reply_reasoning_effort, "none")
+        self.assertEqual(settings.aigate_reply_reasoning_effort, "high")
         self.assertEqual(settings.aigate_coach_reasoning_effort, "none")
         self.assertEqual(settings.aigate_summary_reasoning_effort, "none")
         self.assertTrue(settings.web_research_enabled)
