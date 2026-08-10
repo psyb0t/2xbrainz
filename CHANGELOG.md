@@ -3,6 +3,18 @@
 All notable changes per release. Versions follow
 [semantic versioning](https://semver.org).
 
+## v3.1.1 — 2026-08-10
+
+Repair browser settings saved before Claudebox Reply reasoning became strict.
+
+- Preserve a saved, available Reply model while replacing an unsupported
+  `none` or `minimal` reasoning value with the backend Reply default before the
+  browser sends its first runtime-settings message.
+- Cover the migration through unit, WebSocket-message, and compiled-browser
+  regressions seeded with legacy browser-local settings.
+- Document the distinct Reply, Private coach, and Story reasoning defaults and
+  supported choices consistently across the README and reference docs.
+
 ## v3.1.0 — 2026-08-09
 
 Add persistent Claudebox repository research with interruption recovery, while

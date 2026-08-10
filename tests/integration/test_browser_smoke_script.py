@@ -207,6 +207,7 @@ def _successful_response() -> str:
         "modelSelectedInView": True,
         "modelResultCount": "120 of 120",
         "persistedDraftModel": "claudebox-provider-example-model-001",
+        "persistedDraftReasoning": "high",
         "selectedDraftModel": "claudebox-provider-example-model-001",
         "generationCards": 0,
         "replyItems": 6,

@@ -3,6 +3,8 @@ import type { ProviderAssignment, ProviderOutputKind, WebSnapshot } from './cont
 export const RUNTIME_SETTINGS_KEY = '2xbrainz.web.settings.v1';
 export const RUNTIME_SETTINGS_SCHEMA_VERSION = 1;
 export const MAX_SESSION_BRIEF_CHARACTERS = 4_000;
+const REASONING_EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high']);
+const CLAUDEBOX_REASONING_EFFORTS = new Set(['low', 'medium', 'high']);
 
 export interface BrowserRuntimeSettings {
   schemaVersion: 1;
@@ -72,16 +74,23 @@ export function applicableRuntimeSettings(
   return {
     ...saved,
     providers: {
-      draft: availableAssignment(saved.providers.draft, defaults.providers.draft, availableModels),
+      draft: availableAssignment(
+        saved.providers.draft,
+        defaults.providers.draft,
+        availableModels,
+        CLAUDEBOX_REASONING_EFFORTS
+      ),
       commentary: availableAssignment(
         saved.providers.commentary,
         defaults.providers.commentary,
-        availableModels
+        availableModels,
+        REASONING_EFFORTS
       ),
       summary: availableAssignment(
         saved.providers.summary,
         defaults.providers.summary,
-        availableModels
+        availableModels,
+        REASONING_EFFORTS
       )
     },
     talkiesModel: availableTalkiesModels.has(saved.talkiesModel)
@@ -148,16 +157,19 @@ function isAssignment(value: unknown): value is ProviderAssignment {
     typeof value.model === 'string' &&
     value.model.length > 0 &&
     typeof value.reasoningEffort === 'string' &&
-    ['none', 'minimal', 'low', 'medium', 'high'].includes(value.reasoningEffort)
+    REASONING_EFFORTS.has(value.reasoningEffort)
   );
 }
 
 function availableAssignment(
   saved: ProviderAssignment,
   fallback: ProviderAssignment,
-  available: Set<string>
+  available: Set<string>,
+  allowedReasoningEfforts: Set<string>
 ): ProviderAssignment {
-  return available.has(saved.model) ? saved : fallback;
+  if (!available.has(saved.model)) return fallback;
+  if (allowedReasoningEfforts.has(saved.reasoningEffort)) return saved;
+  return { ...saved, reasoningEffort: fallback.reasoningEffort };
 }
 
 function isNullableString(value: unknown): value is string | null {

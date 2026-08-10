@@ -102,6 +102,34 @@ describe('runtime settings', () => {
     expect(applicable.systemNode).toBeNull();
   });
 
+  it('repairs a saved Claudebox reasoning value that Reply no longer accepts', () => {
+    const saved = {
+      ...settingsFromSnapshot(SNAPSHOT),
+      providers: {
+        ...SNAPSHOT.provider.assignments,
+        draft: { model: 'saved-model', reasoningEffort: 'minimal' }
+      }
+    };
+    const compatibleSnapshot = {
+      ...SNAPSHOT,
+      provider: {
+        ...SNAPSHOT.provider,
+        models: ['reply-default', 'saved-model'],
+        assignments: {
+          ...SNAPSHOT.provider.assignments,
+          draft: { model: 'reply-default', reasoningEffort: 'high' }
+        }
+      }
+    };
+
+    const applicable = applicableRuntimeSettings(saved, compatibleSnapshot);
+
+    expect(applicable.providers.draft).toEqual({
+      model: 'saved-model',
+      reasoningEffort: 'high'
+    });
+  });
+
   it('maps browser names to the strict websocket contract', () => {
     const message = runtimeSettingsMessage(settingsFromSnapshot(SNAPSHOT));
     expect(message).toEqual(

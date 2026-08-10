@@ -238,9 +238,10 @@ independent multi-turn finals without recreating either capture process.
   tool or lifecycle event is the boundary that starts a new chronological row.
   Svelte flexes expanded guidance into height released by collapsed panels and
   owns browser-local layout plus safe runtime settings. Reply, Coach, and Story
-  model/reasoning assignments, the Talkies model, session brief, research toggle,
-  and audio names are sent as one validated settings snapshot. Credentials and
-  endpoints remain environment-only.
+  model/reasoning assignments, the Talkies model, session brief, enabled research
+  policy, and audio names are sent as one validated settings snapshot. Saved
+  Reply reasoning is normalized to Claudebox's supported values before that
+  snapshot is sent. Credentials and endpoints remain environment-only.
 - [`logging_config.py`](../src/two_x_brainz/logging_config.py) writes every
   runtime event to a credential-redacted rotating JSON log. It is the durable
   reconstruction surface; it retains text events but never PCM. DEBUG mode also

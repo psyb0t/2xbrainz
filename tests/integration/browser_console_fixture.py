@@ -28,7 +28,7 @@ from two_x_brainz.contracts import (
     TranscriptSnapshot,
 )
 from two_x_brainz.logging_config import configure_logging
-from two_x_brainz.provider_selection import ProviderSelection
+from two_x_brainz.provider_selection import ProviderAssignment, ProviderSelection
 from two_x_brainz.terminal import LiveTerminal
 from two_x_brainz.web import WebConsole, WebRuntimeSettings
 
@@ -226,7 +226,11 @@ def _seed_console(console: WebConsole) -> None:
         talkies_model="fixture-asr",
         session_brief=None,
         web_research_enabled=True,
-        selection=ProviderSelection.uniform(_FIXTURE_MODEL, "medium"),
+        selection=ProviderSelection(
+            draft=ProviderAssignment(_FIXTURE_MODEL, "high"),
+            commentary=ProviderAssignment(_FIXTURE_MODEL, "medium"),
+            summary=ProviderAssignment(_FIXTURE_MODEL, "medium"),
+        ),
         callback=_accept_provider_settings,
     )
     console.consume(

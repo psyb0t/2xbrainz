@@ -171,8 +171,9 @@ The top bar opens a tabbed **Settings** dialog:
   Private coach, and
   Story so far—with result counts, readable scrolling inventories, visible
   current-model markers, and automatic positioning on each selected model.
-  Every flow has its own reasoning effort (`Default`, `Minimal`, `Low`,
-  `Medium`, or `High`), and the tab also selects the Talkies ASR model; and
+  Reply offers the Claudebox-supported `Low`, `Medium`, and `High` efforts;
+  Coach and Story additionally offer `Default` and `Minimal`. The tab also
+  selects the Talkies ASR model; and
 - **Audio** owns device discovery, per-candidate meters, and the microphone and
   system-audio selections.
 
@@ -182,8 +183,9 @@ defaults. The built-in ASR default is
 `local-talkies-cuda-nemotron-3.5-asr-0.6b`; startup checks both its inventory
 entry and the CUDA service's `device=cuda` health claim before recording. A
 stale model falls back to an available backend default; a stale
-audio pair requires a fresh selection. Credentials and service URLs are never
-stored in browser settings.
+audio pair requires a fresh selection. A saved Reply reasoning level from an
+older version is repaired to the current `high` default when Claudebox no longer
+accepts it. Credentials and service URLs are never stored in browser settings.
 
 Separate live Reply, Private coach, and Story-so-far generation flows each use
 one continuous chronological stream: status, visible reasoning, tool activity,

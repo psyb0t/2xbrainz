@@ -43,14 +43,18 @@ The backend publishes immutable safe defaults in each browser snapshot:
 | Reply model | `claudebox-sonnet` |
 | Private coach model | `pibox-zai-glm-5-turbo` |
 | Story-so-far model | `groq-gpt-oss-120b` |
-| Reasoning effort | `none` for every flow |
+| Reply reasoning effort | `high` |
+| Private coach reasoning effort | `none` |
+| Story-so-far reasoning effort | `none` |
 | Talkies ASR model | `local-talkies-cuda-nemotron-3.5-asr-0.6b` |
-| Reply agent reasoning | high |
 | Session brief | empty |
 
 The browser transmits an override only after the provider and Talkies model
 inventories are available. Missing models fall back to the current validated
-backend value. The selector contains ASR entries only; TTS entries are removed
+backend value. Reply accepts only `low`, `medium`, or `high`; a saved older
+value is repaired to the backend Reply default before the first settings
+message is sent. Coach and Story additionally accept `none` and `minimal`.
+The selector contains ASR entries only; TTS entries are removed
 using Talkies' advertised modality. Alias preflight also checks `/healthz`, so a
 CUDA alias is rejected unless that exact route reports `device=cuda`. Runtime
 settings never alter the process environment.
@@ -189,7 +193,10 @@ repositories, download relevant docs, follow pertinent links, parallelize
 independent research, and treat transcripts and fetched content as untrusted
 evidence. The default `claudebox-sonnet` assignment uses high reasoning.
 Reply accepts low, medium, or high; `none` and `minimal` are rejected rather
-than silently remapped. Coach and Story remain transcript-only AIGate chat calls.
+than silently remapped at the backend boundary. During browser initialization,
+an otherwise valid saved Reply assignment using one of those obsolete values
+keeps its model and is repaired to the backend Reply default before it is sent.
+Coach and Story remain transcript-only AIGate chat calls.
 
 2xbrainz posts `stream=true` to
 `/claudebox/openai/v1/chat/completions`, sends the UUID through

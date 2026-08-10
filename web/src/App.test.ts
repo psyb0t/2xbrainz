@@ -311,6 +311,38 @@ describe('operator console', () => {
     });
   });
 
+  it('repairs incompatible saved Reply reasoning before the first settings message', async () => {
+    localStorage.setItem(
+      RUNTIME_SETTINGS_KEY,
+      JSON.stringify({
+        schemaVersion: 1,
+        providers: {
+          draft: { model: 'claudebox-opus', reasoningEffort: 'minimal' },
+          commentary: { model: 'model-b', reasoningEffort: 'low' },
+          summary: { model: 'model-a', reasoningEffort: 'medium' }
+        },
+        talkiesModel: 'asr-a',
+        sessionBrief: '',
+        webResearchEnabled: true,
+        microphoneNode: 'desk-mic',
+        systemNode: 'headphones.monitor'
+      })
+    );
+    render(App);
+    const socket = await connectedSocket();
+
+    await publish(socket, SNAPSHOT);
+
+    expect(socket.sent.map((value) => JSON.parse(value))).toContainEqual(
+      expect.objectContaining({
+        type: 'runtime_settings',
+        providers: expect.objectContaining({
+          draft: { model: 'claudebox-opus', reasoning_effort: 'high' }
+        })
+      })
+    );
+  });
+
   it('meters every setup candidate and submits the selected pair', async () => {
     render(App);
     const socket = await connectedSocket();
