@@ -217,6 +217,11 @@ async def _accept_provider_settings(
     return True
 
 
+async def _accept_manual_dispatch() -> bool:
+    logger.info("manual browser dispatch accepted")
+    return True
+
+
 def _seed_console(console: WebConsole) -> None:
     console.configure_runtime_settings(
         models=tuple(
@@ -226,17 +231,21 @@ def _seed_console(console: WebConsole) -> None:
         talkies_model="fixture-asr",
         session_brief=None,
         web_research_enabled=True,
+        auto_dispatch_enabled=False,
         selection=ProviderSelection(
             draft=ProviderAssignment(_FIXTURE_MODEL, "high"),
             commentary=ProviderAssignment(_FIXTURE_MODEL, "medium"),
             summary=ProviderAssignment(_FIXTURE_MODEL, "medium"),
+            research=ProviderAssignment(_FIXTURE_MODEL, "high"),
         ),
         callback=_accept_provider_settings,
+        dispatch_callback=_accept_manual_dispatch,
+        dispatch_state_callback=lambda: (False, True),
     )
     console.consume(
         {
             "kind": "session",
-            "state": "paused",
+            "state": "running",
             "action": "browser fixture ready",
         }
     )
@@ -312,6 +321,43 @@ def _seed_console(console: WebConsole) -> None:
             "phase": "request_failed",
             "error_type": "TimeoutError",
             "error_message": "fixture provider deadline exceeded",
+        },
+        {
+            "flow_id": "fixture-research",
+            "output_kind": "research",
+            "phase": "request_started",
+        },
+        {
+            "flow_id": "fixture-research",
+            "output_kind": "research",
+            "phase": "reasoning_streaming",
+            "reasoning": "Inspecting the primary project documentation.",
+        },
+        {
+            "flow_id": "fixture-research",
+            "output_kind": "research",
+            "phase": "tool_started",
+            "tool": "WebFetch",
+            "tool_input": {"url": "https://example.com/project"},
+        },
+        {
+            "flow_id": "fixture-research",
+            "output_kind": "research",
+            "phase": "tool_completed",
+            "tool": "WebFetch",
+            "tool_result": "Primary documentation describes the gateway flow.",
+        },
+        {
+            "flow_id": "fixture-research",
+            "output_kind": "research",
+            "phase": "output_streaming",
+            "output": "Verified the gateway flow from primary documentation.",
+        },
+        {
+            "flow_id": "fixture-research",
+            "output_kind": "research",
+            "phase": "request_completed",
+            "output": "Verified the gateway flow from primary documentation.",
         },
     ):
         console.record_provider_activity(

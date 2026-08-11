@@ -107,15 +107,18 @@ independent multi-turn finals without recreating either capture process.
 - Every finalized turn produces exactly one timeline record. Duplicate ASR
   finals do not add another entry.
 - A remote endpoint with non-empty text marks only a candidate end. Its stable
-  final starts reply, private commentary, and rolling-summary jobs concurrently
-  through three independently configured AIGate clients.
+  final starts reply, private commentary, rolling-summary, and Research jobs
+  concurrently through four independently configured clients when automatic
+  dispatch is enabled. Manual mode records the revision without provider work;
+  Send supersedes active work and dispatches the newest complete snapshot.
 - A remote final received while the local-user stream is `speaking` or at a
   `candidate_end` is overlap, not a reply opportunity. It keeps its timeline
   entry but suppresses the draft until a later remote final follows local-user
   finalization.
 - A finalized user turn starts private commentary and a rolling summary.
-- Remote speech supersedes the active reply and cancels commentary and summary
-  work. User speech cancels an active reply.
+- In automatic mode, remote speech supersedes active reply, commentary, summary,
+  and research work. In manual mode, speech only marks newer unsent state until
+  Send is pressed.
 - Cancellation discards only unfinished provider output, reasoning, and tool
   work and closes the active SSE response so superseded upstream work does not
   keep occupying provider capacity. Finalized transcript lines remain in
@@ -144,6 +147,9 @@ independent multi-turn finals without recreating either capture process.
   explicitly corrects it, closes a prior question when a speaker directly
   answers it even hesitantly or outside the requested format, and does not infer
   unsupported qualifiers.
+- Completed current research is bounded shared evidence for later Reply, Coach,
+  Story, and Research requests. Failed, cancelled, stale, or no-op research never
+  advances that evidence.
 - The AIGate boundary receives transcript text only. It never receives raw
   frames, PipeWire node identifiers, or Talkies credentials.
 
@@ -190,7 +196,7 @@ independent multi-turn finals without recreating either capture process.
   reply priority, overlap suppression, cancellation, provider deadlines,
   stale-result rejection, and bounded completed result queues. Reply guidance
   is display-only: it never becomes an input to a later provider request.
-- [`claudebox.py`](../src/two_x_brainz/claudebox.py) runs Reply through
+- [`claudebox.py`](../src/two_x_brainz/claudebox.py) runs Research through
   AIGate's direct OpenAI-compatible Claudebox stream. Each Start creates a UUID
   workspace and fresh Claude Code session; later drafts continue in that workspace. Every
   call resends the complete bounded transcript plus accepted running summary.
@@ -199,7 +205,7 @@ independent multi-turn finals without recreating either capture process.
   explicitly set `X-Aicodebox-No-Tools: 0`, and append instructions with
   `X-Aicodebox-Append-System-Prompt` rather than replacing Claude Code's native
   agent prompt with an OpenAI system message. Plain OpenAI SSE content deltas
-  update the Reply feed immediately. Explicit or spoken repository research is
+  update the Research feed immediately. Explicit or spoken repository research is
   buffered around the deployed Claudebox tool-stream limitation, and an
   incomplete ordinary stream gets one bounded same-workspace recovery. Native
   tool and private reasoning events remain internal to Claudebox. Superseded
@@ -207,11 +213,11 @@ independent multi-turn finals without recreating either capture process.
   and continues in the same workspace. Starting a new listening session detaches
   any old workspace task and never waits for it.
 - [`aigate.py`](../src/two_x_brainz/aigate.py) is the OpenAI-compatible
-  chat-completions provider used by Coach and Story. It applies
+  chat-completions provider used by Reply, Coach, and Story. It applies
   application-owned token and text-length limits before provider output enters
   application state, then parses CommonMark into a text-only subset. Production
   requests consume bounded SSE and publish correlated activity for Reply,
-  Private coach, and Story-so-far flows: streamed output, explicitly exposed
+  Private coach, Story-so-far, and agentic Research flows: streamed output, explicitly exposed
   provider reasoning and bounded activity records.
   Safe inline presentation becomes visible text; structural Markdown and HTML
   are rejected without rendering provider-controlled markup. Providers that do
@@ -237,11 +243,10 @@ independent multi-turn finals without recreating either capture process.
   flow across interleaved concurrent flows and across each other; a same-flow
   tool or lifecycle event is the boundary that starts a new chronological row.
   Svelte flexes expanded guidance into height released by collapsed panels and
-  owns browser-local layout plus safe runtime settings. Reply, Coach, and Story
-  model/reasoning assignments, the Talkies model, session brief, enabled research
-  policy, and audio names are sent as one validated settings snapshot. Saved
-  Reply reasoning is normalized to Claudebox's supported values before that
-  snapshot is sent. Credentials and endpoints remain environment-only.
+  owns browser-local layout plus safe runtime settings. Reply, Coach, Story, and
+  Research model/reasoning assignments, the Talkies model, session brief,
+  automatic dispatch, enabled research policy, and audio names are sent as one
+  validated settings snapshot. Credentials and endpoints remain environment-only.
 - [`logging_config.py`](../src/two_x_brainz/logging_config.py) writes every
   runtime event to a credential-redacted rotating JSON log. It is the durable
   reconstruction surface; it retains text events but never PCM. DEBUG mode also

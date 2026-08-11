@@ -52,7 +52,8 @@ Remote: Verify the release gates.`,
     assignments: {
       draft: { model: 'claudebox-sonnet', reasoningEffort: 'high' },
       commentary: { model: 'model-b', reasoningEffort: 'low' },
-      summary: { model: 'model-a', reasoningEffort: 'medium' }
+      summary: { model: 'model-a', reasoningEffort: 'medium' },
+      research: { model: 'claudebox-sonnet', reasoningEffort: 'high' }
     },
     activity: [
       {
@@ -104,22 +105,26 @@ Remote: Verify the release gates.`,
     ]
   },
   settings: {
-    schemaVersion: 1,
+    schemaVersion: 2,
     talkiesModels: ['asr-a', 'asr-b'],
     talkiesModel: 'asr-a',
     sessionBrief: '',
     webResearchEnabled: true,
+    autoDispatchEnabled: true,
     defaults: {
       assignments: {
         draft: { model: 'claudebox-sonnet', reasoningEffort: 'high' },
         commentary: { model: 'model-b', reasoningEffort: 'low' },
-        summary: { model: 'model-a', reasoningEffort: 'medium' }
+        summary: { model: 'model-a', reasoningEffort: 'medium' },
+        research: { model: 'claudebox-sonnet', reasoningEffort: 'high' }
       },
       talkiesModel: 'asr-a',
       sessionBrief: '',
-      webResearchEnabled: true
+      webResearchEnabled: true,
+      autoDispatchEnabled: true
     }
   },
+  dispatch: { autoEnabled: true, hasUnsentTranscript: false },
   activeAudio: {
     microphone: { label: 'Desk microphone', nodeName: 'desk-mic', level: 41, state: 'ready' },
     system: { label: 'Headphones', nodeName: 'headphones.monitor', level: 72, state: 'ready' }
@@ -246,7 +251,7 @@ describe('operator console', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Models' }));
     await fireEvent.click(screen.getByRole('button', { name: 'Reply model' }));
     expect(screen.getByRole('textbox', { name: 'Filter models' })).toBeTruthy();
-    expect(screen.getByText('2 of 4')).toBeTruthy();
+    expect(screen.getByText('4 of 4')).toBeTruthy();
     expect(screen.getByText('Current')).toBeTruthy();
     await fireEvent.input(screen.getByRole('textbox', { name: 'Filter models' }), {
       target: { value: 'claudebox-opus' }
@@ -270,19 +275,43 @@ describe('operator console', () => {
     expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
   });
 
+  it('only enables manual Send when the backend reports unsent transcript', async () => {
+    render(App);
+    const socket = await connectedSocket();
+    await publish(socket, {
+      ...SNAPSHOT,
+      settings: { ...SNAPSHOT.settings, autoDispatchEnabled: false },
+      dispatch: { autoEnabled: false, hasUnsentTranscript: false }
+    });
+
+    const send = screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement;
+    expect(send.disabled).toBe(true);
+    await publish(socket, {
+      ...SNAPSHOT,
+      settings: { ...SNAPSHOT.settings, autoDispatchEnabled: false },
+      dispatch: { autoEnabled: false, hasUnsentTranscript: true }
+    });
+    expect(send.disabled).toBe(false);
+    await fireEvent.click(send);
+
+    expect(socket.sent.map((value) => JSON.parse(value))).toContainEqual({ type: 'dispatch' });
+  });
+
   it('clears browser overrides and sends backend defaults', async () => {
     localStorage.setItem(
       RUNTIME_SETTINGS_KEY,
       JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: 2,
         providers: {
           draft: { model: 'claudebox-opus', reasoningEffort: 'high' },
           commentary: { model: 'model-b', reasoningEffort: 'low' },
-          summary: { model: 'model-a', reasoningEffort: 'medium' }
+          summary: { model: 'model-a', reasoningEffort: 'medium' },
+          research: { model: 'claudebox-sonnet', reasoningEffort: 'high' }
         },
         talkiesModel: 'asr-b',
         sessionBrief: 'Saved context.',
         webResearchEnabled: false,
+        autoDispatchEnabled: true,
         microphoneNode: 'desk-mic',
         systemNode: 'headphones.monitor'
       })
@@ -297,21 +326,23 @@ describe('operator console', () => {
     expect(localStorage.getItem(RUNTIME_SETTINGS_KEY)).toBeNull();
     expect(socket.sent.map((value) => JSON.parse(value))).toContainEqual({
       type: 'runtime_settings',
-      schema_version: 1,
+      schema_version: 2,
       providers: {
         draft: { model: 'claudebox-sonnet', reasoning_effort: 'high' },
         commentary: { model: 'model-b', reasoning_effort: 'low' },
-        summary: { model: 'model-a', reasoning_effort: 'medium' }
+        summary: { model: 'model-a', reasoning_effort: 'medium' },
+        research: { model: 'claudebox-sonnet', reasoning_effort: 'high' }
       },
       talkies_model: 'asr-a',
       session_brief: '',
       web_research_enabled: true,
+      auto_dispatch_enabled: true,
       microphone_node: null,
       system_node: null
     });
   });
 
-  it('repairs incompatible saved Reply reasoning before the first settings message', async () => {
+  it('migrates legacy settings before the first settings message', async () => {
     localStorage.setItem(
       RUNTIME_SETTINGS_KEY,
       JSON.stringify({
@@ -337,7 +368,8 @@ describe('operator console', () => {
       expect.objectContaining({
         type: 'runtime_settings',
         providers: expect.objectContaining({
-          draft: { model: 'claudebox-opus', reasoning_effort: 'high' }
+          draft: { model: 'claudebox-opus', reasoning_effort: 'minimal' },
+          research: { model: 'claudebox-sonnet', reasoning_effort: 'high' }
         })
       })
     );

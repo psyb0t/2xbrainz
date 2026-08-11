@@ -124,6 +124,7 @@ class TranscriptSnapshot:
     revision: int
     lines: tuple[TranscriptLine, ...]
     running_summary: str = ""
+    research_context: str = ""
 
 
 @dataclass(frozen=True, slots=True)

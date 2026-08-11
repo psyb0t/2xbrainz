@@ -13,11 +13,12 @@ from two_x_brainz.errors import ConfigurationError
 
 
 class ProviderFlow(StrEnum):
-    """The three independent LLM jobs visible in the operator console."""
+    """The independent LLM jobs visible in the operator console."""
 
     DRAFT = "draft"
     COMMENTARY = "commentary"
     SUMMARY = "summary"
+    RESEARCH = "research"
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,17 +37,18 @@ class ProviderAssignment:
 
 @dataclass(frozen=True, slots=True)
 class ProviderSelection:
-    """Explicit assignments for reply, private coaching, and story generation."""
+    """Explicit assignments for every independent provider flow."""
 
     draft: ProviderAssignment
     commentary: ProviderAssignment
     summary: ProviderAssignment
+    research: ProviderAssignment
 
     @classmethod
     def uniform(cls, model: str, reasoning_effort: str) -> ProviderSelection:
-        """Use one validated initial assignment for all three flows."""
+        """Use one validated initial assignment for all flows."""
         assignment = ProviderAssignment(model, reasoning_effort)
-        return cls(assignment, assignment, assignment)
+        return cls(assignment, assignment, assignment, assignment)
 
     def assignment(self, flow: ProviderFlow) -> ProviderAssignment:
         """Return the assignment for one validated flow."""
@@ -54,7 +56,9 @@ class ProviderSelection:
             return self.draft
         if flow is ProviderFlow.COMMENTARY:
             return self.commentary
-        return self.summary
+        if flow is ProviderFlow.SUMMARY:
+            return self.summary
+        return self.research
 
     def replace(
         self,
@@ -63,11 +67,38 @@ class ProviderSelection:
     ) -> ProviderSelection:
         """Return a selection with exactly one flow changed."""
         if flow is ProviderFlow.DRAFT:
-            return ProviderSelection(assignment, self.commentary, self.summary)
+            return ProviderSelection(
+                assignment,
+                self.commentary,
+                self.summary,
+                self.research,
+            )
         if flow is ProviderFlow.COMMENTARY:
-            return ProviderSelection(self.draft, assignment, self.summary)
-        return ProviderSelection(self.draft, self.commentary, assignment)
+            return ProviderSelection(
+                self.draft,
+                assignment,
+                self.summary,
+                self.research,
+            )
+        if flow is ProviderFlow.SUMMARY:
+            return ProviderSelection(
+                self.draft,
+                self.commentary,
+                assignment,
+                self.research,
+            )
+        return ProviderSelection(
+            self.draft,
+            self.commentary,
+            self.summary,
+            assignment,
+        )
 
-    def models(self) -> tuple[str, str, str]:
+    def models(self) -> tuple[str, str, str, str]:
         """Return every configured model for inventory validation."""
-        return (self.draft.model, self.commentary.model, self.summary.model)
+        return (
+            self.draft.model,
+            self.commentary.model,
+            self.summary.model,
+            self.research.model,
+        )

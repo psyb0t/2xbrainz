@@ -148,7 +148,7 @@ class CLIReplayIntegrationTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         status = json.loads(result.stdout)
-        self.assertEqual(status["aigate_reply_model"], "claudebox-sonnet")
+        self.assertEqual(status["aigate_reply_model"], "cerebras-glm-4.7")
         self.assertEqual(status["aigate_coach_model"], "pibox-zai-glm-5-turbo")
         self.assertEqual(status["aigate_summary_model"], "groq-gpt-oss-120b")
         self.assertFalse(status["aigate_token_configured"])

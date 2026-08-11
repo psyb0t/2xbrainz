@@ -1468,10 +1468,17 @@ def _render_transcript(transcript: TranscriptSnapshot) -> str:
         if line.text.strip()
     ]
     recent_transcript = "\n".join(lines)
+    research_context = ""
+    if transcript.research_context:
+        research_context = f"""\
+Verified research context:
+{transcript.research_context}
+
+"""
     if not transcript.running_summary:
-        return recent_transcript
+        return f"{research_context}{recent_transcript}"
     return f"""\
-Running summary:
+{research_context}Running summary:
 {transcript.running_summary}
 
 Recent transcript:

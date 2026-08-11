@@ -124,7 +124,7 @@ def _read_scorecard(directory: Path, scenario: str) -> dict[str, object]:
         scorecard.get("mean_word_error_rate"),
         "mean word error rate",
     )
-    if scorecard.get("research_tool_completed") is not True:
+    if scorecard.get("research_completed") is not True:
         raise ProtocolError("evaluation scorecard lacks completed research")
     return scorecard
 

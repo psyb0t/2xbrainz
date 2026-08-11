@@ -122,6 +122,7 @@ required = {
     "web console snapshot streamed",
     "frontend stream diagnostic received",
     "fake AIGate browser flow completed",
+    "manual browser dispatch accepted",
 }
 missing = required.difference(messages)
 assert not missing, f"fixture log is missing stream diagnostics: {sorted(missing)}"
@@ -216,8 +217,8 @@ assert isinstance(outputs, dict), f"browser script returned no outputs: {data!r}
 result = outputs["ui"]["result"]
 assert result["appShell"] is True
 assert result["connected"] is True
-assert result["providerFeeds"] == 3
-assert result["providerAssignments"] == 3
+assert result["providerFeeds"] == 4
+assert result["providerAssignments"] == 4
 assert result["modelFilter"] is True
 assert result["settingsModalBounded"] is True
 assert result["settingsTabs"] == 3
@@ -225,9 +226,9 @@ assert result["modelListScrollable"] is True
 assert result["modelOptionReadable"] is True
 assert result["modelSelectedInView"] is True
 assert result["modelResultCount"] == "120 of 120"
-assert result["persistedDraftModel"] == "claudebox-provider-example-model-001"
-assert result["persistedDraftReasoning"] == "high"
-assert result["selectedDraftModel"] == "claudebox-provider-example-model-001"
+assert result["persistedDraftModel"] == "claudebox-provider-example-model-001", result
+assert result["persistedDraftReasoning"] == "minimal", result
+assert result["selectedDraftModel"] == "claudebox-provider-example-model-001", result
 assert result["generationCards"] == 0
 assert result["replyItems"] == 6
 assert result["collapsedTraceRows"] is True
@@ -237,6 +238,8 @@ assert result["coachCancelled"] is True
 assert result["storyFailed"] is True
 assert result["failureReasonVisible"] is True
 assert result["storyResponses"] == 2
+assert result["researchCompleted"] is True, result
+assert result["manualSendEnabled"] is True, result
 assert result["streamOrder"] == [
     "stream-status",
     "stream-event",
@@ -362,10 +365,12 @@ print(json.dumps({
         {"action": "goto", "url": target, "wait_until": "domcontentloaded"},
         {
             "action": "eval",
-            "expression": "(() => { localStorage.setItem(\"2xbrainz.web.settings.v1\", JSON.stringify({ schemaVersion: 1, providers: { draft: { model: \"claudebox-provider-example-model-087\", reasoningEffort: \"minimal\" }, commentary: { model: \"claudebox-provider-example-model-087\", reasoningEffort: \"medium\" }, summary: { model: \"claudebox-provider-example-model-087\", reasoningEffort: \"medium\" } }, talkiesModel: \"fixture-asr\", sessionBrief: \"\", webResearchEnabled: true, microphoneNode: \"fixture-mic\", systemNode: \"fixture-system\" })); return true; })()"
+            "expression": "(() => { localStorage.setItem(\"2xbrainz.web.settings.v1\", JSON.stringify({ schemaVersion: 2, providers: { draft: { model: \"claudebox-provider-example-model-087\", reasoningEffort: \"minimal\" }, commentary: { model: \"claudebox-provider-example-model-087\", reasoningEffort: \"medium\" }, summary: { model: \"claudebox-provider-example-model-087\", reasoningEffort: \"medium\" }, research: { model: \"claudebox-provider-example-model-087\", reasoningEffort: \"high\" } }, talkiesModel: \"fixture-asr\", sessionBrief: \"\", webResearchEnabled: true, autoDispatchEnabled: false, microphoneNode: \"fixture-mic\", systemNode: \"fixture-system\" })); return true; })()"
         },
         {"action": "goto", "url": target, "wait_until": "domcontentloaded"},
         {"action": "sleep", "duration": 2},
+        {"action": "click", "selector": ".research-card .collapse-button"},
+        {"action": "click", "selector": ".header-actions .send-button"},
         {"action": "click", "selector": ".header-actions .quiet-button"},
         {"action": "click", "selector": ".settings-tabs button:nth-child(3)"},
         {"action": "click", "selector": ".settings-tabs button:nth-child(1)"},
@@ -383,7 +388,7 @@ print(json.dumps({
         {"action": "sleep", "duration": 0.5},
         {
             "action": "eval",
-            "expression": "(() => { const modal = document.querySelector(\".settings-modal\"); const rect = modal?.getBoundingClientRect(); const list = document.querySelector(\".model-options\"); const listRect = list?.getBoundingClientRect(); const listStyle = list ? getComputedStyle(list) : null; const option = document.querySelector(\".model-options button\"); const optionRect = option?.getBoundingClientRect(); const optionStyle = option ? getComputedStyle(option) : null; const selected = document.querySelector(\".model-options button.selected\"); const selectedRect = selected?.getBoundingClientRect(); const feed = document.querySelector(\".reply-card .provider-feed\"); const rows = [...document.querySelectorAll(\".reply-card .stream-event\")]; const output = document.querySelector(\".reply-card .stream-response\")?.textContent?.trim() ?? \"\"; const text = feed?.textContent ?? \"\"; const saved = JSON.parse(localStorage.getItem(\"2xbrainz.web.settings.v1\") ?? \"null\"); return { appShell: !!document.querySelector(\".app-shell\"), connected: !!document.querySelector(\".connection-dot.online\"), providerFeeds: document.querySelectorAll(\".provider-feed\").length, providerAssignments: document.querySelectorAll(\".provider-assignment\").length, settingsTabs: document.querySelectorAll(\".settings-tabs button\").length, modelFilter: !!document.querySelector(\"input[aria-label=\\\"Filter models\\\"]\"), settingsModalBounded: !!rect && rect.width < innerWidth && rect.height < innerHeight, modelListScrollable: !!list && !!listStyle && list.scrollHeight > list.clientHeight && listStyle.overflowY === \"scroll\", modelOptionReadable: !!optionRect && !!optionStyle && optionRect.height >= 36 && parseFloat(optionStyle.fontSize) >= 14, modelSelectedInView: !!selectedRect && !!listRect && selectedRect.top >= listRect.top && selectedRect.bottom <= listRect.bottom, modelResultCount: document.querySelector(\".model-search .model-picker-heading span\")?.textContent?.trim() ?? \"\", persistedDraftModel: saved?.providers?.draft?.model ?? \"\", persistedDraftReasoning: saved?.providers?.draft?.reasoningEffort ?? \"\", selectedDraftModel: document.querySelector(\".provider-assignment .model-picker-trigger\")?.textContent?.trim() ?? \"\", generationCards: document.querySelectorAll(\".generation-entry\").length, replyItems: document.querySelectorAll(\".reply-card .stream-item\").length, collapsedTraceRows: rows.length === 3 && rows.every((row) => !row.open), replyText: output, allFeedsIdle: document.querySelectorAll(\".provider-feed .streaming\").length === 0, coachCancelled: !!document.querySelector(\".coach-card .stream-status.cancelled\"), storyFailed: !!document.querySelector(\".story-card .stream-status.failed\"), failureReasonVisible: document.querySelector(\".story-card\")?.textContent?.includes(\"fixture provider deadline exceeded\") === true, storyResponses: document.querySelectorAll(\".story-card .stream-response\").length, streamOrder: [...(feed?.children ?? [])].map((item) => item.classList[0]), cleanText: !text.includes(\"WeWe\") && !text.includes(\"<unk>\") }; })()",
+            "expression": "(() => { const modal = document.querySelector(\".settings-modal\"); const rect = modal?.getBoundingClientRect(); const list = document.querySelector(\".model-options\"); const listRect = list?.getBoundingClientRect(); const listStyle = list ? getComputedStyle(list) : null; const option = document.querySelector(\".model-options button\"); const optionRect = option?.getBoundingClientRect(); const optionStyle = option ? getComputedStyle(option) : null; const selected = document.querySelector(\".model-options button.selected\"); const selectedRect = selected?.getBoundingClientRect(); const feed = document.querySelector(\".reply-card .provider-feed\"); const rows = [...document.querySelectorAll(\".reply-card .stream-event\")]; const output = document.querySelector(\".reply-card .stream-response\")?.textContent?.trim() ?? \"\"; const text = feed?.textContent ?? \"\"; const saved = JSON.parse(localStorage.getItem(\"2xbrainz.web.settings.v2\") ?? \"null\"); const research = document.querySelector(\".research-card\")?.textContent ?? \"\"; return { appShell: !!document.querySelector(\".app-shell\"), connected: !!document.querySelector(\".connection-dot.online\"), providerFeeds: document.querySelectorAll(\".provider-feed\").length, providerAssignments: document.querySelectorAll(\".provider-assignment\").length, settingsTabs: document.querySelectorAll(\".settings-tabs button\").length, modelFilter: !!document.querySelector(\"input[aria-label=\\\"Filter models\\\"]\"), settingsModalBounded: !!rect && rect.width < innerWidth && rect.height < innerHeight, modelListScrollable: !!list && !!listStyle && list.scrollHeight > list.clientHeight && listStyle.overflowY === \"scroll\", modelOptionReadable: !!optionRect && !!optionStyle && optionRect.height >= 36 && parseFloat(optionStyle.fontSize) >= 14, modelSelectedInView: !!selectedRect && !!listRect && selectedRect.top >= listRect.top && selectedRect.bottom <= listRect.bottom, modelResultCount: document.querySelector(\".model-search .model-picker-heading span\")?.textContent?.trim() ?? \"\", persistedDraftModel: saved?.providers?.draft?.model ?? \"\", persistedDraftReasoning: saved?.providers?.draft?.reasoningEffort ?? \"\", selectedDraftModel: document.querySelector(\".provider-assignment .model-picker-trigger\")?.textContent?.trim() ?? \"\", generationCards: document.querySelectorAll(\".generation-entry\").length, replyItems: document.querySelectorAll(\".reply-card .stream-item\").length, collapsedTraceRows: rows.length === 3 && rows.every((row) => !row.open), replyText: output, allFeedsIdle: document.querySelectorAll(\".provider-feed .streaming\").length === 0, coachCancelled: !!document.querySelector(\".coach-card .stream-status.cancelled\"), storyFailed: !!document.querySelector(\".story-card .stream-status.failed\"), failureReasonVisible: document.querySelector(\".story-card\")?.textContent?.includes(\"fixture provider deadline exceeded\") === true, storyResponses: document.querySelectorAll(\".story-card .stream-response\").length, researchCompleted: research.includes(\"Verified the gateway flow\") && !!document.querySelector(\".research-card .stream-tool\"), manualSendEnabled: !document.querySelector(\".header-actions .send-button\")?.disabled, streamOrder: [...(feed?.children ?? [])].map((item) => item.classList[0]), cleanText: !text.includes(\"WeWe\") && !text.includes(\"<unk>\") }; })()",
             "output_id": "ui",
         },
     ],

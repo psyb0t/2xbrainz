@@ -20,6 +20,7 @@ _MAX_TURN_TEXT_CHARACTERS = 2_000
 _MAX_MARKERS_PER_GROUP = 8
 _MAX_MARKER_CHARACTERS = 120
 _OUTPUT_KINDS = ("draft", "commentary", "summary")
+_PROVIDER_OUTPUT_KINDS = (*_OUTPUT_KINDS, "research")
 _MINIMUM_REAL_PROVIDER_CONCURRENCY = 3
 _MINIMUM_REAL_OVERLAPPING_PAIRS = 3
 _MAXIMUM_REAL_MEAN_WORD_ERROR_RATE = 0.25
@@ -152,7 +153,7 @@ class EvaluationReport:
     output_quality: dict[str, QualityResult]
     mean_word_error_rate: float | None = None
     maximum_word_error_rate: float | None = None
-    research_tool_completed: bool | None = None
+    research_completed: bool | None = None
 
     def as_dict(self) -> dict[str, object]:
         """Return a JSON-compatible report without provider prompts."""
@@ -331,7 +332,7 @@ def apply_live_quality_gates(
     scenario: ConversationScenario,
     word_error_rates: dict[str, float],
     *,
-    research_tool_completed: bool,
+    research_completed: bool,
 ) -> EvaluationReport:
     """Apply real ASR, interruption, research, and concurrency hard gates."""
     expected_ids = {turn.identifier for turn in scenario.turns}
@@ -368,14 +369,14 @@ def apply_live_quality_gates(
         and report.overlapping_provider_pairs >= _MINIMUM_REAL_OVERLAPPING_PAIRS
         and mean_rate <= _MAXIMUM_REAL_MEAN_WORD_ERROR_RATE
         and maximum_rate <= _MAXIMUM_REAL_TURN_WORD_ERROR_RATE
-        and research_tool_completed
+        and research_completed
     )
     return replace(
         report,
         passed=live_passed,
         mean_word_error_rate=mean_rate,
         maximum_word_error_rate=maximum_rate,
-        research_tool_completed=research_tool_completed,
+        research_completed=research_completed,
     )
 
 
@@ -397,7 +398,7 @@ def provider_flow_timings(
             output_kind = _bounded_text(
                 record.get("output_kind"), "provider output kind", 32
             )
-            if output_kind not in _OUTPUT_KINDS:
+            if output_kind not in _PROVIDER_OUTPUT_KINDS:
                 raise ProtocolError("provider activity has an unknown output kind")
             states[flow_id] = ProviderFlowTiming(
                 flow_id=flow_id,
@@ -793,7 +794,7 @@ def _markdown_report(payload: dict[str, object]) -> str:
 - Provider start spread: {payload["provider_start_spread_ms"]} ms
 - Mean word error rate: {payload["mean_word_error_rate"]}
 - Maximum turn word error rate: {payload["maximum_word_error_rate"]}
-- Research tool completed: {payload["research_tool_completed"]}
+- Research completed: {payload["research_completed"]}
 """
 
 

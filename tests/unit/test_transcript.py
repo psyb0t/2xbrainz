@@ -45,6 +45,16 @@ class TranscriptStoreTests(unittest.TestCase):
         self.assertEqual(snapshot.running_summary, "covered history")
         self.assertEqual(snapshot.lines[-1].stream_id, "stream-1")
 
+    def test_research_context_is_bounded_and_only_advances(self) -> None:
+        store = TranscriptStore()
+        store.apply(_event(0))
+
+        self.assertFalse(store.set_research_context("", 1))
+        self.assertFalse(store.set_research_context("future", 2))
+        self.assertTrue(store.set_research_context("verified findings", 1))
+        self.assertFalse(store.set_research_context("older findings", 1))
+        self.assertEqual(store.snapshot().research_context, "verified findings")
+
 
 def _event(index: int) -> TranscriptEvent:
     stream_id = f"stream-{index}"

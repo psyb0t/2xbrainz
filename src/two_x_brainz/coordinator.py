@@ -10,6 +10,7 @@ from datetime import timedelta
 from uuid import uuid4
 
 from two_x_brainz.aigate import DraftProvider, InsightProvider, SessionDraftProvider
+from two_x_brainz.claudebox import NO_NEW_RESEARCH_RESULT
 from two_x_brainz.constants import (
     DEFAULT_PROVIDER_GENERATION_DEADLINE,
     MAX_DRAFT_RESULT_BACKLOG,
@@ -53,8 +54,11 @@ class ConversationCoordinator:
         draft_provider: DraftProvider,
         commentary_provider: InsightProvider | None = None,
         summary_provider: InsightProvider | None = None,
+        research_provider: DraftProvider | None = None,
         generation_deadline: timedelta = DEFAULT_PROVIDER_GENERATION_DEADLINE,
         draft_generation_deadline: timedelta | None = None,
+        auto_dispatch_enabled: bool = True,
+        research_enabled: bool = True,
     ) -> None:
         if generation_deadline <= timedelta():
             raise ValueError("generation_deadline must be positive")
@@ -66,6 +70,7 @@ class ConversationCoordinator:
         self._draft_provider = draft_provider
         self._commentary_provider = commentary_provider
         self._summary_provider = summary_provider or commentary_provider
+        self._research_provider = research_provider
         self._generation_deadline_seconds = generation_deadline.total_seconds()
         self._draft_generation_deadline_seconds = (
             draft_generation_deadline or generation_deadline
@@ -85,9 +90,16 @@ class ConversationCoordinator:
         )
         self._commentary_task: asyncio.Task[None] | None = None
         self._summary_task: asyncio.Task[None] | None = None
+        self._research_task: asyncio.Task[None] | None = None
+        self._active_research_generation_id: str | None = None
         self._completed_insights: asyncio.Queue[InsightResult] = asyncio.Queue(
             maxsize=MAX_INSIGHT_RESULT_BACKLOG
         )
+        self._auto_dispatch_enabled = auto_dispatch_enabled
+        self._research_enabled = research_enabled
+        self._last_dispatched_revision = 0
+        self._manual_dispatch_revision: int | None = None
+        self._latest_turn_id: str | None = None
 
     async def ingest(self, event: TranscriptEvent) -> CoordinatorUpdate:
         """Apply ASR output and create/cancel draft work as session state changes."""
@@ -98,12 +110,27 @@ class ConversationCoordinator:
         transcript = self._transcript.apply(event)
         turn = self._turns.apply(event)
         timeline = _timeline_entry(turn, transcript)
+        if turn is not None:
+            self._latest_turn_id = turn.turn_id
+        if not self._auto_dispatch_enabled:
+            return CoordinatorUpdate(
+                transcript=transcript,
+                turn=turn,
+                draft=self.current_draft(),
+                timeline=timeline,
+            )
         if event.speaker_role is SpeakerRole.USER and turn is not None:
             await self._cancel_active(GenerationStatus.CANCELLED)
+            if turn.state is not TurnState.FINALIZED:
+                await self._cancel_insights(GenerationStatus.SUPERSEDED)
+                await self._cancel_research(GenerationStatus.SUPERSEDED)
             if turn.state is TurnState.FINALIZED:
                 await self._cancel_insights(GenerationStatus.SUPERSEDED)
+                await self._cancel_research(GenerationStatus.SUPERSEDED)
+                self._mark_automatic_dispatch(transcript.revision)
                 await self._start_commentary(turn, transcript)
                 await self._start_summary(turn.turn_id, transcript)
+                await self._start_research(turn.turn_id, transcript)
         elif turn is not None and turn.speaker_role is SpeakerRole.REMOTE:
             if turn.state in {
                 TurnState.SPEAKING,
@@ -112,6 +139,7 @@ class ConversationCoordinator:
             }:
                 await self._cancel_active(GenerationStatus.SUPERSEDED)
             await self._cancel_insights(GenerationStatus.SUPERSEDED)
+            await self._cancel_research(GenerationStatus.SUPERSEDED)
             if turn.state is TurnState.FINALIZED:
                 if self._turns.has_active_speech(SpeakerRole.USER):
                     logger.info(
@@ -124,9 +152,11 @@ class ConversationCoordinator:
                         draft=self.current_draft(),
                         timeline=timeline,
                     )
+                self._mark_automatic_dispatch(transcript.revision)
                 await self._start_draft(turn, transcript)
                 await self._start_commentary(turn, transcript)
                 await self._start_summary(turn.turn_id, transcript)
+                await self._start_research(turn.turn_id, transcript)
         return CoordinatorUpdate(
             transcript=transcript,
             turn=turn,
@@ -143,6 +173,7 @@ class ConversationCoordinator:
                     self._active_task,
                     self._commentary_task,
                     self._summary_task,
+                    self._research_task,
                 )
                 if task is not None
             )
@@ -155,6 +186,7 @@ class ConversationCoordinator:
                     self._active_task,
                     self._commentary_task,
                     self._summary_task,
+                    self._research_task,
                 )
             ):
                 break
@@ -173,7 +205,7 @@ class ConversationCoordinator:
         draft = self._last_draft
         if draft is None or draft.status is not GenerationStatus.COMPLETED:
             return None
-        if self._transcript.snapshot().revision != draft.context_revision:
+        if not self._request_revision_is_current(draft.context_revision):
             return None
         return draft
 
@@ -196,13 +228,83 @@ class ConversationCoordinator:
         """Immediately cancel active generation during pause or shutdown."""
         await self._cancel_active(GenerationStatus.CANCELLED)
         await self._cancel_insights(GenerationStatus.CANCELLED)
+        await self._cancel_research(GenerationStatus.CANCELLED)
 
     async def start_session(self) -> str | None:
         """Reset provider work before starting a new listening lifecycle."""
         await self.stop()
-        if not isinstance(self._draft_provider, SessionDraftProvider):
+        self._transcript.reset_session_context()
+        self._last_dispatched_revision = self._transcript.snapshot().revision
+        self._manual_dispatch_revision = None
+        self._latest_turn_id = None
+        if not isinstance(self._research_provider, SessionDraftProvider):
             return None
-        return await self._draft_provider.start_session()
+        return await self._research_provider.start_session()
+
+    async def configure_dispatch(
+        self,
+        *,
+        auto_dispatch_enabled: bool,
+        research_enabled: bool,
+    ) -> None:
+        """Apply future dispatch behavior without losing transcript state."""
+        async with self._ingest_lock:
+            self._auto_dispatch_enabled = auto_dispatch_enabled
+            self._research_enabled = research_enabled
+            if auto_dispatch_enabled:
+                self._manual_dispatch_revision = None
+            if not research_enabled:
+                await self._cancel_research(GenerationStatus.CANCELLED)
+            logger.info(
+                "generation dispatch settings changed",
+                extra={
+                    "auto_dispatch_enabled": auto_dispatch_enabled,
+                    "research_enabled": research_enabled,
+                },
+            )
+
+    def dispatch_state(self) -> tuple[bool, bool]:
+        """Return automatic-mode and server-owned pending-transcript state."""
+        return self._auto_dispatch_enabled, self.has_unsent_transcript()
+
+    def has_unsent_transcript(self) -> bool:
+        """Report meaningful transcript text newer than the last dispatch."""
+        snapshot = self._transcript.snapshot()
+        if snapshot.revision <= self._last_dispatched_revision:
+            return False
+        return any(line.text.strip() for line in snapshot.lines)
+
+    async def dispatch_current(self) -> bool:
+        """Supersede all work and dispatch the newest complete conversation state."""
+        async with self._ingest_lock:
+            transcript = self._transcript.snapshot()
+            if not self.has_unsent_transcript():
+                logger.debug(
+                    "manual generation dispatch ignored",
+                    extra={"reason": "no_unsent_transcript"},
+                )
+                return False
+            await self._cancel_all(GenerationStatus.SUPERSEDED)
+            self._last_dispatched_revision = transcript.revision
+            self._manual_dispatch_revision = transcript.revision
+            trigger_turn_id = self._latest_turn_id or str(uuid4())
+            await self._start_draft_request(trigger_turn_id, transcript)
+            await self._start_insight(
+                InsightKind.COMMENTARY,
+                trigger_turn_id,
+                transcript,
+            )
+            await self._start_insight(
+                InsightKind.SUMMARY,
+                trigger_turn_id,
+                transcript,
+            )
+            await self._start_research(trigger_turn_id, transcript)
+            logger.info(
+                "manual generation dispatch started",
+                extra={"context_revision": transcript.revision},
+            )
+            return True
 
     async def _start_draft(
         self,
@@ -263,7 +365,7 @@ class ConversationCoordinator:
 
         if (
             self._active_generation_id != request.generation_id
-            or self._transcript.snapshot().revision != request.context_revision
+            or not self._request_revision_is_current(request.context_revision)
         ):
             logger.info(
                 "discarded stale draft",
@@ -291,6 +393,82 @@ class ConversationCoordinator:
     ) -> None:
         await self._cancel_summary(GenerationStatus.SUPERSEDED)
         await self._start_insight(InsightKind.SUMMARY, turn_id, transcript)
+
+    async def _start_research(
+        self,
+        turn_id: str,
+        transcript: TranscriptSnapshot,
+    ) -> None:
+        if not self._research_enabled or self._research_provider is None:
+            return
+        await self._cancel_research(GenerationStatus.SUPERSEDED)
+        request = DraftRequest(
+            generation_id=str(uuid4()),
+            trigger_turn_id=turn_id,
+            context_revision=transcript.revision,
+            transcript=transcript,
+            deadline_seconds=self._draft_generation_deadline_seconds,
+        )
+        self._active_research_generation_id = request.generation_id
+        context = contextvars.copy_context()
+        self._research_task = context.run(
+            asyncio.create_task,
+            self._generate_research(request),
+        )
+
+    async def _generate_research(self, request: DraftRequest) -> None:
+        provider = self._research_provider
+        if provider is None:
+            return
+        try:
+            async with asyncio.timeout(request.deadline_seconds):
+                result = await provider.draft(request)
+        except TimeoutError:
+            logger.warning(
+                "research generation exceeded deadline",
+                extra={
+                    "generation_id": request.generation_id,
+                    "deadline_seconds": request.deadline_seconds,
+                },
+            )
+            return
+        except Exception as error:
+            logger.error(
+                "research generation failed",
+                extra={
+                    "generation_id": request.generation_id,
+                    "error_type": type(error).__name__,
+                },
+            )
+            return
+        if (
+            self._active_research_generation_id != request.generation_id
+            or not self._request_revision_is_current(request.context_revision)
+        ):
+            logger.info(
+                "discarded stale research",
+                extra={"generation_id": request.generation_id},
+            )
+            return
+        if result.text.strip() == NO_NEW_RESEARCH_RESULT:
+            logger.info(
+                "research completed without new findings",
+                extra={"generation_id": request.generation_id},
+            )
+            return
+        if not self._transcript.set_research_context(
+            result.text,
+            request.context_revision,
+        ):
+            logger.info(
+                "discarded non-advancing research",
+                extra={"generation_id": request.generation_id},
+            )
+            return
+        logger.info(
+            "shared research context updated",
+            extra={"generation_id": request.generation_id},
+        )
 
     async def _start_insight(
         self,
@@ -350,7 +528,7 @@ class ConversationCoordinator:
             self._handle_summary_result(request, result)
             return
 
-        if self._transcript.snapshot().revision != request.context_revision:
+        if not self._request_revision_is_current(request.context_revision):
             logger.info(
                 "discarded stale background result",
                 extra={"generation_id": request.generation_id, "kind": request.kind},
@@ -375,7 +553,7 @@ class ConversationCoordinator:
         request: InsightRequest,
         result: InsightResult,
     ) -> None:
-        if self._transcript.snapshot().revision != request.context_revision:
+        if not self._request_revision_is_current(request.context_revision):
             logger.info(
                 "discarded stale summary",
                 extra={"generation_id": request.generation_id},
@@ -467,6 +645,11 @@ class ConversationCoordinator:
         await self._cancel_commentary(status)
         await self._cancel_summary(status)
 
+    async def _cancel_all(self, status: GenerationStatus) -> None:
+        await self._cancel_active(status)
+        await self._cancel_insights(status)
+        await self._cancel_research(status)
+
     async def _cancel_commentary(self, status: GenerationStatus) -> None:
         task = self._commentary_task
         self._commentary_task = None
@@ -476,6 +659,21 @@ class ConversationCoordinator:
         task = self._summary_task
         self._summary_task = None
         await _cancel_task(task, "summary", status)
+
+    async def _cancel_research(self, status: GenerationStatus) -> None:
+        task = self._research_task
+        self._research_task = None
+        self._active_research_generation_id = None
+        await _cancel_task(task, "research", status)
+
+    def _mark_automatic_dispatch(self, revision: int) -> None:
+        self._last_dispatched_revision = revision
+        self._manual_dispatch_revision = None
+
+    def _request_revision_is_current(self, revision: int) -> bool:
+        if self._manual_dispatch_revision is not None:
+            return revision == self._manual_dispatch_revision
+        return self._transcript.snapshot().revision == revision
 
 
 def _failed_insight(request: InsightRequest) -> InsightResult:

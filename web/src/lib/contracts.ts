@@ -1,5 +1,5 @@
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected';
-export type ProviderOutputKind = 'draft' | 'commentary' | 'summary';
+export type ProviderOutputKind = 'draft' | 'commentary' | 'summary' | 'research';
 
 export interface ProviderAssignment {
   model: string;
@@ -45,12 +45,18 @@ export interface WebSnapshot {
     talkiesModel: string;
     sessionBrief: string;
     webResearchEnabled: boolean;
+    autoDispatchEnabled: boolean;
     defaults: {
       assignments: Record<ProviderOutputKind, ProviderAssignment>;
       talkiesModel: string;
       sessionBrief: string;
       webResearchEnabled: boolean;
+      autoDispatchEnabled: boolean;
     };
+  };
+  dispatch: {
+    autoEnabled: boolean;
+    hasUnsentTranscript: boolean;
   };
   activeAudio: {
     microphone: ActiveAudioSource;
@@ -105,27 +111,32 @@ export const EMPTY_SNAPSHOT: WebSnapshot = {
     assignments: {
       draft: { model: '', reasoningEffort: 'none' },
       commentary: { model: '', reasoningEffort: 'none' },
-      summary: { model: '', reasoningEffort: 'none' }
+      summary: { model: '', reasoningEffort: 'none' },
+      research: { model: '', reasoningEffort: 'high' }
     },
     activity: []
   },
   settings: {
-    schemaVersion: 1,
+    schemaVersion: 2,
     talkiesModels: [],
     talkiesModel: '',
     sessionBrief: '',
     webResearchEnabled: true,
+    autoDispatchEnabled: true,
     defaults: {
       assignments: {
         draft: { model: '', reasoningEffort: 'none' },
         commentary: { model: '', reasoningEffort: 'none' },
-        summary: { model: '', reasoningEffort: 'none' }
+        summary: { model: '', reasoningEffort: 'none' },
+        research: { model: '', reasoningEffort: 'high' }
       },
       talkiesModel: '',
       sessionBrief: '',
-      webResearchEnabled: true
+      webResearchEnabled: true,
+      autoDispatchEnabled: true
     }
   },
+  dispatch: { autoEnabled: true, hasUnsentTranscript: false },
   activeAudio: {
     microphone: { label: 'Not selected', nodeName: '', level: 0, state: 'idle' },
     system: { label: 'Not selected', nodeName: '', level: 0, state: 'idle' }
@@ -157,11 +168,16 @@ export function isWebSnapshot(value: unknown): value is WebSnapshot {
     typeof value.settings.talkiesModel === 'string' &&
     typeof value.settings.sessionBrief === 'string' &&
     typeof value.settings.webResearchEnabled === 'boolean' &&
+    typeof value.settings.autoDispatchEnabled === 'boolean' &&
     isRecord(value.settings.defaults) &&
     isProviderAssignments(value.settings.defaults.assignments) &&
     typeof value.settings.defaults.talkiesModel === 'string' &&
     typeof value.settings.defaults.sessionBrief === 'string' &&
     typeof value.settings.defaults.webResearchEnabled === 'boolean' &&
+    typeof value.settings.defaults.autoDispatchEnabled === 'boolean' &&
+    isRecord(value.dispatch) &&
+    typeof value.dispatch.autoEnabled === 'boolean' &&
+    typeof value.dispatch.hasUnsentTranscript === 'boolean' &&
     isRecord(value.activeAudio) &&
     isActiveAudioSource(value.activeAudio.microphone) &&
     isActiveAudioSource(value.activeAudio.system) &&
@@ -178,7 +194,8 @@ function isProviderAssignments(value: unknown): value is WebSnapshot['provider']
   return (
     isProviderAssignment(value.draft) &&
     isProviderAssignment(value.commentary) &&
-    isProviderAssignment(value.summary)
+    isProviderAssignment(value.summary) &&
+    isProviderAssignment(value.research)
   );
 }
 

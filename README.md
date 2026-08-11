@@ -166,14 +166,15 @@ both capture gates but keeps the browser, transcript, story, and guidance alive.
 
 The top bar opens a tabbed **Settings** dialog:
 
-- **Context** owns the optional call brief; Reply's Claudebox tools are always available;
-- **Models** owns three searchable AIGate model pickers—one each for Reply,
-  Private coach, and
-  Story so far—with result counts, readable scrolling inventories, visible
+- **Context** owns the optional call brief, automatic silence-triggered
+  generation, and the independent background researcher;
+- **Models** owns four searchable AIGate model pickers—one each for Reply,
+  Private coach, Story so far, and Research—with result counts, readable
+  scrolling inventories, visible
   current-model markers, and automatic positioning on each selected model.
-  Reply offers the Claudebox-supported `Low`, `Medium`, and `High` efforts;
-  Coach and Story additionally offer `Default` and `Minimal`. The tab also
-  selects the Talkies ASR model; and
+  Reply, Coach, and Story offer `Default`, `Minimal`, `Low`, `Medium`, and
+  `High`; Research is restricted to Claudebox models and `Low`, `Medium`, or
+  `High`. The tab also selects the Talkies ASR model; and
 - **Audio** owns device discovery, per-candidate meters, and the microphone and
   system-audio selections.
 
@@ -183,24 +184,29 @@ defaults. The built-in ASR default is
 `local-talkies-cuda-nemotron-3.5-asr-0.6b`; startup checks both its inventory
 entry and the CUDA service's `device=cuda` health claim before recording. A
 stale model falls back to an available backend default; a stale
-audio pair requires a fresh selection. A saved Reply reasoning level from an
-older version is repaired to the current `high` default when Claudebox no longer
-accepts it. Credentials and service URLs are never stored in browser settings.
+audio pair requires a fresh selection. Credentials and service URLs are never
+stored in browser settings.
 
-Separate live Reply, Private coach, and Story-so-far generation flows each use
+Separate live Reply, Private coach, Story-so-far, and Research flows each use
 one continuous chronological stream: status, visible reasoning, tool activity,
 and streamed Markdown appear inline in arrival order. Every reasoning and tool
 row starts independently collapsed; there are no per-generation cards or
 grouped trace boxes. Cumulative reasoning and output snapshots coalesce per
-flow even while Reply, Coach, and Story run concurrently, so token updates do
+flow even while all four run concurrently, so token updates do
 not become duplicate `Thinking` rows. It never fabricates or claims access to
 hidden chain-of-thought.
 
-Conversation, Reply, Private coach, and Story so far remain separate scrollable,
-collapsible, resizable panels. Expanded panels consume all height released by
-collapsed siblings, and their layout persists in browser-local storage. Each feed
-auto-follows new events only while it is already at the bottom, so scrolling back
-through the full activity history is not interrupted.
+Conversation, Reply, Private coach, Story so far, and Research remain separate
+scrollable, collapsible, resizable panels. Expanded panels consume all height
+released by collapsed siblings, and their layout persists in browser-local
+storage. Each feed auto-follows new events only while it is already at the
+bottom, so scrolling back through the full activity history is not interrupted.
+
+Automatic dispatch is on by default. Turn it off in Context to keep ASR running
+without starting or cancelling LLM work at every silence boundary. **Send**
+becomes available only after meaningful new transcript text exists. It cancels
+any current four-flow generation and dispatches the complete newest server-owned
+conversation; clicking again without newer speech is a no-op.
 
 The **Audio** Settings tab shows every visible microphone and system-audio
 candidate has its own live meter. While the modal is open, the inventory
@@ -225,7 +231,7 @@ make logs
 Set `TWOXBRAINZ_LOG_LEVEL=DEBUG` to trace the full streaming handoff without
 recording credentials or raw provider payloads: AIGate SSE connection/events,
 activity retention or coalescing, WebSocket snapshot delivery, browser receipt,
-and each Reply/Coach/Story feed render. Browser diagnostics are a strict finite
+and each Reply/Coach/Story/Research feed render. Browser diagnostics are a strict finite
 schema of event names and numeric counts sent back over the same-origin
 WebSocket; browser code cannot choose arbitrary log messages or fields.
 High-frequency cumulative snapshots are logged as character counts at DEBUG;
@@ -242,18 +248,21 @@ allowlisted MCP endpoints. The application derives
 `ws(s)://<aigate-host>[/prefix]/talkies/v1/audio/transcriptions/stream` from
 `TWOXBRAINZ_AIGATE_URL`, which must end in `/v1`.
 
-Reply runs through AIGate's OpenAI-compatible streaming endpoint backed by
-Claudebox. Every Start creates a fresh UUID workspace and Claude Code session;
-later Reply requests from that listening session continue in the same workspace. The
-agent receives the complete bounded current transcript and running summary on
-every request. It can use its native research tools, shallow-clone named Git
-repositories into that isolated workspace, download relevant documentation,
-and follow linked pages or repository docs before composing a grounded spoken
-reply. Independent research may run concurrently. The default
-`claudebox-sonnet` Reply assignment always starts at high reasoning; the UI
-offers only low, medium, or high for Claudebox agent models.
+Reply, Coach, and Story use independent OpenAI-compatible AIGate streams. The
+default Reply is the low-latency `cerebras-glm-4.7`; Coach defaults to
+`pibox-zai-glm-5-turbo`; Story defaults to `groq-gpt-oss-120b`.
 
-Reply uses `/claudebox/openai/v1/chat/completions` directly, without a LiteLLM
+Research is the separate agentic Claudebox flow. Every Start creates a fresh
+UUID workspace and Claude Code session; later research requests from that
+listening session continue in the same workspace. It receives the complete
+bounded current transcript, running summary, and accepted prior findings. It
+can use native tools, shallow-clone named Git repositories, download primary
+documentation, and follow relevant links. Completed current findings become
+bounded shared evidence for later Reply, Coach, and Story dispatches; failed,
+cancelled, stale, and `NO_NEW_RESEARCH` results never become facts. Research
+defaults to `claudebox-sonnet` at high reasoning.
+
+Research uses `/claudebox/openai/v1/chat/completions` directly, without a LiteLLM
 hop. It sends `X-Aicodebox-Workspace`, appends its operating instructions with
 `X-Aicodebox-Append-System-Prompt`, and sends `X-Aicodebox-Continue: true` only
 after a successful first turn. Appending is important: an OpenAI `system`
@@ -264,15 +273,15 @@ OpenAI `tools`, `tool_choice`, and `response_format`, and explicitly send
 Ordinary replies use incremental OpenAI SSE content deltas. A turn containing
 an explicit or spoken GitHub or GitLab repository reference is buffered because the deployed
 Claudebox tool stream can close before its final content chunk; the completed
-answer still enters the same Reply feed. A bounded continuation recovers an
+answer still enters the Research feed. A bounded continuation recovers an
 ordinary stream that closes without `[DONE]` after native tool work.
 Claudebox performs repository, shell, and web work internally; its OpenAI stream
 does not expose private reasoning or native tool-event details, so 2xbrainz does
 not fabricate them. If new speech supersedes accepted native research, the stale
 generation is hidden immediately while its Claudebox operation drains; the
 replacement then continues in the same workspace with the complete updated
-transcript. Coach and Story remain independent streaming AIGate chat-completion
-calls.
+transcript. Activity from the detached superseded request is suppressed while
+it drains so it cannot reappear as stale output in the browser.
 
 The Context tab accepts optional trusted context such as the purpose of the call
 and the local user's role. The bounded brief frames replies, coaching, and the
@@ -293,16 +302,16 @@ PipeWire system ─────┘     (same ASR model)    └─ local web cons
   partial, endpoint, and final events.
 - **The coordinator** owns reconciliation, turn state, cancellation, and throwing
   away stale results. It writes one timeline entry per finalized turn and starts
-  reply, private coaching, and rolling-story work concurrently after a remote
-  final. Coach and Story have a hard 60-second deadline. Repository research
+  reply, private coaching, rolling-story, and research work concurrently after
+  a remote final. Coach and Story have a hard 60-second deadline. Repository research
   has a 120-second outbound allowance and a 240-second replacement budget so an
   accepted superseded agent run can release its workspace before the updated
   request continues. Cancelling an unfinished provider request
-  never removes finalized transcript state; the next silence-triggered request
+  never removes finalized transcript state; the next automatic or manual request
   is rebuilt from the complete current transcript. Only unfinished model output,
   reasoning, and tool work are discarded.
-- **The text providers** receive a bounded speaker-tagged transcript. Reply also
-  receives the accepted running summary in its persistent Claudebox session.
+- **The text providers** receive a bounded speaker-tagged transcript and accepted
+  running summary. Later dispatches also receive bounded verified research.
 - **The web console** is the sole live operator surface. Its loopback-only
   WebSocket carries controls and SSE-style incremental activity in one
   bidirectional channel. The parallel reconstruction log carries
@@ -360,11 +369,12 @@ real services (`make test-real`, `make test-real-audio-research`,
 deliberately separate, need a real `.env`, and are not part of `make test` or
 CI.
 `make test-real` sends Reply, Coach, and Story prompt checks concurrently through
-three distinct defaults (`claudebox-sonnet`, `pibox-zai-glm-5-turbo`, and
-`groq-gpt-oss-120b`). It also verifies that AIGate advertises at least two
+three distinct defaults (`cerebras-glm-4.7`, `pibox-zai-glm-5-turbo`, and
+`groq-gpt-oss-120b`) and verifies agentic Research separately through
+`claudebox-sonnet`. It also verifies that AIGate advertises at least two
 requests for the selected Talkies model and completes two native ASR streams
 concurrently against the bundled CC0 WAV. Use `make test-real-talkies` to run
-only that provider check. The Reply check requires Claudebox to leave an actual
+only that provider check. The Research check requires Claudebox to leave an actual
 `psyb0t/aigate` checkout in its session workspace, verifies the remote URL in
 `.git/config`, and requires repository-specific information in the response. See
 [docs/configuration.md](docs/configuration.md#real-provider-test-tiers) for the
@@ -381,7 +391,7 @@ checkout and the final spoken reply describes multiple repository capabilities.
 slang, corrections, false starts, two timed interruptions, and an unfamiliar
 public RFC topic. It transcribes opposing turns in pairs, feeds the recognized
 text—not the reference script—through the production coordinator, and hard-gates
-final Reply, Coach, and Story content plus completed web research. Its redacted
+final Reply, Coach, and Story content plus completed agentic research. Its redacted
 suite directory contains three independent attempts by default, their reference
 and recognized transcripts, per-turn word error rates, provider overlap and
 stream-latency measurements, event traces, JSON scorecards, readable Markdown

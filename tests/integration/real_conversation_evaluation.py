@@ -17,6 +17,7 @@ from live_talkies_tts_fixture import TTS_VOICE_ENV, synthesize_wav
 
 from two_x_brainz.aigate import AIGateClient
 from two_x_brainz.audio import WavFixture, load_wav_fixture
+from two_x_brainz.claudebox import ClaudeboxReplyClient
 from two_x_brainz.config import Settings
 from two_x_brainz.constants import (
     DEFAULT_CHANNELS,
@@ -59,6 +60,7 @@ _TALKIES_MODEL_ENV = "TWOXBRAINZ_FIXTURE_TALKIES_MODEL"
 _DRAFT_MODEL_ENV = "TWOXBRAINZ_FIXTURE_DRAFT_MODEL"
 _COMMENTARY_MODEL_ENV = "TWOXBRAINZ_FIXTURE_COMMENTARY_MODEL"
 _SUMMARY_MODEL_ENV = "TWOXBRAINZ_FIXTURE_SUMMARY_MODEL"
+_RESEARCH_MODEL_ENV = "TWOXBRAINZ_FIXTURE_RESEARCH_MODEL"
 _DEFAULT_USER_VOICE = "af_heart"
 _DEFAULT_REMOTE_VOICE = "am_michael"
 _DEFAULT_REPEATS = 3
@@ -219,6 +221,10 @@ def _settings_with_fixture_models(settings: Settings) -> Settings:
             _SUMMARY_MODEL_ENV,
             settings.aigate_summary_model,
         ),
+        aigate_research_model=_fixture_model(
+            _RESEARCH_MODEL_ENV,
+            settings.aigate_research_model,
+        ),
     )
 
 
@@ -283,7 +289,7 @@ async def _run_with_trace(
         report,
         scenario,
         word_error_rates,
-        research_tool_completed=research_completed,
+        research_completed=research_completed,
     )
     json_path, markdown_path = write_report(
         run_directory,
@@ -479,43 +485,53 @@ async def _evaluate_provider_flows(
     recorder: _ObservationRecorder,
     trace: FixtureTrace,
 ) -> EvaluationReport:
-    providers = {
-        "draft": AIGateClient(
-            base_url=settings.aigate_url,
-            model=settings.aigate_reply_model,
-            token=settings.aigate_token,
-            web_research_enabled=True,
-            reasoning_effort=settings.aigate_reply_reasoning_effort,
-            streaming_enabled=True,
-            activity_sink=recorder.activity_sink(),
-        ),
-        "commentary": AIGateClient(
-            base_url=settings.aigate_url,
-            model=settings.aigate_coach_model,
-            token=settings.aigate_token,
-            reasoning_effort=settings.aigate_coach_reasoning_effort,
-            streaming_enabled=True,
-            activity_sink=recorder.activity_sink(),
-        ),
-        "summary": AIGateClient(
-            base_url=settings.aigate_url,
-            model=settings.aigate_summary_model,
-            token=settings.aigate_token,
-            reasoning_effort=settings.aigate_summary_reasoning_effort,
-            streaming_enabled=True,
-            activity_sink=recorder.activity_sink(),
-        ),
-    }
+    draft_provider = AIGateClient(
+        base_url=settings.aigate_url,
+        model=settings.aigate_reply_model,
+        token=settings.aigate_token,
+        web_research_enabled=True,
+        reasoning_effort=settings.aigate_reply_reasoning_effort,
+        streaming_enabled=True,
+        activity_sink=recorder.activity_sink(),
+    )
+    commentary_provider = AIGateClient(
+        base_url=settings.aigate_url,
+        model=settings.aigate_coach_model,
+        token=settings.aigate_token,
+        reasoning_effort=settings.aigate_coach_reasoning_effort,
+        streaming_enabled=True,
+        activity_sink=recorder.activity_sink(),
+    )
+    summary_provider = AIGateClient(
+        base_url=settings.aigate_url,
+        model=settings.aigate_summary_model,
+        token=settings.aigate_token,
+        reasoning_effort=settings.aigate_summary_reasoning_effort,
+        streaming_enabled=True,
+        activity_sink=recorder.activity_sink(),
+    )
+    research_provider = ClaudeboxReplyClient(
+        base_url=settings.aigate_url,
+        model=settings.aigate_research_model,
+        token=settings.aigate_token,
+        reasoning_effort=settings.aigate_research_reasoning_effort,
+        activity_sink=recorder.activity_sink(),
+        output_kind="research",
+    )
     await asyncio.gather(
-        *(provider.verify_configured_model() for provider in providers.values())
+        draft_provider.verify_configured_model(),
+        commentary_provider.verify_configured_model(),
+        summary_provider.verify_configured_model(),
     )
     coordinator = ConversationCoordinator(
-        providers["draft"],
-        commentary_provider=providers["commentary"],
-        summary_provider=providers["summary"],
+        draft_provider,
+        commentary_provider=commentary_provider,
+        summary_provider=summary_provider,
+        research_provider=research_provider,
     )
     seen_generations: set[str] = set()
     try:
+        await coordinator.start_session()
         role_revisions = {SpeakerRole.USER: 0, SpeakerRole.REMOTE: 0}
         interruption_pending = False
         for turn in scenario.turns:
@@ -647,14 +663,16 @@ def _transcript_event(
 def _assert_research_completed(records: list[TimedRecord]) -> None:
     if _research_completed(records):
         return
-    raise ConversationEvaluationError("reply flow did not complete web research")
+    raise ConversationEvaluationError("research flow did not complete agentic research")
 
 
 def _research_completed(records: list[TimedRecord]) -> bool:
     return any(
-        record.record.get("phase") == "tool_completed"
-        and record.record.get("output_kind") == "draft"
-        and record.record.get("tool") in {"research_web", "fetch_url"}
+        record.record.get("phase") == "request_completed"
+        and record.record.get("output_kind") == "research"
+        and isinstance(record.record.get("output"), str)
+        and bool(str(record.record["output"]).strip())
+        and str(record.record["output"]).strip() != "NO_NEW_RESEARCH"
         for record in records
     )
 

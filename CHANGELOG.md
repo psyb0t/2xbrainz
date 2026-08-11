@@ -3,6 +3,21 @@
 All notable changes per release. Versions follow
 [semantic versioning](https://semver.org).
 
+## v3.2.0 — 2026-08-10
+
+- Add automatic/manual provider dispatch. Manual mode keeps ASR live, exposes
+  unsent transcript state, and lets Send atomically supersede current work and
+  dispatch the newest complete conversation exactly once.
+- Split fast Reply, Private coach, Story so far, and agentic Research into four
+  independently configured concurrent flows. Completed current research becomes
+  bounded evidence for later flows; failed, stale, cancelled, and no-op research
+  is excluded.
+- Add the fourth compact streamed browser feed, persisted model/reasoning and
+  dispatch settings, strict WebSocket contracts, interruption recovery, and
+  realistic generated-audio quality/latency evaluation.
+- Suppress late activity from detached superseded Claudebox operations while
+  allowing the replacement to reuse the same workspace.
+
 ## v3.1.1 — 2026-08-10
 
 Repair browser settings saved before Claudebox Reply reasoning became strict.

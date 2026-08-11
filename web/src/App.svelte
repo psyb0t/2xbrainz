@@ -33,7 +33,7 @@
   const RECONNECT_DELAY_MS = 1_500;
   const FOLLOW_DISTANCE_PX = 72;
   const KEYBOARD_RESIZE_STEP = 2;
-  type GuidancePanel = 'reply' | 'coach' | 'story';
+  type GuidancePanel = 'reply' | 'coach' | 'story' | 'research';
   type SettingsTab = 'context' | 'models' | 'audio';
   const PROVIDER_FLOWS: ReadonlyArray<{
     kind: ProviderOutputKind;
@@ -42,7 +42,8 @@
   }> = [
     { kind: 'draft', label: 'Reply', description: 'Say this next' },
     { kind: 'commentary', label: 'Coach', description: 'Private signal' },
-    { kind: 'summary', label: 'Story', description: 'Working memory' }
+    { kind: 'summary', label: 'Story', description: 'Working memory' },
+    { kind: 'research', label: 'Research', description: 'Agentic background investigation' }
   ];
 
   let snapshot: WebSnapshot = EMPTY_SNAPSHOT;
@@ -67,6 +68,7 @@
   let replyPanel: HTMLElement;
   let coachPanel: HTMLElement;
   let storyPanel: HTMLElement;
+  let researchPanel: HTMLElement;
   let lastSnapshotDebugSignature = '';
 
   onMount(() => {
@@ -160,6 +162,18 @@
     send({ type: 'control', command });
   }
 
+  function dispatchCurrent(): void {
+    send({ type: 'dispatch' });
+  }
+
+  function setAutoDispatch(event: Event): void {
+    const target = event.currentTarget;
+    if (!(target instanceof HTMLInputElement) || runtimeSettings === null) return;
+    runtimeSettings = { ...runtimeSettings, autoDispatchEnabled: target.checked };
+    saveRuntimeSettings(localStorage, runtimeSettings);
+    send(runtimeSettingsMessage(runtimeSettings));
+  }
+
   function initializeRuntimeSettings(): void {
     if (
       runtimeSettingsInitialized ||
@@ -177,7 +191,7 @@
   function filteredModels(): string[] {
     const query = modelFilter.trim().toLowerCase();
     const flowModels =
-      modelPickerFlow === 'draft'
+      modelPickerFlow === 'research'
         ? snapshot.provider.models.filter((model) => model.startsWith('claudebox-'))
         : snapshot.provider.models;
     if (!query) return flowModels;
@@ -372,13 +386,15 @@
   function guidancePanelElement(panel: GuidancePanel): HTMLElement {
     if (panel === 'reply') return replyPanel;
     if (panel === 'coach') return coachPanel;
-    return storyPanel;
+    if (panel === 'story') return storyPanel;
+    return researchPanel;
   }
 
   function guidancePanelWeight(panel: GuidancePanel): number {
     if (panel === 'reply') return preferences.replyHeightPercent;
     if (panel === 'coach') return preferences.coachHeightPercent;
-    return preferences.storyHeightPercent;
+    if (panel === 'story') return preferences.storyHeightPercent;
+    return preferences.researchHeightPercent;
   }
 
   function setGuidancePanelWeights(
@@ -399,7 +415,8 @@
   ): LayoutPreferences {
     if (panel === 'reply') return { ...value, replyHeightPercent: weight };
     if (panel === 'coach') return { ...value, coachHeightPercent: weight };
-    return { ...value, storyHeightPercent: weight };
+    if (panel === 'story') return { ...value, storyHeightPercent: weight };
+    return { ...value, researchHeightPercent: weight };
   }
 
   function trackPointer(event: PointerEvent, onMove: (event: PointerEvent) => void): void {
@@ -450,6 +467,24 @@
       </div>
     </div>
     <div class="header-actions">
+      <label class="dispatch-toggle" title="Automatically generate after detected silence">
+        <input
+          type="checkbox"
+          aria-label="Auto send on silence"
+          checked={runtimeSettings?.autoDispatchEnabled ?? snapshot.dispatch.autoEnabled}
+          disabled={runtimeSettings === null}
+          onchange={setAutoDispatch}
+        />
+        <span>Auto send</span>
+      </label>
+      <button
+        class="send-button"
+        disabled={snapshot.dispatch.autoEnabled ||
+          !snapshot.dispatch.hasUnsentTranscript ||
+          snapshot.sessionState !== 'running' ||
+          connection !== 'connected'}
+        onclick={dispatchCurrent}>Send</button
+      >
       <button class="quiet-button" onclick={() => openSettings()}>Settings</button>
       {#if snapshot.sessionState === 'running'}
         <button class="stop-button" onclick={() => control('pause')}>Stop listening</button>
@@ -632,6 +667,41 @@
             onDebug={sendDebug}
           />{/if}
       </article>
+      {#if !preferences.storyCollapsed && !preferences.researchCollapsed}
+        <button
+          class="splitter guidance-splitter"
+          aria-label="Resize story and research"
+          onpointerdown={(event) => beginGuidanceResize(event, 'story', 'research')}
+          onkeydown={(event) => resizeGuidanceWithKeyboard(event, 'story', 'research')}
+        ></button>
+      {/if}
+
+      <article
+        class:collapsed={preferences.researchCollapsed}
+        class="panel guidance-card research-card"
+        style={`--panel-weight:${preferences.researchHeightPercent}`}
+        bind:this={researchPanel}
+      >
+        <div class="panel-heading compact">
+          <div>
+            <span class="eyebrow">Background evidence</span>
+            <h2>Research</h2>
+          </div>
+          <button
+            class="collapse-button"
+            aria-expanded={!preferences.researchCollapsed}
+            onclick={() => setPreference('researchCollapsed', !preferences.researchCollapsed)}
+            >{preferences.researchCollapsed ? 'Expand' : 'Collapse'}</button
+          >
+        </div>
+        {#if !preferences.researchCollapsed}<ProviderFeed
+            kind="research"
+            activity={snapshot.provider.activity}
+            activeModel={snapshot.provider.assignments.research.model}
+            fallbackOutput="Waiting for a research-worthy subject…"
+            onDebug={sendDebug}
+          />{/if}
+      </article>
     </section>
   </main>
 </div>
@@ -685,6 +755,20 @@
             ></textarea>
             <small>{runtimeSettings.sessionBrief.length}/{MAX_SESSION_BRIEF_CHARACTERS}</small>
           </label>
+          <label class="toggle-field">
+            <input type="checkbox" bind:checked={runtimeSettings.autoDispatchEnabled} />
+            <span>
+              <strong>Automatic generation</strong>
+              <small>Cancel superseded work and dispatch after detected silence.</small>
+            </span>
+          </label>
+          <label class="toggle-field">
+            <input type="checkbox" bind:checked={runtimeSettings.webResearchEnabled} />
+            <span>
+              <strong>Background researcher</strong>
+              <small>Let the agentic Research flow investigate unfamiliar public subjects.</small>
+            </span>
+          </label>
         </section>
       {:else if runtimeSettings !== null && settingsTab === 'models'}
         <section class="settings-section model-settings-section">
@@ -715,7 +799,7 @@
                       value={selectedReasoning(flow.kind)}
                       onchange={(event) => chooseReasoning(flow.kind, event)}
                     >
-                      {#if flow.kind !== 'draft'}
+                      {#if flow.kind !== 'research'}
                         <option value="none">Default</option>
                         <option value="minimal">Minimal</option>
                       {/if}

@@ -37,7 +37,7 @@ from two_x_brainz.errors import (
 from two_x_brainz.provider_selection import ProviderAssignment
 from two_x_brainz.runtime import (
     _aigate_client,  # pyright: ignore[reportPrivateUsage]
-    _claudebox_reply_client,  # pyright: ignore[reportPrivateUsage]
+    _claudebox_research_client,  # pyright: ignore[reportPrivateUsage]
     _gated_frames,  # pyright: ignore[reportPrivateUsage]
     _initial_provider_selection,  # pyright: ignore[reportPrivateUsage]
     _supervise_audio_channel,  # pyright: ignore[reportPrivateUsage]
@@ -66,9 +66,11 @@ class RuntimeOutputTests(unittest.TestCase):
             aigate_reply_model="claudebox-sonnet",
             aigate_coach_model="coach-model",
             aigate_summary_model="summary-model",
+            aigate_research_model="claudebox-sonnet",
             aigate_reply_reasoning_effort="high",
             aigate_coach_reasoning_effort="low",
             aigate_summary_reasoning_effort="high",
+            aigate_research_reasoning_effort="high",
         )
 
         selection = _initial_provider_selection(
@@ -87,20 +89,25 @@ class RuntimeOutputTests(unittest.TestCase):
         self.assertEqual(selection.commentary.reasoning_effort, "low")
         self.assertEqual(selection.summary.model, "summary-model")
         self.assertEqual(selection.summary.reasoning_effort, "high")
+        self.assertEqual(selection.research.model, "claudebox-sonnet")
+        self.assertEqual(selection.research.reasoning_effort, "high")
 
-    def test_reply_uses_claudebox_agent_and_insights_use_chat_clients(self) -> None:
+    def test_research_uses_claudebox_agent_and_other_flows_use_chat_clients(
+        self,
+    ) -> None:
         settings = _settings("model-a", web_research_enabled=True)
         reply_assignment = ProviderAssignment("claudebox-sonnet", "high")
         insight_assignment = ProviderAssignment("model-a", "none")
 
-        reply = _claudebox_reply_client(settings, reply_assignment)
+        research = _claudebox_research_client(settings, reply_assignment)
         story = _aigate_client(
             settings,
             insight_assignment,
             web_research_enabled=False,
         )
 
-        self.assertEqual(reply.model, "claudebox-sonnet")
+        self.assertEqual(research.model, "claudebox-sonnet")
+        self.assertEqual(research.output_kind, "research")
         self.assertFalse(story.web_research_enabled)
 
     def test_stream_snapshots_log_counts_without_raw_text_at_debug(self) -> None:
@@ -329,7 +336,10 @@ class RuntimeOutputTests(unittest.TestCase):
     def test_each_changed_start_creates_one_fresh_reply_workspace(self) -> None:
         provider = _SessionProvider()
         controller = SessionController(start_paused=True)
-        coordinator = ConversationCoordinator(provider)
+        coordinator = ConversationCoordinator(
+            _LiveProvider(),
+            research_provider=provider,
+        )
 
         async def exercise() -> None:
             with patch("builtins.print"):

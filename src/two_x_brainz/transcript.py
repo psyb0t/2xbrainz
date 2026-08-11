@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from two_x_brainz.constants import (
     MAX_RECENT_TRANSCRIPT_LINES,
+    MAX_RESEARCH_CONTEXT_CHARACTERS,
     MAX_SUMMARY_TEXT_CHARACTERS,
 )
 from two_x_brainz.contracts import TranscriptEvent, TranscriptLine, TranscriptSnapshot
@@ -18,6 +19,8 @@ class TranscriptStore:
         self._snapshot_revision = 0
         self._running_summary = ""
         self._summary_through_revision = 0
+        self._research_context = ""
+        self._research_through_revision = 0
 
     def apply(self, event: TranscriptEvent) -> TranscriptSnapshot:
         """Apply an event or reject a stale revision without mutating state."""
@@ -57,12 +60,35 @@ class TranscriptStore:
         self._trim_summarized_lines()
         return True
 
+    def set_research_context(self, research: str, through_revision: int) -> bool:
+        """Accept current bounded research only when it advances the transcript."""
+        normalized_research = research.strip()
+        if not normalized_research:
+            return False
+        if len(normalized_research) > MAX_RESEARCH_CONTEXT_CHARACTERS:
+            return False
+        if through_revision <= self._research_through_revision:
+            return False
+        if through_revision > self._snapshot_revision:
+            return False
+        self._research_context = normalized_research
+        self._research_through_revision = through_revision
+        return True
+
+    def reset_session_context(self) -> None:
+        """Drop provider-derived context when a new listening session starts."""
+        self._running_summary = ""
+        self._summary_through_revision = 0
+        self._research_context = ""
+        self._research_through_revision = 0
+
     def snapshot(self) -> TranscriptSnapshot:
         """Return an immutable view for context assembly and terminal rendering."""
         return TranscriptSnapshot(
             revision=self._snapshot_revision,
             lines=tuple(line for _, line in self._lines),
             running_summary=self._running_summary,
+            research_context=self._research_context,
         )
 
     def _trim_summarized_lines(self) -> None:

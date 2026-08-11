@@ -147,6 +147,18 @@ input:focus-visible {
   justify-content: flex-end;
   gap: 0.42rem;
 }
+.dispatch-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 750;
+  white-space: nowrap;
+}
+.dispatch-toggle input {
+  accent-color: var(--cyan);
+}
 
 .compact-select {
   display: grid;
@@ -358,6 +370,7 @@ input:focus-visible {
 
 .quiet-button,
 .primary-button,
+.send-button,
 .collapse-button,
 .icon-button {
   border: 1px solid var(--line);
@@ -373,6 +386,14 @@ input:focus-visible {
   padding: 0.56rem 0.82rem;
   font-size: 0.78rem;
   font-weight: 700;
+}
+.send-button {
+  padding: 0.48rem 0.72rem;
+  color: #06120f;
+  border-color: var(--cyan);
+  background: var(--cyan);
+  font-size: 0.75rem;
+  font-weight: 900;
 }
 .quiet-button:hover,
 .collapse-button:hover,
@@ -553,13 +574,13 @@ button:disabled {
 .panel-heading {
   flex: none;
   justify-content: space-between;
-  min-height: 4rem;
-  padding: 0.75rem 0.9rem;
+  min-height: 3rem;
+  padding: 0.42rem 0.68rem;
   border-bottom: 1px solid var(--line);
 }
 .panel-heading.compact {
-  min-height: 3.5rem;
-  padding-block: 0.58rem;
+  min-height: 2.6rem;
+  padding-block: 0.3rem;
 }
 .panel-heading h2,
 .modal-header h2 {
@@ -607,7 +628,7 @@ button:disabled {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: clamp(0.85rem, 1.5vw, 1.35rem);
+  padding: clamp(0.55rem, 1vw, 0.85rem);
   scrollbar-color: rgba(169, 149, 255, 0.45) transparent;
   scrollbar-width: thin;
 }
@@ -765,6 +786,12 @@ button:disabled {
 .story-card {
   border-color: rgba(169, 149, 255, 0.24);
 }
+.research-card {
+  border-color: rgba(91, 168, 255, 0.28);
+}
+.research-card .eyebrow {
+  color: #78b8ff;
+}
 .story-card .eyebrow {
   color: var(--violet);
 }
@@ -779,7 +806,7 @@ button:disabled {
   flex: var(--panel-weight, 1) 1 0;
 }
 .guidance-card.collapsed {
-  flex: 0 0 3.55rem;
+  flex: 0 0 2.65rem;
 }
 .guidance-card.collapsed .panel-heading {
   border-bottom: 0;

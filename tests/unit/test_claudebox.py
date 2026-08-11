@@ -160,7 +160,8 @@ class ClaudeboxReplyClientTests(unittest.TestCase):
         self.assertEqual(activities[-1]["phase"], "request_cancelled")
 
     def test_replacement_waits_for_superseded_operation_then_continues(self) -> None:
-        client = _client()
+        activities: list[Mapping[str, object]] = []
+        client = _client(activities=activities)
         started = asyncio.Event()
         release = asyncio.Event()
         calls: list[bool] = []
@@ -174,11 +175,18 @@ class ClaudeboxReplyClientTests(unittest.TestCase):
             flow_id: str,
             generation_id: str,
         ) -> str:
-            del transcript, workspace_session_id, flow_id, generation_id
+            del transcript, workspace_session_id
             calls.append(continue_session)
             if len(calls) == 1:
                 started.set()
                 await release.wait()
+                client._activity(  # pyright: ignore[reportPrivateUsage]
+                    phase="output_streaming",
+                    flow_id=flow_id,
+                    generation_id=generation_id,
+                    output_kind="draft",
+                    output="Stale reply.",
+                )
             return "Grounded reply."
 
         async def exercise() -> DraftResult:
@@ -202,6 +210,13 @@ class ClaudeboxReplyClientTests(unittest.TestCase):
 
         self.assertEqual(result.text, "Grounded reply.")
         self.assertEqual(calls, [False, True])
+        self.assertFalse(
+            any(
+                activity.get("generation_id") == "generation-1"
+                and activity.get("phase") == "output_streaming"
+                for activity in activities
+            )
+        )
 
     def test_new_session_does_not_wait_for_superseded_previous_workspace(self) -> None:
         client = _client()
@@ -554,7 +569,10 @@ class ClaudeboxReplyClientTests(unittest.TestCase):
         valid = json.dumps(
             {"choices": [{"message": {"content": "  Grounded\nreply.  "}}]}
         ).encode()
-        self.assertEqual(_parse_completion_response(valid), "Grounded reply.")
+        self.assertEqual(
+            _parse_completion_response(valid, max_characters=1_000),
+            "Grounded reply.",
+        )
 
         invalid_cases = (
             b"not-json",
@@ -563,7 +581,7 @@ class ClaudeboxReplyClientTests(unittest.TestCase):
         )
         for raw in invalid_cases:
             with self.subTest(raw=raw), self.assertRaises(ProtocolError):
-                _parse_completion_response(raw)
+                _parse_completion_response(raw, max_characters=1_000)
 
 
 class _AsyncSSEStream(httpx.AsyncByteStream):

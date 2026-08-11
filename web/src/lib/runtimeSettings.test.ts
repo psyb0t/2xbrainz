@@ -17,7 +17,8 @@ const SNAPSHOT = {
     assignments: {
       draft: { model: 'reply-default', reasoningEffort: 'none' },
       commentary: { model: 'reply-default', reasoningEffort: 'none' },
-      summary: { model: 'reply-default', reasoningEffort: 'none' }
+      summary: { model: 'reply-default', reasoningEffort: 'none' },
+      research: { model: 'saved-model', reasoningEffort: 'high' }
     }
   },
   settings: {
@@ -28,11 +29,13 @@ const SNAPSHOT = {
       assignments: {
         draft: { model: 'reply-default', reasoningEffort: 'none' },
         commentary: { model: 'reply-default', reasoningEffort: 'none' },
-        summary: { model: 'reply-default', reasoningEffort: 'none' }
+        summary: { model: 'reply-default', reasoningEffort: 'none' },
+        research: { model: 'saved-model', reasoningEffort: 'high' }
       },
       talkiesModel: 'asr-default',
       sessionBrief: '',
-      webResearchEnabled: true
+      webResearchEnabled: true,
+      autoDispatchEnabled: true
     }
   },
   audioSetup: {
@@ -102,12 +105,12 @@ describe('runtime settings', () => {
     expect(applicable.systemNode).toBeNull();
   });
 
-  it('repairs a saved Claudebox reasoning value that Reply no longer accepts', () => {
+  it('repairs a reasoning value that the Claudebox researcher does not accept', () => {
     const saved = {
       ...settingsFromSnapshot(SNAPSHOT),
       providers: {
         ...SNAPSHOT.provider.assignments,
-        draft: { model: 'saved-model', reasoningEffort: 'minimal' }
+        research: { model: 'saved-model', reasoningEffort: 'minimal' }
       }
     };
     const compatibleSnapshot = {
@@ -117,14 +120,14 @@ describe('runtime settings', () => {
         models: ['reply-default', 'saved-model'],
         assignments: {
           ...SNAPSHOT.provider.assignments,
-          draft: { model: 'reply-default', reasoningEffort: 'high' }
+          research: { model: 'saved-model', reasoningEffort: 'high' }
         }
       }
     };
 
     const applicable = applicableRuntimeSettings(saved, compatibleSnapshot);
 
-    expect(applicable.providers.draft).toEqual({
+    expect(applicable.providers.research).toEqual({
       model: 'saved-model',
       reasoningEffort: 'high'
     });
@@ -135,9 +138,10 @@ describe('runtime settings', () => {
     expect(message).toEqual(
       expect.objectContaining({
         type: 'runtime_settings',
-        schema_version: 1,
+        schema_version: 2,
         talkies_model: 'asr-default',
-        web_research_enabled: true
+        web_research_enabled: true,
+        auto_dispatch_enabled: true
       })
     );
   });

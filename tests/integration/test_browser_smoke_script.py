@@ -197,8 +197,8 @@ def _successful_response() -> str:
     result = {
         "appShell": True,
         "connected": True,
-        "providerFeeds": 3,
-        "providerAssignments": 3,
+        "providerFeeds": 4,
+        "providerAssignments": 4,
         "modelFilter": True,
         "settingsModalBounded": True,
         "settingsTabs": 3,
@@ -207,7 +207,7 @@ def _successful_response() -> str:
         "modelSelectedInView": True,
         "modelResultCount": "120 of 120",
         "persistedDraftModel": "claudebox-provider-example-model-001",
-        "persistedDraftReasoning": "high",
+        "persistedDraftReasoning": "minimal",
         "selectedDraftModel": "claudebox-provider-example-model-001",
         "generationCards": 0,
         "replyItems": 6,
@@ -218,6 +218,8 @@ def _successful_response() -> str:
         "storyFailed": True,
         "failureReasonVisible": True,
         "storyResponses": 2,
+        "researchCompleted": True,
+        "manualSendEnabled": True,
         "streamOrder": [
             "stream-status",
             "stream-event",
@@ -249,6 +251,7 @@ def _write_fixture_log(path: Path) -> None:
         {"msg": "provider activity retained"},
         {"msg": "web console snapshot streamed"},
         {"msg": "fake AIGate browser flow completed"},
+        {"msg": "manual browser dispatch accepted"},
         {
             "msg": "frontend stream diagnostic received",
             "frontend_event": "snapshot_received",

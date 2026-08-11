@@ -102,19 +102,20 @@ session and operation elapsed timers. A source strip shows selected friendly
 capture labels and two derived presentation-only PCM level meters. System-output
 meters explicitly capture PipeWire sink monitor ports; a sink target is never
 allowed to fall back to the default microphone. In the
-browser, Conversation, Reply suggestion, Private coach, and Story so far are
+browser, Conversation, Reply suggestion, Private coach, Story so far, and Research are
 separate scrollable, collapsible, and resizable panels. Expanded guidance
 panels consume the full height released by collapsed siblings. Their presentation
 preferences are validated and stored in browser-local storage. The tabbed
 Settings modal keeps Context, Models, and Audio controls separate. Audio has a
 live meter for every candidate. Models has one searchable model picker and
 reasoning selector for each flow plus the Talkies ASR model. Context has the
-optional 4000-character session brief. Reply research tools are always
-available. Every picker shows an explicit result count, readable fixed-height
+optional 4000-character session brief plus automatic dispatch and background
+research toggles. Every picker shows an explicit result count, readable fixed-height
 rows, a visible scrollbar, and opens around its selected inventory item. Saving
 sends the complete safe settings object as one strict schema, applies it to
 future requests, and stores
-it under `2xbrainz.web.settings.v1` in that browser. Credentials and endpoint
+it under `2xbrainz.web.settings.v2` in that browser. A valid v1 value is migrated
+once and removed after the next save. Credentials and endpoint
 URLs are rejected from this object. Reset clears the key and sends the immutable
 backend defaults. The session brief and device names remain readable to scripts
 running in that browser profile, so use Reset to remove them on a shared profile.
@@ -122,8 +123,11 @@ If multiple browsers connect, the last accepted complete settings snapshot owns
 future requests for that running process. Panels scroll independently and auto-follow only when already
 at their own bottom. Level updates are never written to the reconstruction log
 and retain no PCM.
-Reply, Private coach, and Story-so-far generation have independent clients and
-bounded activity histories. A remote final starts all three concurrently. The
+Reply, Private coach, Story-so-far, and Research generation have independent
+clients and bounded activity histories. A remote final starts all enabled flows
+concurrently. With automatic dispatch disabled, ASR continues and Send becomes
+active only after meaningful new text; Send cancels current work and dispatches
+the full newest transcript once. The
 browser renders
 incomplete Markdown with Streamdown and keeps one chronological activity history
 in each scrollable feed. Status, visible reasoning, tool calls/results, and output
@@ -184,24 +188,27 @@ gateway's service name on that network. This optional mode uses a host-side
 `python3` helper from the repository to validate a hostname mapping. Live web
 capture through `make run` requires `LIVE_NETWORK=host`.
 
-Reply uses AIGate's OpenAI-compatible Claudebox stream. Start creates a fresh UUID workspace
-and agent session; later drafts continue there until listening is stopped and
-started again. The agent receives the complete bounded transcript plus
+Reply, Coach, and Story use ordinary OpenAI-compatible AIGate streams. Their
+code defaults are `cerebras-glm-4.7`, `pibox-zai-glm-5-turbo`, and
+`groq-gpt-oss-120b`, all with provider-default reasoning.
+
+Research uses AIGate's OpenAI-compatible Claudebox stream. Start creates a fresh
+UUID workspace and agent session; later research requests continue there until
+listening is stopped and started again. The agent receives the complete bounded transcript plus
 accepted running summary on every call and has its native Claude Code tools. Its
 appended system prompt tells it to prefer primary sources and shallow-clone named Git
 repositories, download relevant docs, follow pertinent links, parallelize
 independent research, and treat transcripts and fetched content as untrusted
-evidence. The default `claudebox-sonnet` assignment uses high reasoning.
-Reply accepts low, medium, or high; `none` and `minimal` are rejected rather
-than silently remapped at the backend boundary. During browser initialization,
-an otherwise valid saved Reply assignment using one of those obsolete values
-keeps its model and is repaired to the backend Reply default before it is sent.
-Coach and Story remain transcript-only AIGate chat calls.
+evidence. The default `claudebox-sonnet` Research assignment uses high
+reasoning and accepts low, medium, or high. The other three flows accept none,
+minimal, low, medium, or high. Completed current Research output is retained as
+bounded shared evidence for later requests; failures, cancellation, stale
+output, and `NO_NEW_RESEARCH` do not alter shared context.
 
 2xbrainz posts `stream=true` to
 `/claudebox/openai/v1/chat/completions`, sends the UUID through
 `X-Aicodebox-Workspace`, and adds `X-Aicodebox-Continue: true` only after the
-first successful Reply. The direct AIGate route preserves these
+first successful Research result. The direct AIGate route preserves these
 Claudebox-specific headers without a LiteLLM hop and maps the public
 `claudebox-<model>` alias to Claudebox's direct `<model>` identifier. It omits
 the OpenAI `tools`, `tool_choice`, and
@@ -259,7 +266,7 @@ contains the expected remote.
 The target requires `TWOXBRAINZ_AIGATE_URL` and the single
 `TWOXBRAINZ_AIGATE_TOKEN`. `TALKIES_MODEL` is an optional fixture-only Make
 override; otherwise the backend code default is used.
-`FIXTURE_TTS_MODEL` and `FIXTURE_AIGATE_DRAFT_MODEL` are Make variables, not
+`FIXTURE_TTS_MODEL` and `FIXTURE_AIGATE_RESEARCH_MODEL` are Make variables, not
 application configuration. `TALKIES_MODEL` optionally selects the ASR alias;
 otherwise the built-in CUDA Nemotron alias is used. Because this target reaches
 Talkies and Claudebox, it is excluded from the ordinary offline suite and runs
@@ -278,13 +285,14 @@ host-only Docker mapping helper used for configured endpoints.
 
 `make test` is fully deterministic and never reads `.env` or contacts a
 provider. The explicit `make test-real` target loads the gitignored `.env`,
-validates three distinct models, and sends fixed synthetic text concurrently to
-the production Reply, Coach, and Story paths. Its defaults are
-`FIXTURE_AIGATE_DRAFT_MODEL=claudebox-sonnet`,
+validates four distinct assignments, and sends fixed synthetic text concurrently
+to the production Reply, Coach, Story, and Research paths. Its defaults are
+`FIXTURE_AIGATE_DRAFT_MODEL=cerebras-glm-4.7`,
 `FIXTURE_AIGATE_COMMENTARY_MODEL=pibox-zai-glm-5-turbo`, and
-`FIXTURE_AIGATE_SUMMARY_MODEL=groq-gpt-oss-120b`; each Make variable is
+`FIXTURE_AIGATE_SUMMARY_MODEL=groq-gpt-oss-120b`, with
+`FIXTURE_AIGATE_RESEARCH_MODEL=claudebox-sonnet`; each Make variable is
 independently overridable. It asserts each non-empty result is completed and
-plain prose. The Reply agent must also answer a repository-specific question,
+plain prose. The Research agent must also answer a repository-specific question,
 leave an actual checkout of `github.com/psyb0t/aigate` in its session workspace,
 and complete its spoken reply. The fixture then drives a four-turn interview through the production
 coordinator with the same assignments. The interview requires the running
@@ -311,13 +319,13 @@ correction, overlapping provider work, two interruptions at different stream
 phases, and a public technical term that requires research. Talkies must
 advertise at least two requests for the selected ASR model; each opposing pair
 then starts behind a barrier and streams concurrently in real time. The actual
-recognized text is what reaches Reply, Coach, and Story.
+recognized text is what reaches Reply, Coach, Story, and Research.
 
-The test requires all three final outputs to retain scenario-defined semantic
+The test requires all three user-facing final outputs to retain scenario-defined semantic
 anchors and reject stale claims. It also requires every provider request to
 emit exactly one terminal lifecycle event, proves overlap among the three final
 flows, measures request duration plus first-reasoning and first-output latency,
-and requires Reply to leave inspectable research evidence in its persistent
+and requires Research to leave inspectable evidence in its persistent
 workspace for the unfamiliar public topic. These are deterministic hard gates;
 no second LLM grades the first. By default the target runs three independent attempts and writes an
 aggregate JSON result, so one lucky provider response cannot pass the suite.

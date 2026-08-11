@@ -75,8 +75,11 @@ class WebConsoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 talkies_model="asr-a",
                 session_brief=None,
                 web_research_enabled=True,
+                auto_dispatch_enabled=True,
                 selection=ProviderSelection.uniform("model-a", "none"),
                 callback=AsyncMock(return_value=True),
+                dispatch_callback=AsyncMock(return_value=True),
+                dispatch_state_callback=lambda: (True, False),
             )
             await console.open()
             try:
@@ -99,6 +102,47 @@ class WebConsoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(await anext(console.control_lines()), "resume")
             finally:
                 await console.close()
+
+    async def test_websocket_routes_manual_dispatch_and_publishes_pending_state(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            dispatch = AsyncMock(return_value=True)
+            console = WebConsole(
+                _state_with_selection(),
+                port=_free_port(),
+                static_directory=_static_app(Path(temporary_directory)),
+            )
+            console.configure_runtime_settings(
+                models=("model-a",),
+                talkies_models=("asr-a",),
+                talkies_model="asr-a",
+                session_brief=None,
+                web_research_enabled=True,
+                auto_dispatch_enabled=False,
+                selection=ProviderSelection.uniform("model-a", "none"),
+                callback=AsyncMock(return_value=True),
+                dispatch_callback=dispatch,
+                dispatch_state_callback=lambda: (False, True),
+            )
+            await console.open()
+            try:
+                async with connect(
+                    _websocket_url(console),
+                    origin=_origin(console),
+                    proxy=None,
+                ) as websocket:
+                    snapshot = json.loads(await websocket.recv())
+                    await websocket.send(json.dumps({"type": "dispatch"}))
+                    await asyncio.sleep(0.05)
+            finally:
+                await console.close()
+
+        self.assertEqual(
+            snapshot["dispatch"],
+            {"autoEnabled": False, "hasUnsentTranscript": True},
+        )
+        dispatch.assert_awaited_once_with()
 
     async def test_frontend_stream_diagnostics_are_validated_and_logged(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -262,8 +306,11 @@ class WebConsoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 talkies_model="asr-a",
                 session_brief=None,
                 web_research_enabled=True,
+                auto_dispatch_enabled=True,
                 selection=ProviderSelection.uniform("model-a", "none"),
                 callback=AsyncMock(return_value=True),
+                dispatch_callback=AsyncMock(return_value=True),
+                dispatch_state_callback=lambda: (True, False),
             )
             await console.open()
             try:
@@ -306,8 +353,11 @@ class WebConsoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 talkies_model="asr-a",
                 session_brief=None,
                 web_research_enabled=True,
+                auto_dispatch_enabled=True,
                 selection=ProviderSelection.uniform("model-a", "none"),
                 callback=callback,
+                dispatch_callback=AsyncMock(return_value=True),
+                dispatch_state_callback=lambda: (True, False),
             )
             with patch(
                 "two_x_brainz.web.list_pipewire_nodes",
@@ -359,6 +409,7 @@ class WebConsoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 draft=ProviderAssignment("model-a", "none"),
                 commentary=ProviderAssignment("model-a", "none"),
                 summary=ProviderAssignment("model-b", "high"),
+                research=ProviderAssignment("model-a", "high"),
             ),
         )
         discover.assert_awaited_once_with()
@@ -404,15 +455,17 @@ def _runtime_settings_payload(
 ) -> dict[str, object]:
     return {
         "type": "runtime_settings",
-        "schema_version": 1,
+        "schema_version": 2,
         "providers": {
             "draft": {"model": "model-a", "reasoning_effort": "none"},
             "commentary": {"model": "model-a", "reasoning_effort": "none"},
             "summary": {"model": summary_model, "reasoning_effort": "high"},
+            "research": {"model": "model-a", "reasoning_effort": "high"},
         },
         "talkies_model": "asr-a",
         "session_brief": "",
         "web_research_enabled": True,
+        "auto_dispatch_enabled": True,
         "microphone_node": "mic",
         "system_node": "system",
     }

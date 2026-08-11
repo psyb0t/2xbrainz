@@ -114,7 +114,7 @@ def _scorecard(*, passed: bool = True) -> dict[str, object]:
         "maximum_concurrent_provider_flows": 4,
         "overlapping_provider_pairs": 16,
         "mean_word_error_rate": 0.125,
-        "research_tool_completed": True,
+        "research_completed": True,
         "stale_provider_output_count": 0,
         "interruption_to_cancellation_latencies": _duration(3),
         "cancellation_to_replacement_latencies": _duration(2),

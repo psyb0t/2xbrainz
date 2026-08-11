@@ -41,7 +41,7 @@ from two_x_brainz.talkies import TalkiesClient, TalkiesStreamConfig
 
 _TRACE_DIRECTORY_ENV = "TWOXBRAINZ_FIXTURE_TRACE_DIR"
 _WORK_DIRECTORY_ENV = "TWOXBRAINZ_FIXTURE_WORK_DIR"
-_DRAFT_MODEL_ENV = "TWOXBRAINZ_FIXTURE_DRAFT_MODEL"
+_RESEARCH_MODEL_ENV = "TWOXBRAINZ_FIXTURE_RESEARCH_MODEL"
 _TALKIES_MODEL_ENV = "TWOXBRAINZ_FIXTURE_TALKIES_MODEL"
 _TRACE_LABEL = "audio-interrupted-claudebox-research"
 _FIRST_REMOTE_TEXT = (
@@ -206,15 +206,18 @@ async def _run_with_trace(settings: Settings, trace: FixtureTrace) -> Path:
     recorder = _ActivityRecorder(trace)
     client = ClaudeboxReplyClient(
         base_url=settings.aigate_url,
-        model=settings.aigate_reply_model,
+        model=settings.aigate_research_model,
         token=settings.aigate_token,
-        reasoning_effort="high",
+        reasoning_effort=settings.aigate_research_reasoning_effort,
         activity_sink=recorder.record,
+        output_kind="research",
     )
     provider = _TracingDraftProvider(client, trace)
     coordinator = ConversationCoordinator(
         provider,
+        research_provider=provider,
         draft_generation_deadline=DEFAULT_CLAUDEBOX_REPLACEMENT_DEADLINE,
+        research_enabled=False,
     )
     workspace_session_id = await coordinator.start_session()
     if workspace_session_id is None:
@@ -416,20 +419,20 @@ def _assert_marker_groups(
 
 
 def _fixture_settings(settings: Settings) -> Settings:
-    draft_model = os.environ.get(
-        _DRAFT_MODEL_ENV,
-        settings.aigate_reply_model or "",
+    research_model = os.environ.get(
+        _RESEARCH_MODEL_ENV,
+        settings.aigate_research_model,
     ).strip()
     talkies_model = os.environ.get(
         _TALKIES_MODEL_ENV,
         settings.talkies_model,
     ).strip()
-    if not draft_model or not talkies_model:
+    if not research_model or not talkies_model:
         raise InterruptedAudioResearchError("fixture models must not be empty")
     return replace(
         settings,
-        aigate_reply_model=draft_model,
-        aigate_reply_reasoning_effort="high",
+        aigate_research_model=research_model,
+        aigate_research_reasoning_effort="high",
         talkies_model=talkies_model,
     )
 

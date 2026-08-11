@@ -5,21 +5,25 @@ export interface LayoutPreferences {
   replyHeightPercent: number;
   coachHeightPercent: number;
   storyHeightPercent: number;
+  researchHeightPercent: number;
   sourceBarCollapsed: boolean;
   replyCollapsed: boolean;
   coachCollapsed: boolean;
   storyCollapsed: boolean;
+  researchCollapsed: boolean;
 }
 
 export const DEFAULT_PREFERENCES: LayoutPreferences = {
   mainSplitPercent: 62,
-  replyHeightPercent: 34,
-  coachHeightPercent: 33,
-  storyHeightPercent: 33,
+  replyHeightPercent: 28,
+  coachHeightPercent: 24,
+  storyHeightPercent: 28,
+  researchHeightPercent: 20,
   sourceBarCollapsed: false,
   replyCollapsed: false,
   coachCollapsed: false,
-  storyCollapsed: false
+  storyCollapsed: false,
+  researchCollapsed: true
 };
 
 const MIN_MAIN_PERCENT = 28;
@@ -54,26 +58,33 @@ export function normalizePreferences(
     mainSplitPercent: clampNumber(value.mainSplitPercent, 62, MIN_MAIN_PERCENT, MAX_MAIN_PERCENT),
     replyHeightPercent: clampNumber(
       value.replyHeightPercent,
-      34,
+      DEFAULT_PREFERENCES.replyHeightPercent,
       MIN_GUIDANCE_PERCENT,
       MAX_GUIDANCE_PERCENT
     ),
     coachHeightPercent: clampNumber(
       value.coachHeightPercent,
-      33,
+      DEFAULT_PREFERENCES.coachHeightPercent,
       MIN_GUIDANCE_PERCENT,
       MAX_GUIDANCE_PERCENT
     ),
     storyHeightPercent: clampNumber(
       value.storyHeightPercent,
-      33,
+      DEFAULT_PREFERENCES.storyHeightPercent,
+      MIN_GUIDANCE_PERCENT,
+      MAX_GUIDANCE_PERCENT
+    ),
+    researchHeightPercent: clampNumber(
+      value.researchHeightPercent,
+      DEFAULT_PREFERENCES.researchHeightPercent,
       MIN_GUIDANCE_PERCENT,
       MAX_GUIDANCE_PERCENT
     ),
     sourceBarCollapsed: booleanOrDefault(value.sourceBarCollapsed, false),
     replyCollapsed: booleanOrDefault(value.replyCollapsed, false),
     coachCollapsed: booleanOrDefault(value.coachCollapsed, false),
-    storyCollapsed: booleanOrDefault(value.storyCollapsed, false)
+    storyCollapsed: booleanOrDefault(value.storyCollapsed, false),
+    researchCollapsed: booleanOrDefault(value.researchCollapsed, true)
   };
 }
 

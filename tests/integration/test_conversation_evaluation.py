@@ -33,6 +33,10 @@ _FINAL_SUMMARY = (
     "Thursday. The user owns the failover test and numbers before lunch. The "
     "speakers are evaluating the RFC 9264 linkset for their docs."
 )
+_RESEARCH_FINDINGS = (
+    "Verified research: RFC 9264 defines a machine-readable linkset format "
+    "that can connect related documentation resources."
+)
 
 
 class _ActivityRecorder:
@@ -63,6 +67,23 @@ class _ActivityRecorder:
                         record.record.get("phase") == phase for record in self.records
                     )
                     >= count
+                )
+
+    async def wait_for_flow(
+        self,
+        phase: str,
+        output_kind: str,
+        context_revision: int,
+    ) -> None:
+        async with asyncio.timeout(1):
+            async with self._changed:
+                await self._changed.wait_for(
+                    lambda: any(
+                        record.record.get("phase") == phase
+                        and record.record.get("output_kind") == output_kind
+                        and record.record.get("context_revision") == context_revision
+                        for record in self.records
+                    )
                 )
 
 
@@ -157,12 +178,16 @@ class _ControlledProvider:
                 "kind": "provider_activity",
                 "phase": "request_completed",
                 "flow_id": flow_id,
+                "context_revision": context_revision,
+                "output_kind": self.kind,
             }
         )
         if self.kind == "draft":
             return _FINAL_DRAFT
         if self.kind == "commentary":
             return _FINAL_COMMENTARY
+        if self.kind == "research":
+            return _RESEARCH_FINDINGS
         return _FINAL_SUMMARY
 
 
@@ -170,15 +195,16 @@ def test_slang_conversation_runs_parallel_and_recovers_from_interruptions() -> N
     async def run() -> None:
         scenario = load_scenario(Path(_SCENARIO_PATH))
         recorder = _ActivityRecorder()
-        barrier = _FinalFlowBarrier(expected=3)
+        barrier = _FinalFlowBarrier(expected=4)
         providers = {
             kind: _ControlledProvider(kind, recorder, barrier, len(scenario.turns))
-            for kind in ("draft", "commentary", "summary")
+            for kind in ("draft", "commentary", "summary", "research")
         }
         coordinator = ConversationCoordinator(
             providers["draft"],
             commentary_provider=providers["commentary"],
             summary_provider=providers["summary"],
+            research_provider=providers["research"],
         )
         role_revisions = {SpeakerRole.USER: 0, SpeakerRole.REMOTE: 0}
         timeline_records: list[TimedRecord] = []
@@ -224,6 +250,8 @@ def test_slang_conversation_runs_parallel_and_recovers_from_interruptions() -> N
                 if index == 6:
                     await recorder.wait_for_count("tool_started", 1)
                     interruption_pending = True
+                if index == 7:
+                    await recorder.wait_for_flow("request_completed", "research", 7)
 
             draft = await coordinator.wait_for_idle()
             assert draft is not None
@@ -235,7 +263,7 @@ def test_slang_conversation_runs_parallel_and_recovers_from_interruptions() -> N
                 if insight.context_revision == len(scenario.turns)
             }
             assert set(final_insights) == {InsightKind.COMMENTARY, InsightKind.SUMMARY}
-            assert barrier.arrived == 3
+            assert barrier.arrived == 4
 
             final_records = list(recorder.records)
             next_sequence = len(final_records)
@@ -299,6 +327,10 @@ def test_slang_conversation_runs_parallel_and_recovers_from_interruptions() -> N
             assert "Thursday, not Friday" in " ".join(
                 line.text for line in final_request.transcript.lines
             )
+            for kind in ("draft", "commentary", "summary"):
+                assert providers[kind].requests[-1].transcript.research_context == (
+                    _RESEARCH_FINDINGS
+                )
         finally:
             await coordinator.stop()
 

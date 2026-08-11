@@ -1,12 +1,12 @@
 <script lang="ts">
   import { afterUpdate } from 'svelte';
   import { Streamdown } from 'svelte-streamdown';
-  import type { FrontendDebugMessage, ProviderActivity } from './contracts';
+  import type { FrontendDebugMessage, ProviderActivity, ProviderOutputKind } from './contracts';
 
   const FOLLOW_DISTANCE_PX = 48;
   const STREAMDOWN_CONTROLS = { code: false, mermaid: false, table: false };
 
-  export let kind: 'draft' | 'commentary' | 'summary';
+  export let kind: ProviderOutputKind;
   export let activity: ProviderActivity[];
   export let activeModel: string;
   export let fallbackOutput: string;

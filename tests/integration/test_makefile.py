@@ -105,7 +105,7 @@ class MakefileIntegrationTests(unittest.TestCase):
         result = _dry_run(
             "test-real-audio-research",
             "TALKIES_MODEL=local-talkies-cuda-nemotron-3.5-asr-0.6b",
-            "FIXTURE_AIGATE_DRAFT_MODEL=claudebox-sonnet",
+            "FIXTURE_AIGATE_RESEARCH_MODEL=claudebox-sonnet",
         )
 
         self.assertIn("real_interrupted_audio_research.py", result.stdout)
@@ -116,7 +116,7 @@ class MakefileIntegrationTests(unittest.TestCase):
             result.stdout,
         )
         self.assertIn(
-            'TWOXBRAINZ_FIXTURE_DRAFT_MODEL="claudebox-sonnet"',
+            'TWOXBRAINZ_FIXTURE_RESEARCH_MODEL="claudebox-sonnet"',
             result.stdout,
         )
         self.assertIn("--tmpfs /fixture-work:rw,exec,nosuid,size=512m", result.stdout)
@@ -131,6 +131,7 @@ class MakefileIntegrationTests(unittest.TestCase):
             "FIXTURE_AIGATE_DRAFT_MODEL=custom-reply",
             "FIXTURE_AIGATE_COMMENTARY_MODEL=custom-coach",
             "FIXTURE_AIGATE_SUMMARY_MODEL=custom-story",
+            "FIXTURE_AIGATE_RESEARCH_MODEL=claudebox-sonnet",
         )
 
         self.assertIn("real_conversation_evaluation.py", result.stdout)
@@ -158,6 +159,10 @@ class MakefileIntegrationTests(unittest.TestCase):
         )
         self.assertIn(
             'TWOXBRAINZ_FIXTURE_SUMMARY_MODEL="custom-story"',
+            result.stdout,
+        )
+        self.assertIn(
+            'TWOXBRAINZ_FIXTURE_RESEARCH_MODEL="claudebox-sonnet"',
             result.stdout,
         )
         self.assertIn("--tmpfs /fixture-work:rw,exec,nosuid,size=512m", result.stdout)

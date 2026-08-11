@@ -327,11 +327,11 @@ def test_live_quality_gates_require_wer_research_and_interruption_recovery() -> 
         report,
         scenario,
         exact_rates,
-        research_tool_completed=False,
+        research_completed=False,
     )
 
     assert failed.passed is False
-    assert failed.research_tool_completed is False
+    assert failed.research_completed is False
     assert failed.mean_word_error_rate == 0.0
 
 
@@ -345,7 +345,7 @@ def test_live_quality_gates_reject_excessive_turn_word_error_rate() -> None:
         report,
         scenario,
         rates,
-        research_tool_completed=True,
+        research_completed=True,
     )
 
     assert failed.passed is False

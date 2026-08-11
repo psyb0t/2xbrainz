@@ -81,6 +81,12 @@ class _ControlMessage(BaseModel):
     command: Literal["pause", "resume"]
 
 
+class _ManualDispatchMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    type: Literal["dispatch"]
+
+
 class _AudioSelectionMessage(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -115,17 +121,19 @@ class _ProviderAssignmentsMessage(BaseModel):
     draft: _ProviderAssignmentMessage
     commentary: _ProviderAssignmentMessage
     summary: _ProviderAssignmentMessage
+    research: _ProviderAssignmentMessage
 
 
 class _RuntimeSettingsMessage(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     type: Literal["runtime_settings"]
-    schema_version: Literal[1]
+    schema_version: Literal[2]
     providers: _ProviderAssignmentsMessage
     talkies_model: str = Field(min_length=1, max_length=MAX_AIGATE_MODEL_ID_CHARACTERS)
     session_brief: str = Field(max_length=MAX_SESSION_BRIEF_CHARACTERS)
     web_research_enabled: bool
+    auto_dispatch_enabled: bool
     microphone_node: str | None = Field(default=None, max_length=512)
     system_node: str | None = Field(default=None, max_length=512)
 
@@ -140,7 +148,7 @@ class _ClientDebugMessage(BaseModel):
         "snapshot_rejected",
         "provider_feed_rendered",
     ]
-    output_kind: Literal["draft", "commentary", "summary"] | None = None
+    output_kind: Literal["draft", "commentary", "summary", "research"] | None = None
     activity_count: int | None = Field(default=None, ge=0, le=10_000)
     item_count: int | None = Field(default=None, ge=0, le=1_000)
     text_characters: int | None = Field(default=None, ge=0, le=1_000_000)
@@ -149,6 +157,7 @@ class _ClientDebugMessage(BaseModel):
 
 _ClientMessage = Annotated[
     _ControlMessage
+    | _ManualDispatchMessage
     | _AudioSelectionMessage
     | _AudioMeteringMessage
     | _AudioRescanMessage
@@ -214,6 +223,7 @@ class WebRuntimeSettings:
     talkies_model: str
     session_brief: str | None
     web_research_enabled: bool
+    auto_dispatch_enabled: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,6 +258,9 @@ class WebSnapshot:
     default_talkies_model: str = ""
     default_session_brief: str = ""
     default_web_research_enabled: bool = False
+    auto_dispatch_enabled: bool = True
+    default_auto_dispatch_enabled: bool = True
+    has_unsent_transcript: bool = False
     provider_activity: tuple[dict[str, object], ...] = ()
 
     def payload(self) -> dict[str, object]:
@@ -272,6 +285,7 @@ class WebSnapshot:
                 "talkiesModel": self.talkies_model,
                 "sessionBrief": self.session_brief,
                 "webResearchEnabled": self.web_research_enabled,
+                "autoDispatchEnabled": self.auto_dispatch_enabled,
                 "defaults": {
                     "assignments": _provider_selection_payload(
                         self.default_provider_selection
@@ -279,7 +293,12 @@ class WebSnapshot:
                     "talkiesModel": self.default_talkies_model,
                     "sessionBrief": self.default_session_brief,
                     "webResearchEnabled": self.default_web_research_enabled,
+                    "autoDispatchEnabled": self.default_auto_dispatch_enabled,
                 },
+            },
+            "dispatch": {
+                "autoEnabled": self.auto_dispatch_enabled,
+                "hasUnsentTranscript": self.has_unsent_transcript,
             },
             "activeAudio": {
                 "microphone": {
@@ -348,6 +367,8 @@ class WebConsole:
     _default_talkies_model: str = field(default="", init=False)
     _default_session_brief: str = field(default="", init=False, repr=False)
     _default_web_research_enabled: bool = field(default=False, init=False)
+    _auto_dispatch_enabled: bool = field(default=True, init=False)
+    _default_auto_dispatch_enabled: bool = field(default=True, init=False)
     _provider_activity: deque[dict[str, object]] = field(
         default_factory=lambda: deque(maxlen=_MAX_PROVIDER_ACTIVITY_ENTRIES),
         init=False,
@@ -355,6 +376,14 @@ class WebConsole:
     _runtime_settings_callback: (
         Callable[[WebRuntimeSettings], Awaitable[bool]] | None
     ) = field(default=None, init=False)
+    _manual_dispatch_callback: Callable[[], Awaitable[bool]] | None = field(
+        default=None,
+        init=False,
+    )
+    _dispatch_state_callback: Callable[[], tuple[bool, bool]] | None = field(
+        default=None,
+        init=False,
+    )
     _audio_rescan_task: asyncio.Task[None] | None = field(default=None, init=False)
     _audio_rescan_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     _provider_activity_revision: int = field(default=0, init=False)
@@ -443,6 +472,12 @@ class WebConsole:
 
     def snapshot(self) -> WebSnapshot:
         """Build one structured browser update from bounded console state."""
+        auto_dispatch_enabled = self._auto_dispatch_enabled
+        has_unsent_transcript = False
+        if self._dispatch_state_callback is not None:
+            auto_dispatch_enabled, has_unsent_transcript = (
+                self._dispatch_state_callback()
+            )
         return WebSnapshot(
             status=self.state.status_text().plain,
             notice=self.state.notice_text().plain,
@@ -475,6 +510,9 @@ class WebConsole:
             default_talkies_model=self._default_talkies_model,
             default_session_brief=self._default_session_brief,
             default_web_research_enabled=self._default_web_research_enabled,
+            auto_dispatch_enabled=auto_dispatch_enabled,
+            default_auto_dispatch_enabled=self._default_auto_dispatch_enabled,
+            has_unsent_transcript=has_unsent_transcript,
             provider_activity=tuple(self._provider_activity),
         )
 
@@ -486,8 +524,11 @@ class WebConsole:
         talkies_model: str,
         session_brief: str | None,
         web_research_enabled: bool,
+        auto_dispatch_enabled: bool,
         selection: ProviderSelection,
         callback: Callable[[WebRuntimeSettings], Awaitable[bool]],
+        dispatch_callback: Callable[[], Awaitable[bool]],
+        dispatch_state_callback: Callable[[], tuple[bool, bool]],
     ) -> None:
         """Publish safe defaults and install the atomic runtime updater."""
         self._models = models
@@ -495,12 +536,16 @@ class WebConsole:
         self._talkies_model = talkies_model
         self._session_brief = session_brief or ""
         self._web_research_enabled = web_research_enabled
+        self._auto_dispatch_enabled = auto_dispatch_enabled
         self._provider_selection = selection
         self._default_provider_selection = selection
         self._default_talkies_model = talkies_model
         self._default_session_brief = session_brief or ""
         self._default_web_research_enabled = web_research_enabled
+        self._default_auto_dispatch_enabled = auto_dispatch_enabled
         self._runtime_settings_callback = callback
+        self._manual_dispatch_callback = dispatch_callback
+        self._dispatch_state_callback = dispatch_state_callback
 
     def record_provider_activity(self, activity: Mapping[str, object]) -> None:
         """Retain a bounded, already-sanitized provider activity timeline."""
@@ -696,6 +741,14 @@ class WebConsole:
             if isinstance(message, _ControlMessage):
                 self._submit_control(message.command)
                 continue
+            if isinstance(message, _ManualDispatchMessage):
+                callback = self._manual_dispatch_callback
+                if callback is None or not await callback():
+                    logger.debug(
+                        "manual generation dispatch ignored",
+                        extra={"reason": "dispatch_not_available_or_not_pending"},
+                    )
+                continue
             if isinstance(message, _AudioMeteringMessage):
                 if message.enabled:
                     self.start_audio_metering()
@@ -785,12 +838,14 @@ class WebConsole:
             draft=_provider_assignment(assignments[ProviderFlow.DRAFT]),
             commentary=_provider_assignment(assignments[ProviderFlow.COMMENTARY]),
             summary=_provider_assignment(assignments[ProviderFlow.SUMMARY]),
+            research=_provider_assignment(assignments[ProviderFlow.RESEARCH]),
         )
         settings = WebRuntimeSettings(
             providers=selection,
             talkies_model=message.talkies_model,
             session_brief=message.session_brief.strip() or None,
             web_research_enabled=message.web_research_enabled,
+            auto_dispatch_enabled=message.auto_dispatch_enabled,
         )
         if not await callback(settings):
             return
@@ -805,6 +860,7 @@ class WebConsole:
         self._talkies_model = settings.talkies_model
         self._session_brief = settings.session_brief or ""
         self._web_research_enabled = settings.web_research_enabled
+        self._auto_dispatch_enabled = settings.auto_dispatch_enabled
 
     def _audio_nodes_available(
         self,

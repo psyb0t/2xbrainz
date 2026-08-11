@@ -95,26 +95,26 @@ class EvaluationRecorderTests(unittest.TestCase):
             self.assertEqual(event["kind"], "evaluation_observation")
             self.assertEqual(event["record"]["turn_id"], "turn-2")
 
-    def test_research_gate_requires_completed_reply_tool(self) -> None:
+    def test_research_gate_requires_completed_findings(self) -> None:
         records = [
             TimedRecord(
                 sequence=1,
                 elapsed_ms=1,
                 record={
                     "kind": "provider_activity",
-                    "phase": "tool_completed",
-                    "output_kind": "draft",
-                    "tool": "research_web",
+                    "phase": "request_completed",
+                    "output_kind": "research",
+                    "output": "Verified findings from the primary specification.",
                 },
             )
         ]
 
         _EVALUATION._assert_research_completed(records)
 
-        records[0].record["output_kind"] = "summary"
+        records[0].record["output"] = "NO_NEW_RESEARCH"
         with self.assertRaisesRegex(
             _EVALUATION.ConversationEvaluationError,
-            "did not complete web research",
+            "did not complete agentic research",
         ):
             _EVALUATION._assert_research_completed(records)
 
@@ -127,6 +127,7 @@ class EvaluationArtifactTests(unittest.TestCase):
             _EVALUATION._DRAFT_MODEL_ENV: "custom-reply",
             _EVALUATION._COMMENTARY_MODEL_ENV: "custom-coach",
             _EVALUATION._SUMMARY_MODEL_ENV: "custom-story",
+            _EVALUATION._RESEARCH_MODEL_ENV: "claudebox-sonnet",
         }
 
         with patch.dict(os.environ, environment, clear=False):
@@ -136,6 +137,7 @@ class EvaluationArtifactTests(unittest.TestCase):
         self.assertEqual(updated.aigate_reply_model, "custom-reply")
         self.assertEqual(updated.aigate_coach_model, "custom-coach")
         self.assertEqual(updated.aigate_summary_model, "custom-story")
+        self.assertEqual(updated.aigate_research_model, "claudebox-sonnet")
 
     def test_fixture_model_override_rejects_empty_or_oversized_values(self) -> None:
         invalid_values = (

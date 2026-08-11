@@ -6,6 +6,7 @@ from datetime import timedelta
 from unittest.mock import patch
 
 from two_x_brainz.aigate import DraftProvider, InsightProvider
+from two_x_brainz.claudebox import NO_NEW_RESEARCH_RESULT
 from two_x_brainz.contracts import (
     DraftRequest,
     DraftResult,
@@ -67,6 +68,22 @@ class RecordingProvider(ImmediateProvider):
         )
 
 
+class RecordingResearchProvider(RecordingProvider):
+    def __init__(self, findings: str = "verified project findings") -> None:
+        super().__init__()
+        self.findings = findings
+
+    async def draft(self, request: DraftRequest) -> DraftResult:
+        self.requests.append(request)
+        return DraftResult(
+            generation_id=request.generation_id,
+            trigger_turn_id=request.trigger_turn_id,
+            context_revision=request.context_revision,
+            status=GenerationStatus.COMPLETED,
+            text=self.findings,
+        )
+
+
 class ImmediateSessionProvider(DraftProvider, InsightProvider):
     async def draft(self, request: DraftRequest) -> DraftResult:
         return DraftResult(
@@ -106,19 +123,29 @@ class ConcurrentSessionProvider(ImmediateSessionProvider):
         self.release = asyncio.Event()
 
     async def draft(self, request: DraftRequest) -> DraftResult:
-        self._mark_started("draft")
+        self.mark_started("draft")
         await self.release.wait()
         return await super().draft(request)
 
     async def insight(self, request: InsightRequest) -> InsightResult:
-        self._mark_started(request.kind.value)
+        self.mark_started(request.kind.value)
         await self.release.wait()
         return await super().insight(request)
 
-    def _mark_started(self, kind: str) -> None:
+    def mark_started(self, kind: str) -> None:
         self.started.add(kind)
-        if self.started == {"draft", "commentary", "summary"}:
+        if self.started == {"draft", "commentary", "summary", "research"}:
             self.all_started.set()
+
+
+class ConcurrentResearchProvider(ImmediateProvider):
+    def __init__(self, session_provider: ConcurrentSessionProvider) -> None:
+        self.session_provider = session_provider
+
+    async def draft(self, request: DraftRequest) -> DraftResult:
+        self.session_provider.mark_started("research")
+        await self.session_provider.release.wait()
+        return await super().draft(request)
 
 
 class CancellationIgnoringSummaryProvider(ImmediateSessionProvider):
@@ -443,6 +470,15 @@ class ConversationCoordinatorTests(unittest.TestCase):
     def test_remote_final_runs_reply_coach_and_story_in_parallel(self) -> None:
         asyncio.run(self._assert_remote_final_runs_provider_flows_in_parallel())
 
+    def test_manual_dispatch_waits_for_send_and_starts_all_flows(self) -> None:
+        asyncio.run(self._assert_manual_dispatch_waits_for_send())
+
+    def test_manual_send_cancels_work_and_uses_all_unsent_transcript(self) -> None:
+        asyncio.run(self._assert_manual_send_supersedes_work())
+
+    def test_completed_research_is_shared_with_every_later_flow(self) -> None:
+        asyncio.run(self._assert_research_is_shared_with_later_flows())
+
     def test_each_flow_uses_its_assigned_provider(self) -> None:
         asyncio.run(self._assert_each_flow_uses_its_assigned_provider())
 
@@ -572,15 +608,153 @@ class ConversationCoordinatorTests(unittest.TestCase):
 
     async def _assert_remote_final_runs_provider_flows_in_parallel(self) -> None:
         provider = ConcurrentSessionProvider()
-        coordinator = ConversationCoordinator(provider, provider)
+        research_provider = ConcurrentResearchProvider(provider)
+        coordinator = ConversationCoordinator(
+            provider,
+            provider,
+            research_provider=research_provider,
+        )
         await coordinator.ingest(
             _event(SpeakerRole.REMOTE, TranscriptEventType.FINAL, 1)
         )
 
         await asyncio.wait_for(provider.all_started.wait(), timeout=0.5)
-        self.assertEqual(provider.started, {"draft", "commentary", "summary"})
+        self.assertEqual(
+            provider.started,
+            {"draft", "commentary", "summary", "research"},
+        )
         provider.release.set()
         await coordinator.wait_for_idle()
+
+    async def _assert_manual_dispatch_waits_for_send(self) -> None:
+        provider = ConcurrentSessionProvider()
+        research_provider = ConcurrentResearchProvider(provider)
+        coordinator = ConversationCoordinator(
+            provider,
+            provider,
+            research_provider=research_provider,
+            auto_dispatch_enabled=False,
+        )
+        await coordinator.ingest(
+            _event_with_text(
+                SpeakerRole.REMOTE,
+                TranscriptEventType.FINAL,
+                revision=1,
+                stream_id="remote-manual",
+                text="Yo, can you check that project before we decide?",
+            )
+        )
+
+        self.assertFalse(provider.all_started.is_set())
+        self.assertEqual(coordinator.dispatch_state(), (False, True))
+        self.assertTrue(await coordinator.dispatch_current())
+        await asyncio.wait_for(provider.all_started.wait(), timeout=0.5)
+        self.assertEqual(coordinator.dispatch_state(), (False, False))
+        provider.release.set()
+        await coordinator.wait_for_idle()
+        self.assertFalse(await coordinator.dispatch_current())
+
+    async def _assert_manual_send_supersedes_work(self) -> None:
+        reply = FirstCancelledThenRecordingProvider()
+        coordinator = ConversationCoordinator(
+            reply,
+            auto_dispatch_enabled=False,
+            research_enabled=False,
+        )
+        await coordinator.ingest(
+            _event_with_text(
+                SpeakerRole.REMOTE,
+                TranscriptEventType.FINAL,
+                revision=1,
+                stream_id="remote-one",
+                text="First thought, uh, maybe use the gateway.",
+            )
+        )
+        self.assertTrue(await coordinator.dispatch_current())
+        await reply.first_started.wait()
+        await coordinator.ingest(
+            _event_with_text(
+                SpeakerRole.USER,
+                TranscriptEventType.PARTIAL,
+                revision=1,
+                stream_id="user-two",
+                text="Yeah, but wait",
+            )
+        )
+
+        self.assertEqual(len(reply.requests), 1)
+        self.assertTrue(coordinator.has_unsent_transcript())
+        await coordinator.ingest(
+            _event_with_text(
+                SpeakerRole.USER,
+                TranscriptEventType.FINAL,
+                revision=2,
+                stream_id="user-two",
+                text="Yeah, but wait, what about failover?",
+            )
+        )
+        self.assertTrue(await coordinator.dispatch_current())
+        await coordinator.wait_for_idle()
+
+        self.assertEqual(len(reply.requests), 2)
+        self.assertEqual(
+            [line.text for line in reply.requests[1].transcript.lines],
+            [
+                "First thought, uh, maybe use the gateway.",
+                "Yeah, but wait, what about failover?",
+            ],
+        )
+
+    async def _assert_research_is_shared_with_later_flows(self) -> None:
+        reply = RecordingProvider()
+        commentary = RecordingInsightProvider(InsightKind.COMMENTARY)
+        summary = RecordingInsightProvider(InsightKind.SUMMARY)
+        research = RecordingResearchProvider()
+        coordinator = ConversationCoordinator(
+            reply,
+            commentary,
+            summary,
+            research,
+            auto_dispatch_enabled=False,
+        )
+        await coordinator.ingest(
+            _event_with_text(
+                SpeakerRole.REMOTE,
+                TranscriptEventType.FINAL,
+                revision=1,
+                stream_id="remote-research",
+                text="Check out that public project and how its routing works.",
+            )
+        )
+        self.assertTrue(await coordinator.dispatch_current())
+        await coordinator.wait_for_idle()
+        self.assertEqual(
+            coordinator.transcript_snapshot().research_context,
+            "verified project findings",
+        )
+
+        research.findings = NO_NEW_RESEARCH_RESULT
+        await coordinator.ingest(
+            _event_with_text(
+                SpeakerRole.USER,
+                TranscriptEventType.FINAL,
+                revision=1,
+                stream_id="user-follow-up",
+                text="Okay cool, so how should I explain that bit?",
+            )
+        )
+        self.assertTrue(await coordinator.dispatch_current())
+        await coordinator.wait_for_idle()
+
+        for request in (
+            reply.requests[-1],
+            commentary.requests[-1],
+            summary.requests[-1],
+        ):
+            self.assertEqual(
+                request.transcript.research_context,
+                "verified project findings",
+            )
 
     async def _assert_each_flow_uses_its_assigned_provider(self) -> None:
         draft_provider = RecordingProvider()

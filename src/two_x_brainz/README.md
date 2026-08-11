@@ -69,7 +69,7 @@ continuous ASR to Talkies.
   `make test-real` probes its real-model prompt contracts and a four-turn
   summary-to-reply context handoff using fixed synthetic text.
 - `provider_selection.py` — validated value objects for separate Reply, Coach,
-  and Story AIGate model/reasoning assignments.
+  Story, and Research AIGate model/reasoning assignments.
 - `fixture_trace.py` — append-only, redacted JSONL evidence for explicit real
   fixtures; it records synthetic fixture inputs, CLI output, structured runtime
   diagnostics, and terminal outcomes without tokens or PCM data.
@@ -79,7 +79,7 @@ continuous ASR to Talkies.
 - `web.py` — loopback FastAPI/Uvicorn adapter over the shared presentation
   state: bounded structured snapshots, same-origin start/pause controls through
   the runtime queue, compiled Svelte assets at `/`, automatically refreshed
-  all-candidate audio setup, and three correlated provider-activity flows. The
+  all-candidate audio setup, and four correlated provider-activity flows. The
   frontend owns browser-local layout and safe runtime settings, including audio
   selection, models, reasoning, call context, and research enablement.
   Process shutdown remains with the owning shell so the page cannot stop its
@@ -151,22 +151,25 @@ continuous ASR to Talkies.
 - Every frame has a monotonic stream-local sequence and capture timestamp, but
   runtime output exposes only bounded aggregate gap and relative-drift timing
   diagnostics.
-- AIGate is the sole service boundary. One validated URL, three independently
+- AIGate is the sole service boundary. One validated URL, four independently
   selected flow models, and one optional
   bearer token cover text generation, model inventory, Talkies, and explicitly
   enabled allowlisted tools.
 - Production AIGate completions use bounded SSE. Every provider activity record
-  carries a flow identifier and output kind so Reply, Private coach, and Story
+  carries a flow identifier and output kind so Reply, Private coach, Story, and Research
   events cannot mix. Reasoning is shown only when AIGate explicitly supplies a
   visible reasoning field; exact tool input/result text remains bounded and
   credential-redacted in the reconstruction log.
-- A finalized remote turn starts reply, commentary, and summary requests
-  concurrently through three independently configured AIGate clients. Each
+- With automatic dispatch enabled, a finalized remote turn starts reply,
+  commentary, summary, and research concurrently through independently configured
+  clients. Manual mode retains newer speech without provider work until Send. Each
   generation remains independently cancellable and carries an immutable
   transcript revision so a late result cannot overwrite newer state.
 - Cancelling a provider generation never removes finalized transcript lines. A
   later silence boundary builds replacement requests from the complete current
   transcript and discards only unfinished provider work.
+- Only completed current Research output becomes bounded shared evidence for
+  later provider requests. Failed, stale, cancelled, and no-op results do not.
 - Safe runtime settings are sent as one exact-schema browser message. Invalid,
   oversized, credential-shaped, or partly unavailable settings are rejected
   without partial mutation. Browser persistence never contains AIGate endpoints
@@ -241,6 +244,6 @@ create local reconstruction traces under `.testing/fixture-traces/`.
 `make test-real-evaluation` extends that path to eight generated, slang-heavy
 turns. It drives paired real Talkies streams, interrupts provider work during
 output and tool phases, resumes from the complete recognized transcript, and
-requires concurrent terminal Reply, Coach, and Story results plus completed web
-research. Its per-run directory preserves redacted timing, transcripts, word
+requires concurrent terminal Reply, Coach, and Story results plus completed
+agentic Research. Its per-run directory preserves redacted timing, transcripts, word
 error rates, and hard-gate scorecards while generated WAVs stay ephemeral.

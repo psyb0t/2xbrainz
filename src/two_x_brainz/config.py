@@ -11,9 +11,11 @@ from two_x_brainz.constants import (
     DEFAULT_AIGATE_COACH_MODEL,
     DEFAULT_AIGATE_REASONING_EFFORT,
     DEFAULT_AIGATE_REPLY_MODEL,
+    DEFAULT_AIGATE_REPLY_REASONING_EFFORT,
+    DEFAULT_AIGATE_RESEARCH_MODEL,
     DEFAULT_AIGATE_SUMMARY_MODEL,
     DEFAULT_AIGATE_URL,
-    DEFAULT_CLAUDEBOX_REPLY_REASONING_EFFORT,
+    DEFAULT_CLAUDEBOX_RESEARCH_REASONING_EFFORT,
     DEFAULT_LOG_FILE,
     DEFAULT_LOG_FILENAME,
     DEFAULT_LOG_LEVEL,
@@ -56,9 +58,11 @@ class Settings:
     aigate_reply_model: str = DEFAULT_AIGATE_REPLY_MODEL
     aigate_coach_model: str = DEFAULT_AIGATE_COACH_MODEL
     aigate_summary_model: str = DEFAULT_AIGATE_SUMMARY_MODEL
-    aigate_reply_reasoning_effort: str = DEFAULT_CLAUDEBOX_REPLY_REASONING_EFFORT
+    aigate_research_model: str = DEFAULT_AIGATE_RESEARCH_MODEL
+    aigate_reply_reasoning_effort: str = DEFAULT_AIGATE_REPLY_REASONING_EFFORT
     aigate_coach_reasoning_effort: str = DEFAULT_AIGATE_REASONING_EFFORT
     aigate_summary_reasoning_effort: str = DEFAULT_AIGATE_REASONING_EFFORT
+    aigate_research_reasoning_effort: str = DEFAULT_CLAUDEBOX_RESEARCH_REASONING_EFFORT
 
     @classmethod
     def from_environment(cls) -> Settings:
@@ -79,9 +83,13 @@ class Settings:
             aigate_reply_model=DEFAULT_AIGATE_REPLY_MODEL,
             aigate_coach_model=DEFAULT_AIGATE_COACH_MODEL,
             aigate_summary_model=DEFAULT_AIGATE_SUMMARY_MODEL,
-            aigate_reply_reasoning_effort=DEFAULT_CLAUDEBOX_REPLY_REASONING_EFFORT,
+            aigate_research_model=DEFAULT_AIGATE_RESEARCH_MODEL,
+            aigate_reply_reasoning_effort=DEFAULT_AIGATE_REPLY_REASONING_EFFORT,
             aigate_coach_reasoning_effort=DEFAULT_AIGATE_REASONING_EFFORT,
             aigate_summary_reasoning_effort=DEFAULT_AIGATE_REASONING_EFFORT,
+            aigate_research_reasoning_effort=(
+                DEFAULT_CLAUDEBOX_RESEARCH_REASONING_EFFORT
+            ),
             aigate_token=aigate_token,
             session_brief=None,
             log_level=log_level,

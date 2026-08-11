@@ -28,6 +28,7 @@ from two_x_brainz.config import Settings
 from two_x_brainz.constants import (
     CLAUDEBOX_REASONING_EFFORTS,
     CLAUDEBOX_REPLY_MODELS,
+    DEFAULT_AUTO_DISPATCH_ENABLED,
     DEFAULT_CLAUDEBOX_REPLACEMENT_DEADLINE,
     DEFAULT_WEB_CONSOLE_PORT,
     JSON_RECORD_SCHEMA_VERSION,
@@ -132,7 +133,15 @@ async def run_live(
         )
         models = await inventory_client.list_models()
         selection = _initial_provider_selection(settings, models)
-        reply_provider = _claudebox_reply_client(settings, selection.draft)
+        reply_provider = _aigate_client(
+            settings,
+            selection.draft,
+            web_research_enabled=False,
+        )
+        research_provider = _claudebox_research_client(
+            settings,
+            selection.research,
+        )
         providers = {
             ProviderFlow.COMMENTARY: _aigate_client(
                 settings,
@@ -154,32 +163,46 @@ async def run_live(
         talkies_inventory_client = TalkiesClient(inventory_stream_config)
         talkies_models = await talkies_inventory_client.list_models()
         selection_lock = asyncio.Lock()
+        coordinator = ConversationCoordinator(
+            draft_provider=reply_provider,
+            commentary_provider=providers[ProviderFlow.COMMENTARY],
+            summary_provider=providers[ProviderFlow.SUMMARY],
+            research_provider=research_provider,
+            draft_generation_deadline=DEFAULT_CLAUDEBOX_REPLACEMENT_DEADLINE,
+            auto_dispatch_enabled=DEFAULT_AUTO_DISPATCH_ENABLED,
+            research_enabled=settings.web_research_enabled,
+        )
 
         async def configure_runtime_settings(
             runtime_settings: WebRuntimeSettings,
         ) -> bool:
             nonlocal selection, talkies_model
             async with selection_lock:
-                if runtime_settings.providers.draft.model not in CLAUDEBOX_REPLY_MODELS:
+                if (
+                    runtime_settings.providers.research.model
+                    not in CLAUDEBOX_REPLY_MODELS
+                ):
                     _write_provider_activity_event(
                         {
                             "phase": "settings_failed",
-                            "output_kind": ProviderFlow.DRAFT.value,
-                            "model": runtime_settings.providers.draft.model,
+                            "output_kind": ProviderFlow.RESEARCH.value,
+                            "model": runtime_settings.providers.research.model,
                             "error_type": ConfigurationError.__name__,
-                            "error_message": ("Reply requires a Claudebox agent model"),
+                            "error_message": (
+                                "Research requires a Claudebox agent model"
+                            ),
                         }
                     )
                     return False
                 if (
-                    runtime_settings.providers.draft.reasoning_effort
+                    runtime_settings.providers.research.reasoning_effort
                     not in CLAUDEBOX_REASONING_EFFORTS
                 ):
                     _write_provider_activity_event(
                         {
                             "phase": "settings_failed",
-                            "output_kind": ProviderFlow.DRAFT.value,
-                            "model": runtime_settings.providers.draft.model,
+                            "output_kind": ProviderFlow.RESEARCH.value,
+                            "model": runtime_settings.providers.research.model,
                             "error_type": ConfigurationError.__name__,
                             "error_message": (
                                 "Claudebox reasoning must be low, medium, or high"
@@ -213,19 +236,21 @@ async def run_live(
                         return False
                 for flow in ProviderFlow:
                     assignment = runtime_settings.providers.assignment(flow)
-                    provider = (
-                        reply_provider
-                        if flow is ProviderFlow.DRAFT
-                        else providers[flow]
-                    )
+                    if flow is ProviderFlow.DRAFT:
+                        provider = reply_provider
+                    elif flow is ProviderFlow.RESEARCH:
+                        provider = research_provider
+                    else:
+                        provider = providers[flow]
                     provider.configure(assignment.model, assignment.reasoning_effort)
                     provider.configure_context(
                         session_brief=runtime_settings.session_brief,
-                        web_research_enabled=(
-                            runtime_settings.web_research_enabled
-                            and flow is ProviderFlow.DRAFT
-                        ),
+                        web_research_enabled=False,
                     )
+                await coordinator.configure_dispatch(
+                    auto_dispatch_enabled=(runtime_settings.auto_dispatch_enabled),
+                    research_enabled=runtime_settings.web_research_enabled,
+                )
                 if runtime_settings.talkies_model != talkies_model:
                     talkies_model = runtime_settings.talkies_model
                     audio_setup.notify_runtime_change()
@@ -248,14 +273,11 @@ async def run_live(
             talkies_model=talkies_model,
             session_brief=settings.session_brief,
             web_research_enabled=settings.web_research_enabled,
+            auto_dispatch_enabled=DEFAULT_AUTO_DISPATCH_ENABLED,
             selection=selection,
             callback=configure_runtime_settings,
-        )
-        coordinator = ConversationCoordinator(
-            draft_provider=reply_provider,
-            commentary_provider=providers[ProviderFlow.COMMENTARY],
-            summary_provider=providers[ProviderFlow.SUMMARY],
-            draft_generation_deadline=DEFAULT_CLAUDEBOX_REPLACEMENT_DEADLINE,
+            dispatch_callback=coordinator.dispatch_current,
+            dispatch_state_callback=coordinator.dispatch_state,
         )
         controller = SessionController(start_paused=True)
         session_id = str(uuid4())
@@ -341,14 +363,15 @@ def _initial_provider_selection(
         settings.aigate_reply_model,
         settings.aigate_coach_model,
         settings.aigate_summary_model,
+        settings.aigate_research_model,
     )
-    reply_model, coach_model, summary_model = configured_models
+    reply_model, coach_model, summary_model, research_model = configured_models
     if any(model not in available_models for model in configured_models):
         raise RemoteServiceError(
             "a configured AIGate flow model is not available from the current inventory"
         )
-    if reply_model not in CLAUDEBOX_REPLY_MODELS:
-        raise ConfigurationError("Reply requires a Claudebox agent model")
+    if research_model not in CLAUDEBOX_REPLY_MODELS:
+        raise ConfigurationError("Research requires a Claudebox agent model")
     return ProviderSelection(
         draft=ProviderAssignment(
             reply_model,
@@ -361,6 +384,10 @@ def _initial_provider_selection(
         summary=ProviderAssignment(
             summary_model,
             settings.aigate_summary_reasoning_effort,
+        ),
+        research=ProviderAssignment(
+            research_model,
+            settings.aigate_research_reasoning_effort,
         ),
     )
 
@@ -383,7 +410,7 @@ def _aigate_client(
     )
 
 
-def _claudebox_reply_client(
+def _claudebox_research_client(
     settings: Settings,
     assignment: ProviderAssignment,
 ) -> ClaudeboxReplyClient:
@@ -394,6 +421,7 @@ def _claudebox_reply_client(
         session_brief=settings.session_brief,
         reasoning_effort=assignment.reasoning_effort,
         activity_sink=_write_provider_activity_event,
+        output_kind=ProviderFlow.RESEARCH.value,
     )
 
 
