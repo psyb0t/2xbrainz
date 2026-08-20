@@ -6,21 +6,21 @@ permissions:
   contents: read
 
 jobs:
-  # make-checks rather than python-package-workflow: the latter always runs the
+  # code-workflow rather than python-package-workflow: the latter always runs the
   # build command and then uploads dist/ with if-no-files-found: error, and on
   # tags it publishes to PyPI. Here `make build` produces a Docker image, there
   # is no dist/ anywhere, and this project is not on PyPI.
   #
-  # No dep_command: `make lint` and `make test` each build and run the dev image
-  # themselves, and the dependency env lives in that container's tmpfs, so a
-  # separate host step has nothing to hand forward. No coverage_file either --
-  # see the badges job.
-  #
-  # Runs on every push, including feature branches. The build below does not.
+  # `make lint` and `make test` each build and run the dev image themselves; the
+  # toolchain lives in that container. No coverage_file either -- see the badges
+  # job. Runs on every push, including feature branches. The build below does not.
   checks:
     permissions:
       contents: read
-    uses: psyb0t/reusable-github-workflows/.github/workflows/make-checks.yml@master
+    uses: psyb0t/reusable-github-workflows/.github/workflows/code-workflow.yml@master
+    with:
+      lint_command: "make lint"
+      test_command: "make test"
 
   docker:
     needs: [checks]
