@@ -53,6 +53,17 @@ class ImmediateProvider(DraftProvider):
         )
 
 
+class FastImmediateProvider(DraftProvider):
+    async def draft(self, request: DraftRequest) -> DraftResult:
+        return DraftResult(
+            generation_id=request.generation_id,
+            trigger_turn_id=request.trigger_turn_id,
+            context_revision=request.context_revision,
+            status=GenerationStatus.COMPLETED,
+            text="fast draft",
+        )
+
+
 class RecordingProvider(ImmediateProvider):
     def __init__(self) -> None:
         self.requests: list[DraftRequest] = []
@@ -464,6 +475,12 @@ class ConversationCoordinatorTests(unittest.TestCase):
     def test_completed_draft_is_available_to_terminal_renderer(self) -> None:
         asyncio.run(self._assert_completed_draft_is_renderable())
 
+    def test_fast_draft_runs_beside_considered_reply(self) -> None:
+        asyncio.run(self._assert_fast_draft_runs_beside_considered_reply())
+
+    def test_new_remote_speech_supersedes_fast_draft(self) -> None:
+        asyncio.run(self._assert_new_remote_speech_supersedes_fast_draft())
+
     def test_user_turn_emits_timeline_commentary_and_summary(self) -> None:
         asyncio.run(self._assert_user_turn_background_outputs())
 
@@ -585,6 +602,48 @@ class ConversationCoordinatorTests(unittest.TestCase):
 
         self.assertEqual(draft.status, GenerationStatus.COMPLETED)
         self.assertEqual(draft.text, "draft")
+
+    async def _assert_fast_draft_runs_beside_considered_reply(self) -> None:
+        coordinator = ConversationCoordinator(
+            ImmediateProvider(),
+            fast_draft_provider=FastImmediateProvider(),
+        )
+        await coordinator.ingest(
+            _event(SpeakerRole.REMOTE, TranscriptEventType.FINAL, 1)
+        )
+
+        draft = await coordinator.next_completed_draft()
+        fast_draft = await coordinator.next_completed_fast_draft()
+
+        self.assertEqual(draft.text, "draft")
+        self.assertEqual(fast_draft.text, "fast draft")
+        await coordinator.wait_for_idle()
+        current_fast_draft = coordinator.current_fast_draft()
+        self.assertIsNotNone(current_fast_draft)
+        assert current_fast_draft is not None
+        self.assertEqual(current_fast_draft.text, "fast draft")
+
+    async def _assert_new_remote_speech_supersedes_fast_draft(self) -> None:
+        fast_provider = BlockingProvider()
+        coordinator = ConversationCoordinator(
+            ImmediateProvider(),
+            fast_draft_provider=fast_provider,
+        )
+        await coordinator.ingest(
+            _event(SpeakerRole.REMOTE, TranscriptEventType.FINAL, 1)
+        )
+        await fast_provider.started.wait()
+
+        update = await coordinator.ingest(
+            _event(SpeakerRole.REMOTE, TranscriptEventType.PARTIAL, 2)
+        )
+        fast_provider.release.set()
+
+        self.assertIsNotNone(update.turn)
+        assert update.turn is not None
+        self.assertEqual(update.turn.state, TurnState.SPEAKING)
+        await coordinator.wait_for_idle()
+        self.assertIsNone(coordinator.current_fast_draft())
 
     async def _assert_user_turn_background_outputs(self) -> None:
         provider = ImmediateSessionProvider()

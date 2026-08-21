@@ -41,8 +41,10 @@ Nothing is sent for you. Nothing is spoken for you. It drafts, you decide.
   events are then reconciled into actual turns, so a draft fires on a finished
   thought instead of background noise or a permanently open microphone.
 - **Drafts a reply, keeps its mouth shut** — no auto-send, no auto-speak, no
-  injecting text into your chat window. The live dashboard shows the suggestion;
-  what you do with it is your business.
+  injecting text into your chat window. Two drafts race the same finished turn.
+  A fast no-thinking model lands an instant suggestion in about a second, and a
+  slower model thinks for a few seconds and lands a considered one beside it. The
+  live dashboard shows both; what you do with them is your business.
 - **Won't talk over you** — a remote turn landing while you're still speaking is
   recorded but does not trigger a draft.
 - **Runs against your own gear** — [AIGate](https://github.com/psyb0t/aigate)
@@ -168,13 +170,15 @@ The top bar opens a tabbed **Settings** dialog:
 
 - **Context** owns the optional call brief, automatic silence-triggered
   generation, and the independent background researcher;
-- **Models** owns four searchable AIGate model pickers—one each for Reply,
-  Private coach, Story so far, and Research—with result counts, readable
-  scrolling inventories, visible
+- **Models** owns five searchable AIGate model pickers, one each for Reply,
+  Fast reply, Private coach, Story so far, and Research, with result counts,
+  readable scrolling inventories, visible
   current-model markers, and automatic positioning on each selected model.
-  Reply, Coach, and Story offer `Default`, `Minimal`, `Low`, `Medium`, and
-  `High`; Research is restricted to Claudebox models and `Low`, `Medium`, or
-  `High`. The tab also selects the Talkies ASR model; and
+  Reply, Fast reply, Coach, and Story offer `Default`, `Minimal`, `Low`,
+  `Medium`, and `High`; Research is restricted to Claudebox models and `Low`,
+  `Medium`, or `High`. Point Fast reply at a low-latency no-thinking model so its
+  instant draft lands while the considered Reply is still generating. The tab
+  also selects the Talkies ASR model; and
 - **Audio** owns device discovery, per-candidate meters, and the microphone and
   system-audio selections.
 
@@ -187,16 +191,18 @@ stale model falls back to an available backend default; a stale
 audio pair requires a fresh selection. Credentials and service URLs are never
 stored in browser settings.
 
-Separate live Reply, Private coach, Story-so-far, and Research flows each use
+Separate live Reply, Fast reply, Private coach, Story-so-far, and Research flows
+each use
 one continuous chronological stream: status, visible reasoning, tool activity,
 and streamed Markdown appear inline in arrival order. Every reasoning and tool
 row starts independently collapsed; there are no per-generation cards or
 grouped trace boxes. Cumulative reasoning and output snapshots coalesce per
-flow even while all four run concurrently, so token updates do
+flow even while all five run concurrently, so token updates do
 not become duplicate `Thinking` rows. It never fabricates or claims access to
 hidden chain-of-thought.
 
-Conversation, Reply, Private coach, Story so far, and Research remain separate
+Conversation, Reply, Fast reply, Private coach, Story so far, and Research remain
+separate
 scrollable, collapsible, resizable panels. Expanded panels consume all height
 released by collapsed siblings, and their layout persists in browser-local
 storage. Each feed auto-follows new events only while it is already at the
@@ -205,7 +211,7 @@ bottom, so scrolling back through the full activity history is not interrupted.
 Automatic dispatch is on by default. Turn it off in Context to keep ASR running
 without starting or cancelling LLM work at every silence boundary. **Send**
 becomes available only after meaningful new transcript text exists. It cancels
-any current four-flow generation and dispatches the complete newest server-owned
+any current five-flow generation and dispatches the complete newest server-owned
 conversation; clicking again without newer speech is a no-op.
 
 The **Audio** Settings tab shows every visible microphone and system-audio
@@ -248,9 +254,13 @@ allowlisted MCP endpoints. The application derives
 `ws(s)://<aigate-host>[/prefix]/talkies/v1/audio/transcriptions/stream` from
 `TWOXBRAINZ_AIGATE_URL`, which must end in `/v1`.
 
-Reply, Coach, and Story use independent OpenAI-compatible AIGate streams. The
-default Reply is the low-latency `cerebras-glm-4.7`; Coach defaults to
-`pibox-zai-glm-5-turbo`; Story defaults to `groq-gpt-oss-120b`.
+Reply, Fast reply, Coach, and Story use independent OpenAI-compatible AIGate
+streams. Reply is the considered draft. It defaults to `cerebras-glm-4.7` at
+medium reasoning and takes a few seconds to think before answering. Fast reply is
+the instant lane. It defaults to `groq-gpt-oss-120b` with reasoning off and
+returns in well under a second, so a first suggestion shows while Reply is still
+working. Coach defaults to `pibox-zai-glm-5-turbo`; Story defaults to
+`groq-gpt-oss-120b`.
 
 Research is the separate agentic Claudebox flow. Every Start creates a fresh
 UUID workspace and Claude Code session; later research requests from that
@@ -258,7 +268,8 @@ listening session continue in the same workspace. It receives the complete
 bounded current transcript, running summary, and accepted prior findings. It
 can use native tools, shallow-clone named Git repositories, download primary
 documentation, and follow relevant links. Completed current findings become
-bounded shared evidence for later Reply, Coach, and Story dispatches; failed,
+bounded shared evidence for later Reply, Fast reply, Coach, and Story dispatches;
+failed,
 cancelled, stale, and `NO_NEW_RESEARCH` results never become facts. Research
 defaults to `claudebox-sonnet` at high reasoning.
 
@@ -302,7 +313,8 @@ PipeWire system ─────┘     (same ASR model)    └─ local web cons
   partial, endpoint, and final events.
 - **The coordinator** owns reconciliation, turn state, cancellation, and throwing
   away stale results. It writes one timeline entry per finalized turn and starts
-  reply, private coaching, rolling-story, and research work concurrently after
+  the considered reply, the fast reply, private coaching, rolling-story, and
+  research work concurrently after
   a remote final. Coach and Story have a hard 60-second deadline. Repository research
   has a 120-second outbound allowance and a 240-second replacement budget so an
   accepted superseded agent run can release its workspace before the updated

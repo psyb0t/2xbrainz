@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "2xbrainz"
-version = "3.2.0"
+version = "3.3.0"
 description = "Docker-first continuous conversation copilot"
 requires-python = ">=3.14,<3.15"
 license = { text = "WTFPL" }

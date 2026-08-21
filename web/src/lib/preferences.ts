@@ -3,11 +3,13 @@ export const PREFERENCES_KEY = '2xbrainz.web.layout.v1';
 export interface LayoutPreferences {
   mainSplitPercent: number;
   replyHeightPercent: number;
+  replyFastHeightPercent: number;
   coachHeightPercent: number;
   storyHeightPercent: number;
   researchHeightPercent: number;
   sourceBarCollapsed: boolean;
   replyCollapsed: boolean;
+  replyFastCollapsed: boolean;
   coachCollapsed: boolean;
   storyCollapsed: boolean;
   researchCollapsed: boolean;
@@ -16,11 +18,13 @@ export interface LayoutPreferences {
 export const DEFAULT_PREFERENCES: LayoutPreferences = {
   mainSplitPercent: 62,
   replyHeightPercent: 28,
+  replyFastHeightPercent: 22,
   coachHeightPercent: 24,
   storyHeightPercent: 28,
   researchHeightPercent: 20,
   sourceBarCollapsed: false,
   replyCollapsed: false,
+  replyFastCollapsed: false,
   coachCollapsed: false,
   storyCollapsed: false,
   researchCollapsed: true
@@ -62,6 +66,12 @@ export function normalizePreferences(
       MIN_GUIDANCE_PERCENT,
       MAX_GUIDANCE_PERCENT
     ),
+    replyFastHeightPercent: clampNumber(
+      value.replyFastHeightPercent,
+      DEFAULT_PREFERENCES.replyFastHeightPercent,
+      MIN_GUIDANCE_PERCENT,
+      MAX_GUIDANCE_PERCENT
+    ),
     coachHeightPercent: clampNumber(
       value.coachHeightPercent,
       DEFAULT_PREFERENCES.coachHeightPercent,
@@ -82,6 +92,7 @@ export function normalizePreferences(
     ),
     sourceBarCollapsed: booleanOrDefault(value.sourceBarCollapsed, false),
     replyCollapsed: booleanOrDefault(value.replyCollapsed, false),
+    replyFastCollapsed: booleanOrDefault(value.replyFastCollapsed, false),
     coachCollapsed: booleanOrDefault(value.coachCollapsed, false),
     storyCollapsed: booleanOrDefault(value.storyCollapsed, false),
     researchCollapsed: booleanOrDefault(value.researchCollapsed, true)

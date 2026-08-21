@@ -138,6 +138,11 @@ async def run_live(
             selection.draft,
             web_research_enabled=False,
         )
+        fast_reply_provider = _aigate_client(
+            settings,
+            selection.fast_draft,
+            web_research_enabled=False,
+        )
         research_provider = _claudebox_research_client(
             settings,
             selection.research,
@@ -171,6 +176,7 @@ async def run_live(
             draft_generation_deadline=DEFAULT_CLAUDEBOX_REPLACEMENT_DEADLINE,
             auto_dispatch_enabled=DEFAULT_AUTO_DISPATCH_ENABLED,
             research_enabled=settings.web_research_enabled,
+            fast_draft_provider=fast_reply_provider,
         )
 
         async def configure_runtime_settings(
@@ -238,6 +244,8 @@ async def run_live(
                     assignment = runtime_settings.providers.assignment(flow)
                     if flow is ProviderFlow.DRAFT:
                         provider = reply_provider
+                    elif flow is ProviderFlow.FAST_DRAFT:
+                        provider = fast_reply_provider
                     elif flow is ProviderFlow.RESEARCH:
                         provider = research_provider
                     else:
@@ -299,6 +307,11 @@ async def run_live(
             asyncio.create_task,
             _render_drafts(coordinator),
         )
+        fast_renderer_context = contextvars.copy_context()
+        fast_renderer = fast_renderer_context.run(
+            asyncio.create_task,
+            _render_fast_drafts(coordinator),
+        )
         insight_renderer_context = contextvars.copy_context()
         insight_renderer = insight_renderer_context.run(
             asyncio.create_task,
@@ -346,6 +359,9 @@ async def run_live(
             renderer.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await renderer
+            fast_renderer.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await fast_renderer
             insight_renderer.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await insight_renderer
@@ -361,11 +377,18 @@ def _initial_provider_selection(
 ) -> ProviderSelection:
     configured_models = (
         settings.aigate_reply_model,
+        settings.aigate_fast_reply_model,
         settings.aigate_coach_model,
         settings.aigate_summary_model,
         settings.aigate_research_model,
     )
-    reply_model, coach_model, summary_model, research_model = configured_models
+    (
+        reply_model,
+        fast_reply_model,
+        coach_model,
+        summary_model,
+        research_model,
+    ) = configured_models
     if any(model not in available_models for model in configured_models):
         raise RemoteServiceError(
             "a configured AIGate flow model is not available from the current inventory"
@@ -376,6 +399,10 @@ def _initial_provider_selection(
         draft=ProviderAssignment(
             reply_model,
             settings.aigate_reply_reasoning_effort,
+        ),
+        fast_draft=ProviderAssignment(
+            fast_reply_model,
+            settings.aigate_fast_reply_reasoning_effort,
         ),
         commentary=ProviderAssignment(
             coach_model,
@@ -797,6 +824,12 @@ async def _render_drafts(coordinator: ConversationCoordinator) -> None:
         write_draft_event(await coordinator.next_draft_event())
 
 
+async def _render_fast_drafts(coordinator: ConversationCoordinator) -> None:
+    """Render instant reply drafts on their own lane so neither blocks the other."""
+    while True:
+        write_fast_draft_event(await coordinator.next_fast_draft_event())
+
+
 async def _render_insights(coordinator: ConversationCoordinator) -> None:
     """Render lower-priority commentary and summary results in the terminal."""
     while True:
@@ -882,6 +915,20 @@ def write_draft_event(draft: DraftResult) -> None:
         {
             "schema_version": JSON_RECORD_SCHEMA_VERSION,
             "kind": "draft",
+            "generation_id": draft.generation_id,
+            "trigger_turn_id": draft.trigger_turn_id,
+            "status": draft.status.value,
+            "text": draft.text,
+            "context_revision": draft.context_revision,
+        }
+    )
+
+
+def write_fast_draft_event(draft: DraftResult) -> None:
+    _emit_event(
+        {
+            "schema_version": JSON_RECORD_SCHEMA_VERSION,
+            "kind": ProviderFlow.FAST_DRAFT.value,
             "generation_id": draft.generation_id,
             "trigger_turn_id": draft.trigger_turn_id,
             "status": draft.status.value,

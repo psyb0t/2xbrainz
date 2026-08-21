@@ -107,8 +107,9 @@ independent multi-turn finals without recreating either capture process.
 - Every finalized turn produces exactly one timeline record. Duplicate ASR
   finals do not add another entry.
 - A remote endpoint with non-empty text marks only a candidate end. Its stable
-  final starts reply, private commentary, rolling-summary, and Research jobs
-  concurrently through four independently configured clients when automatic
+  final starts the considered reply, the fast reply, private commentary,
+  rolling-summary, and Research jobs
+  concurrently through five independently configured clients when automatic
   dispatch is enabled. Manual mode records the revision without provider work;
   Send supersedes active work and dispatches the newest complete snapshot.
 - A remote final received while the local-user stream is `speaking` or at a
@@ -147,7 +148,8 @@ independent multi-turn finals without recreating either capture process.
   explicitly corrects it, closes a prior question when a speaker directly
   answers it even hesitantly or outside the requested format, and does not infer
   unsupported qualifiers.
-- Completed current research is bounded shared evidence for later Reply, Coach,
+- Completed current research is bounded shared evidence for later Reply, Fast
+  reply, Coach,
   Story, and Research requests. Failed, cancelled, stale, or no-op research never
   advances that evidence.
 - The AIGate boundary receives transcript text only. It never receives raw
@@ -213,7 +215,8 @@ independent multi-turn finals without recreating either capture process.
   and continues in the same workspace. Starting a new listening session detaches
   any old workspace task and never waits for it.
 - [`aigate.py`](../src/two_x_brainz/aigate.py) is the OpenAI-compatible
-  chat-completions provider used by Reply, Coach, and Story. It applies
+  chat-completions provider used by Reply, Fast reply, Coach, and Story. It
+  applies
   application-owned token and text-length limits before provider output enters
   application state, then parses CommonMark into a text-only subset. Production
   requests consume bounded SSE and publish correlated activity for Reply,
@@ -243,7 +246,8 @@ independent multi-turn finals without recreating either capture process.
   flow across interleaved concurrent flows and across each other; a same-flow
   tool or lifecycle event is the boundary that starts a new chronological row.
   Svelte flexes expanded guidance into height released by collapsed panels and
-  owns browser-local layout plus safe runtime settings. Reply, Coach, Story, and
+  owns browser-local layout plus safe runtime settings. Reply, Fast reply, Coach,
+  Story, and
   Research model/reasoning assignments, the Talkies model, session brief,
   automatic dispatch, enabled research policy, and audio names are sent as one
   validated settings snapshot. Credentials and endpoints remain environment-only.

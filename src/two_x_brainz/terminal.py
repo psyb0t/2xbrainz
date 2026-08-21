@@ -27,6 +27,7 @@ _USER_ROLE = "user"
 _REMOTE_ROLE = "remote"
 _SPEAKER_LABELS = {_USER_ROLE: "You", _REMOTE_ROLE: "Them"}
 _DRAFT_KIND = "draft"
+_FAST_DRAFT_KIND = "fast_draft"
 _TIMELINE_KIND = "timeline"
 _TRANSCRIPT_KIND = "transcript"
 _SESSION_KIND = "session"
@@ -105,6 +106,8 @@ class LiveTerminal:
     _state: str = field(default="starting", init=False)
     _draft: str = field(default=_EMPTY_TEXT, init=False)
     _draft_status: str = field(default="waiting", init=False)
+    _fast_draft: str = field(default=_EMPTY_TEXT, init=False)
+    _fast_draft_status: str = field(default="waiting", init=False)
     _commentary: str = field(default=_EMPTY_TEXT, init=False)
     _summary: str = field(default=_EMPTY_TEXT, init=False)
     _audio_levels: dict[str, int] = field(
@@ -222,6 +225,8 @@ class LiveTerminal:
             self._append_timeline(record)
         elif kind == _DRAFT_KIND:
             self._consume_draft(record)
+        elif kind == _FAST_DRAFT_KIND:
+            self._consume_fast_draft(record)
         elif kind in {_COMMENTARY_KIND, _SUMMARY_KIND}:
             self._consume_insight(kind, record)
         elif kind == _CONTROL_ERROR_KIND:
@@ -497,6 +502,13 @@ class LiveTerminal:
         reply.append(self._draft)
         return reply
 
+    def fast_reply_text(self) -> Text:
+        """Render the instant reply lane independently from the considered reply."""
+        fast_reply = Text()
+        fast_reply.append(f"{self._fast_draft_status.upper()}\n", style="bold cyan")
+        fast_reply.append(self._fast_draft)
+        return fast_reply
+
     def coach_text(self) -> Text:
         """Render private coaching independently from the spoken reply."""
         coach = Text()
@@ -558,6 +570,16 @@ class LiveTerminal:
             self._draft = _EMPTY_TEXT
             self._notice = _OPERATION_REPLY_FAILED
             self._set_operation(_OPERATION_REPLY_FAILED)
+
+    def _consume_fast_draft(self, record: Mapping[str, object]) -> None:
+        # The instant lane owns only its own slot; the considered reply drives the
+        # status line so the two lanes never fight over the operation label.
+        status = _text(record.get("status"), _FAILED_STATUS)
+        self._fast_draft_status = status
+        if status == _COMPLETED_STATUS:
+            self._fast_draft = _visible_text(record.get("text")) or _EMPTY_TEXT
+            return
+        self._fast_draft = _EMPTY_TEXT
 
     def _consume_insight(self, kind: str, record: Mapping[str, object]) -> None:
         if _text(record.get("status")) != _COMPLETED_STATUS:

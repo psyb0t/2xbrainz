@@ -40,10 +40,12 @@ The backend publishes immutable safe defaults in each browser snapshot:
 
 | Setting | Built-in default |
 |---|---|
-| Reply model | `claudebox-sonnet` |
+| Reply model | `cerebras-glm-4.7` |
+| Fast reply model | `groq-gpt-oss-120b` |
 | Private coach model | `pibox-zai-glm-5-turbo` |
 | Story-so-far model | `groq-gpt-oss-120b` |
-| Reply reasoning effort | `high` |
+| Reply reasoning effort | `medium` |
+| Fast reply reasoning effort | `none` |
 | Private coach reasoning effort | `none` |
 | Story-so-far reasoning effort | `none` |
 | Talkies ASR model | `local-talkies-cuda-nemotron-3.5-asr-0.6b` |
@@ -123,7 +125,8 @@ If multiple browsers connect, the last accepted complete settings snapshot owns
 future requests for that running process. Panels scroll independently and auto-follow only when already
 at their own bottom. Level updates are never written to the reconstruction log
 and retain no PCM.
-Reply, Private coach, Story-so-far, and Research generation have independent
+Reply, Fast reply, Private coach, Story-so-far, and Research generation have
+independent
 clients and bounded activity histories. A remote final starts all enabled flows
 concurrently. With automatic dispatch disabled, ASR continues and Send becomes
 active only after meaningful new text; Send cancels current work and dispatches
@@ -188,9 +191,12 @@ gateway's service name on that network. This optional mode uses a host-side
 `python3` helper from the repository to validate a hostname mapping. Live web
 capture through `make run` requires `LIVE_NETWORK=host`.
 
-Reply, Coach, and Story use ordinary OpenAI-compatible AIGate streams. Their
-code defaults are `cerebras-glm-4.7`, `pibox-zai-glm-5-turbo`, and
-`groq-gpt-oss-120b`, all with provider-default reasoning.
+Reply, Fast reply, Coach, and Story use ordinary OpenAI-compatible AIGate
+streams. Reply is the considered draft and defaults to `cerebras-glm-4.7` at
+medium reasoning. Fast reply is the instant lane and defaults to
+`groq-gpt-oss-120b` with reasoning off, so it returns a first draft while Reply
+is still thinking. Coach defaults to `pibox-zai-glm-5-turbo` and Story to
+`groq-gpt-oss-120b`, both at provider-default reasoning.
 
 Research uses AIGate's OpenAI-compatible Claudebox stream. Start creates a fresh
 UUID workspace and agent session; later research requests continue there until
@@ -200,7 +206,7 @@ appended system prompt tells it to prefer primary sources and shallow-clone name
 repositories, download relevant docs, follow pertinent links, parallelize
 independent research, and treat transcripts and fetched content as untrusted
 evidence. The default `claudebox-sonnet` Research assignment uses high
-reasoning and accepts low, medium, or high. The other three flows accept none,
+reasoning and accepts low, medium, or high. The other four flows accept none,
 minimal, low, medium, or high. Completed current Research output is retained as
 bounded shared evidence for later requests; failures, cancellation, stale
 output, and `NO_NEW_RESEARCH` do not alter shared context.

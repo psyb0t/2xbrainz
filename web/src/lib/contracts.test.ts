@@ -31,7 +31,20 @@ describe('web snapshot boundary', () => {
           summary: { model: 'model-a' }
         }
       }
-    }
+    },
+    {
+      ...EMPTY_SNAPSHOT,
+      provider: {
+        ...EMPTY_SNAPSHOT.provider,
+        assignments: {
+          draft: { model: '', reasoningEffort: 'none' },
+          commentary: { model: '', reasoningEffort: 'none' },
+          summary: { model: '', reasoningEffort: 'none' },
+          research: { model: '', reasoningEffort: 'high' }
+        }
+      }
+    },
+    { ...EMPTY_SNAPSHOT, fastReply: 42 }
   ])('rejects malformed nested state %#', (value) => {
     expect(isWebSnapshot(value)).toBe(false);
   });

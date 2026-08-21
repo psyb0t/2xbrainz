@@ -234,6 +234,7 @@ def _seed_console(console: WebConsole) -> None:
         auto_dispatch_enabled=False,
         selection=ProviderSelection(
             draft=ProviderAssignment(_FIXTURE_MODEL, "high"),
+            fast_draft=ProviderAssignment(_FIXTURE_MODEL, "none"),
             commentary=ProviderAssignment(_FIXTURE_MODEL, "medium"),
             summary=ProviderAssignment(_FIXTURE_MODEL, "medium"),
             research=ProviderAssignment(_FIXTURE_MODEL, "high"),

@@ -407,6 +407,7 @@ class WebConsoleIntegrationTests(unittest.IsolatedAsyncioTestCase):
             console.snapshot().provider_selection,
             ProviderSelection(
                 draft=ProviderAssignment("model-a", "none"),
+                fast_draft=ProviderAssignment("model-a", "none"),
                 commentary=ProviderAssignment("model-a", "none"),
                 summary=ProviderAssignment("model-b", "high"),
                 research=ProviderAssignment("model-a", "high"),
@@ -455,9 +456,10 @@ def _runtime_settings_payload(
 ) -> dict[str, object]:
     return {
         "type": "runtime_settings",
-        "schema_version": 2,
+        "schema_version": 3,
         "providers": {
             "draft": {"model": "model-a", "reasoning_effort": "none"},
+            "fast_draft": {"model": "model-a", "reasoning_effort": "none"},
             "commentary": {"model": "model-a", "reasoning_effort": "none"},
             "summary": {"model": summary_model, "reasoning_effort": "high"},
             "research": {"model": "model-a", "reasoning_effort": "high"},

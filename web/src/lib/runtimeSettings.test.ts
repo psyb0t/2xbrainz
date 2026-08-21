@@ -16,6 +16,7 @@ const SNAPSHOT = {
     models: ['reply-default', 'saved-model'],
     assignments: {
       draft: { model: 'reply-default', reasoningEffort: 'none' },
+      fast_draft: { model: 'reply-default', reasoningEffort: 'none' },
       commentary: { model: 'reply-default', reasoningEffort: 'none' },
       summary: { model: 'reply-default', reasoningEffort: 'none' },
       research: { model: 'saved-model', reasoningEffort: 'high' }
@@ -28,6 +29,7 @@ const SNAPSHOT = {
     defaults: {
       assignments: {
         draft: { model: 'reply-default', reasoningEffort: 'none' },
+        fast_draft: { model: 'reply-default', reasoningEffort: 'none' },
         commentary: { model: 'reply-default', reasoningEffort: 'none' },
         summary: { model: 'reply-default', reasoningEffort: 'none' },
         research: { model: 'saved-model', reasoningEffort: 'high' }
@@ -138,11 +140,46 @@ describe('runtime settings', () => {
     expect(message).toEqual(
       expect.objectContaining({
         type: 'runtime_settings',
-        schema_version: 2,
+        schema_version: 3,
         talkies_model: 'asr-default',
         web_research_enabled: true,
         auto_dispatch_enabled: true
       })
     );
+    expect(message.providers).toEqual(
+      expect.objectContaining({
+        fast_draft: { model: 'reply-default', reasoning_effort: 'none' }
+      })
+    );
+  });
+
+  it('migrates a stored v2 payload to v3 with a default fast reply lane', () => {
+    localStorage.setItem(
+      RUNTIME_SETTINGS_KEY,
+      JSON.stringify({
+        schemaVersion: 2,
+        providers: {
+          draft: { model: 'reply-default', reasoningEffort: 'none' },
+          commentary: { model: 'reply-default', reasoningEffort: 'none' },
+          summary: { model: 'reply-default', reasoningEffort: 'none' },
+          research: { model: 'saved-model', reasoningEffort: 'high' }
+        },
+        talkiesModel: 'asr-default',
+        sessionBrief: '',
+        webResearchEnabled: true,
+        autoDispatchEnabled: true,
+        microphoneNode: null,
+        systemNode: null
+      })
+    );
+
+    const loaded = loadRuntimeSettings(localStorage);
+    if (loaded === null) throw new Error('v2 payload did not migrate to v3');
+
+    expect(loaded.schemaVersion).toBe(3);
+    expect(loaded.providers.fast_draft).toEqual({
+      model: 'groq-gpt-oss-120b',
+      reasoningEffort: 'none'
+    });
   });
 });

@@ -64,10 +64,12 @@ class RuntimeOutputTests(unittest.TestCase):
         settings = replace(
             settings,
             aigate_reply_model="claudebox-sonnet",
+            aigate_fast_reply_model="fast-model",
             aigate_coach_model="coach-model",
             aigate_summary_model="summary-model",
             aigate_research_model="claudebox-sonnet",
             aigate_reply_reasoning_effort="high",
+            aigate_fast_reply_reasoning_effort="none",
             aigate_coach_reasoning_effort="low",
             aigate_summary_reasoning_effort="high",
             aigate_research_reasoning_effort="high",
@@ -78,6 +80,7 @@ class RuntimeOutputTests(unittest.TestCase):
             (
                 "fallback-model",
                 "claudebox-sonnet",
+                "fast-model",
                 "coach-model",
                 "summary-model",
             ),
@@ -85,6 +88,8 @@ class RuntimeOutputTests(unittest.TestCase):
 
         self.assertEqual(selection.draft.model, "claudebox-sonnet")
         self.assertEqual(selection.draft.reasoning_effort, "high")
+        self.assertEqual(selection.fast_draft.model, "fast-model")
+        self.assertEqual(selection.fast_draft.reasoning_effort, "none")
         self.assertEqual(selection.commentary.model, "coach-model")
         self.assertEqual(selection.commentary.reasoning_effort, "low")
         self.assertEqual(selection.summary.model, "summary-model")
@@ -484,12 +489,14 @@ def _settings(
         talkies_token=None,
         aigate_url="https://aigate.test/v1",
         aigate_reply_model=flow_model,
+        aigate_fast_reply_model=flow_model,
         aigate_coach_model=flow_model,
         aigate_summary_model=flow_model,
         aigate_token=None,
         log_level="INFO",
         log_file=Path("/tmp/2xbrainz-test.log"),
         aigate_reply_reasoning_effort="medium",
+        aigate_fast_reply_reasoning_effort="medium",
         aigate_coach_reasoning_effort="medium",
         aigate_summary_reasoning_effort="medium",
         web_research_enabled=web_research_enabled,

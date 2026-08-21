@@ -1,5 +1,5 @@
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected';
-export type ProviderOutputKind = 'draft' | 'commentary' | 'summary' | 'research';
+export type ProviderOutputKind = 'draft' | 'fast_draft' | 'commentary' | 'summary' | 'research';
 
 export interface ProviderAssignment {
   model: string;
@@ -30,6 +30,7 @@ export interface WebSnapshot {
   notice: string;
   conversation: string;
   reply: string;
+  fastReply: string;
   coach: string;
   story: string;
   requiresAudioSetup: boolean;
@@ -102,6 +103,7 @@ export const EMPTY_SNAPSHOT: WebSnapshot = {
   notice: 'Connecting to the local session…',
   conversation: 'Waiting for the first finalized turn…',
   reply: 'WAITING\n—',
+  fastReply: 'WAITING\n—',
   coach: 'PRIVATE COACH\n—',
   story: 'STORY SO FAR\n—',
   requiresAudioSetup: false,
@@ -110,6 +112,7 @@ export const EMPTY_SNAPSHOT: WebSnapshot = {
     models: [],
     assignments: {
       draft: { model: '', reasoningEffort: 'none' },
+      fast_draft: { model: '', reasoningEffort: 'none' },
       commentary: { model: '', reasoningEffort: 'none' },
       summary: { model: '', reasoningEffort: 'none' },
       research: { model: '', reasoningEffort: 'high' }
@@ -117,7 +120,7 @@ export const EMPTY_SNAPSHOT: WebSnapshot = {
     activity: []
   },
   settings: {
-    schemaVersion: 2,
+    schemaVersion: 3,
     talkiesModels: [],
     talkiesModel: '',
     sessionBrief: '',
@@ -126,6 +129,7 @@ export const EMPTY_SNAPSHOT: WebSnapshot = {
     defaults: {
       assignments: {
         draft: { model: '', reasoningEffort: 'none' },
+        fast_draft: { model: '', reasoningEffort: 'none' },
         commentary: { model: '', reasoningEffort: 'none' },
         summary: { model: '', reasoningEffort: 'none' },
         research: { model: '', reasoningEffort: 'high' }
@@ -151,6 +155,7 @@ export function isWebSnapshot(value: unknown): value is WebSnapshot {
     typeof value.notice === 'string' &&
     typeof value.conversation === 'string' &&
     typeof value.reply === 'string' &&
+    typeof value.fastReply === 'string' &&
     typeof value.coach === 'string' &&
     typeof value.story === 'string' &&
     typeof value.requiresAudioSetup === 'boolean' &&
@@ -193,6 +198,7 @@ function isProviderAssignments(value: unknown): value is WebSnapshot['provider']
   if (!isRecord(value)) return false;
   return (
     isProviderAssignment(value.draft) &&
+    isProviderAssignment(value.fast_draft) &&
     isProviderAssignment(value.commentary) &&
     isProviderAssignment(value.summary) &&
     isProviderAssignment(value.research)

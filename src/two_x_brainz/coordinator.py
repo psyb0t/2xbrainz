@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from uuid import uuid4
@@ -14,6 +15,7 @@ from two_x_brainz.claudebox import NO_NEW_RESEARCH_RESULT
 from two_x_brainz.constants import (
     DEFAULT_PROVIDER_GENERATION_DEADLINE,
     MAX_DRAFT_RESULT_BACKLOG,
+    MAX_FAST_DRAFT_RESULT_BACKLOG,
     MAX_INSIGHT_RESULT_BACKLOG,
 )
 from two_x_brainz.contracts import (
@@ -43,6 +45,7 @@ class CoordinatorUpdate:
     transcript: TranscriptSnapshot
     turn: TurnEvent | None
     draft: DraftResult | None
+    fast_draft: DraftResult | None
     timeline: TimelineEntry | None
 
 
@@ -59,6 +62,8 @@ class ConversationCoordinator:
         draft_generation_deadline: timedelta | None = None,
         auto_dispatch_enabled: bool = True,
         research_enabled: bool = True,
+        *,
+        fast_draft_provider: DraftProvider | None = None,
     ) -> None:
         if generation_deadline <= timedelta():
             raise ValueError("generation_deadline must be positive")
@@ -68,6 +73,7 @@ class ConversationCoordinator:
         ):
             raise ValueError("draft_generation_deadline must be positive")
         self._draft_provider = draft_provider
+        self._fast_draft_provider = fast_draft_provider
         self._commentary_provider = commentary_provider
         self._summary_provider = summary_provider or commentary_provider
         self._research_provider = research_provider
@@ -87,6 +93,16 @@ class ConversationCoordinator:
         )
         self._draft_events: asyncio.Queue[DraftResult] = asyncio.Queue(
             maxsize=MAX_DRAFT_RESULT_BACKLOG
+        )
+        self._active_fast_task: asyncio.Task[None] | None = None
+        self._active_fast_generation_id: str | None = None
+        self._active_fast_draft_request: DraftRequest | None = None
+        self._last_fast_draft: DraftResult | None = None
+        self._completed_fast_drafts: asyncio.Queue[DraftResult] = asyncio.Queue(
+            maxsize=MAX_FAST_DRAFT_RESULT_BACKLOG
+        )
+        self._fast_draft_events: asyncio.Queue[DraftResult] = asyncio.Queue(
+            maxsize=MAX_FAST_DRAFT_RESULT_BACKLOG
         )
         self._commentary_task: asyncio.Task[None] | None = None
         self._summary_task: asyncio.Task[None] | None = None
@@ -117,10 +133,12 @@ class ConversationCoordinator:
                 transcript=transcript,
                 turn=turn,
                 draft=self.current_draft(),
+                fast_draft=self.current_fast_draft(),
                 timeline=timeline,
             )
         if event.speaker_role is SpeakerRole.USER and turn is not None:
             await self._cancel_active(GenerationStatus.CANCELLED)
+            await self._cancel_fast(GenerationStatus.CANCELLED)
             if turn.state is not TurnState.FINALIZED:
                 await self._cancel_insights(GenerationStatus.SUPERSEDED)
                 await self._cancel_research(GenerationStatus.SUPERSEDED)
@@ -138,6 +156,7 @@ class ConversationCoordinator:
                 TurnState.REOPENED,
             }:
                 await self._cancel_active(GenerationStatus.SUPERSEDED)
+                await self._cancel_fast(GenerationStatus.SUPERSEDED)
             await self._cancel_insights(GenerationStatus.SUPERSEDED)
             await self._cancel_research(GenerationStatus.SUPERSEDED)
             if turn.state is TurnState.FINALIZED:
@@ -150,10 +169,12 @@ class ConversationCoordinator:
                         transcript=transcript,
                         turn=turn,
                         draft=self.current_draft(),
+                        fast_draft=self.current_fast_draft(),
                         timeline=timeline,
                     )
                 self._mark_automatic_dispatch(transcript.revision)
                 await self._start_draft(turn, transcript)
+                await self._start_fast_draft(turn, transcript)
                 await self._start_commentary(turn, transcript)
                 await self._start_summary(turn.turn_id, transcript)
                 await self._start_research(turn.turn_id, transcript)
@@ -161,6 +182,7 @@ class ConversationCoordinator:
             transcript=transcript,
             turn=turn,
             draft=self.current_draft(),
+            fast_draft=self.current_fast_draft(),
             timeline=timeline,
         )
 
@@ -171,6 +193,7 @@ class ConversationCoordinator:
                 task
                 for task in (
                     self._active_task,
+                    self._active_fast_task,
                     self._commentary_task,
                     self._summary_task,
                     self._research_task,
@@ -184,6 +207,7 @@ class ConversationCoordinator:
                 task is None or task.done()
                 for task in (
                     self._active_task,
+                    self._active_fast_task,
                     self._commentary_task,
                     self._summary_task,
                     self._research_task,
@@ -200,14 +224,24 @@ class ConversationCoordinator:
         """Wait for the latest visible draft lifecycle event for terminal output."""
         return await self._draft_events.get()
 
+    async def next_completed_fast_draft(self) -> DraftResult:
+        """Wait for a terminal instant-reply result for deterministic tests."""
+        return await self._completed_fast_drafts.get()
+
+    async def next_fast_draft_event(self) -> DraftResult:
+        """Wait for the latest instant-reply lifecycle event for terminal output."""
+        return await self._fast_draft_events.get()
+
     def current_draft(self) -> DraftResult | None:
         """Return only current display guidance, never provider context."""
-        draft = self._last_draft
-        if draft is None or draft.status is not GenerationStatus.COMPLETED:
-            return None
-        if not self._request_revision_is_current(draft.context_revision):
-            return None
-        return draft
+        return _current_draft(self._last_draft, self._request_revision_is_current)
+
+    def current_fast_draft(self) -> DraftResult | None:
+        """Return the current instant reply suggestion, never provider context."""
+        return _current_draft(
+            self._last_fast_draft,
+            self._request_revision_is_current,
+        )
 
     def transcript_snapshot(self) -> TranscriptSnapshot:
         """Return the bounded current provider context for local diagnostics."""
@@ -227,6 +261,7 @@ class ConversationCoordinator:
     async def stop(self) -> None:
         """Immediately cancel active generation during pause or shutdown."""
         await self._cancel_active(GenerationStatus.CANCELLED)
+        await self._cancel_fast(GenerationStatus.CANCELLED)
         await self._cancel_insights(GenerationStatus.CANCELLED)
         await self._cancel_research(GenerationStatus.CANCELLED)
 
@@ -289,6 +324,7 @@ class ConversationCoordinator:
             self._manual_dispatch_revision = transcript.revision
             trigger_turn_id = self._latest_turn_id or str(uuid4())
             await self._start_draft_request(trigger_turn_id, transcript)
+            await self._start_fast_draft_request(trigger_turn_id, transcript)
             await self._start_insight(
                 InsightKind.COMMENTARY,
                 trigger_turn_id,
@@ -375,6 +411,86 @@ class ConversationCoordinator:
         self._publish_terminal_draft(result)
         logger.info(
             "draft generation completed",
+            extra={"generation_id": request.generation_id},
+        )
+
+    async def _start_fast_draft(
+        self,
+        turn: TurnEvent,
+        transcript: TranscriptSnapshot,
+    ) -> None:
+        await self._cancel_fast(GenerationStatus.SUPERSEDED)
+        await self._start_fast_draft_request(turn.turn_id, transcript)
+
+    async def _start_fast_draft_request(
+        self,
+        trigger_turn_id: str,
+        transcript: TranscriptSnapshot,
+    ) -> None:
+        """Start the instant reply lane on the same immutable reply context."""
+        if self._fast_draft_provider is None:
+            return
+        request = DraftRequest(
+            generation_id=str(uuid4()),
+            trigger_turn_id=trigger_turn_id,
+            context_revision=transcript.revision,
+            transcript=transcript,
+            deadline_seconds=self._draft_generation_deadline_seconds,
+        )
+        self._active_fast_generation_id = request.generation_id
+        self._active_fast_draft_request = request
+        self._publish_fast_draft_event(
+            _draft_lifecycle_result(request, GenerationStatus.RUNNING)
+        )
+        context = contextvars.copy_context()
+        self._active_fast_task = context.run(
+            asyncio.create_task,
+            self._generate_fast(request),
+        )
+
+    async def _generate_fast(self, request: DraftRequest) -> None:
+        provider = self._fast_draft_provider
+        if provider is None:
+            return
+        try:
+            async with asyncio.timeout(request.deadline_seconds):
+                result = await provider.draft(request)
+        except TimeoutError:
+            logger.warning(
+                "fast draft generation exceeded deadline",
+                extra={
+                    "generation_id": request.generation_id,
+                    "deadline_seconds": request.deadline_seconds,
+                },
+            )
+            if self._active_fast_generation_id == request.generation_id:
+                self._publish_fast_draft_failure(request)
+            return
+        # A provider failure must not terminate continuous ASR or its session.
+        except Exception as error:
+            logger.error(
+                "fast draft generation failed",
+                extra={
+                    "generation_id": request.generation_id,
+                    "error_type": type(error).__name__,
+                },
+            )
+            if self._active_fast_generation_id == request.generation_id:
+                self._publish_fast_draft_failure(request)
+            return
+
+        if (
+            self._active_fast_generation_id != request.generation_id
+            or not self._request_revision_is_current(request.context_revision)
+        ):
+            logger.info(
+                "discarded stale fast draft",
+                extra={"generation_id": request.generation_id},
+            )
+            return
+        self._publish_terminal_fast_draft(result)
+        logger.info(
+            "fast draft generation completed",
             extra={"generation_id": request.generation_id},
         )
 
@@ -612,6 +728,41 @@ class ConversationCoordinator:
             _draft_lifecycle_result(request, GenerationStatus.FAILED)
         )
 
+    def _publish_terminal_fast_draft(self, result: DraftResult) -> None:
+        """Store a terminal instant reply and make it visible to both consumers."""
+        if result.status is GenerationStatus.COMPLETED:
+            self._last_fast_draft = result
+        if self._completed_fast_drafts.full():
+            self._completed_fast_drafts.get_nowait()
+            logger.warning(
+                "discarded unrendered fast draft",
+                extra={
+                    "generation_id": result.generation_id,
+                    "reason": "backlog_full",
+                },
+            )
+        self._completed_fast_drafts.put_nowait(result)
+        self._publish_fast_draft_event(result)
+
+    def _publish_fast_draft_event(self, result: DraftResult) -> None:
+        """Keep only the latest instant-reply lifecycle update in memory."""
+        if self._fast_draft_events.full():
+            self._fast_draft_events.get_nowait()
+            logger.debug(
+                "discarded unrendered fast draft lifecycle event",
+                extra={
+                    "generation_id": result.generation_id,
+                    "reason": "backlog_full",
+                },
+            )
+        self._fast_draft_events.put_nowait(result)
+
+    def _publish_fast_draft_failure(self, request: DraftRequest) -> None:
+        """Make a current instant-reply failure observable without visible text."""
+        self._publish_terminal_fast_draft(
+            _draft_lifecycle_result(request, GenerationStatus.FAILED)
+        )
+
     def _publish_insight(self, result: InsightResult) -> None:
         """Keep a bounded newest-first backlog for line-oriented CLI rendering."""
         if self._completed_insights.full():
@@ -641,12 +792,32 @@ class ConversationCoordinator:
                 extra={"generation_id": generation_id, "status": status.value},
             )
 
+    async def _cancel_fast(self, status: GenerationStatus) -> None:
+        task = self._active_fast_task
+        generation_id = self._active_fast_generation_id
+        request = self._active_fast_draft_request
+        self._active_fast_task = None
+        self._active_fast_generation_id = None
+        self._active_fast_draft_request = None
+        if task is None or task.done() or request is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            self._publish_terminal_fast_draft(_draft_lifecycle_result(request, status))
+            logger.info(
+                "fast draft generation cancelled",
+                extra={"generation_id": generation_id, "status": status.value},
+            )
+
     async def _cancel_insights(self, status: GenerationStatus) -> None:
         await self._cancel_commentary(status)
         await self._cancel_summary(status)
 
     async def _cancel_all(self, status: GenerationStatus) -> None:
         await self._cancel_active(status)
+        await self._cancel_fast(status)
         await self._cancel_insights(status)
         await self._cancel_research(status)
 
@@ -685,6 +856,18 @@ def _failed_insight(request: InsightRequest) -> InsightResult:
         status=GenerationStatus.FAILED,
         text="",
     )
+
+
+def _current_draft(
+    draft: DraftResult | None,
+    revision_is_current: Callable[[int], bool],
+) -> DraftResult | None:
+    """Return a stored draft only while it is completed and still current."""
+    if draft is None or draft.status is not GenerationStatus.COMPLETED:
+        return None
+    if not revision_is_current(draft.context_revision):
+        return None
+    return draft
 
 
 def _draft_lifecycle_result(

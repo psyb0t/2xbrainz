@@ -47,6 +47,13 @@ class WebConsoleTests(unittest.IsolatedAsyncioTestCase):
         )
         console.consume(
             {
+                "kind": "fast_draft",
+                "status": "completed",
+                "text": "An instant reply suggestion.",
+            }
+        )
+        console.consume(
+            {
                 "kind": "commentary",
                 "status": "completed",
                 "text": "Keep the answer grounded in the conversation.",
@@ -68,6 +75,8 @@ class WebConsoleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("A partial �[31m control sequence", snapshot.conversation)
         self.assertNotIn("\x1b[31m", snapshot.conversation)
         self.assertIn("A concise reply suggestion.", snapshot.reply)
+        self.assertIn("An instant reply suggestion.", snapshot.fast_reply)
+        self.assertEqual(payload["fastReply"], snapshot.fast_reply)
         self.assertIn("PRIVATE COACH", snapshot.coach)
         self.assertIn("STORY SO FAR", snapshot.story)
         self.assertEqual(payload["type"], "snapshot")

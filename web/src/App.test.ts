@@ -44,6 +44,7 @@ const SNAPSHOT: WebSnapshot = {
   conversation: `You: Can we ship this?
 Remote: Verify the release gates.`,
   reply: 'Run the final checks before shipping.',
+  fastReply: 'Yes, let us verify the gates first.',
   coach: 'Keep the answer concrete.',
   story: 'The team is preparing a release.',
   sessionState: 'running',
@@ -51,6 +52,7 @@ Remote: Verify the release gates.`,
     models: ['claudebox-sonnet', 'claudebox-opus', 'model-a', 'model-b'],
     assignments: {
       draft: { model: 'claudebox-sonnet', reasoningEffort: 'high' },
+      fast_draft: { model: 'model-a', reasoningEffort: 'none' },
       commentary: { model: 'model-b', reasoningEffort: 'low' },
       summary: { model: 'model-a', reasoningEffort: 'medium' },
       research: { model: 'claudebox-sonnet', reasoningEffort: 'high' }
@@ -105,7 +107,7 @@ Remote: Verify the release gates.`,
     ]
   },
   settings: {
-    schemaVersion: 2,
+    schemaVersion: 3,
     talkiesModels: ['asr-a', 'asr-b'],
     talkiesModel: 'asr-a',
     sessionBrief: '',
@@ -114,6 +116,7 @@ Remote: Verify the release gates.`,
     defaults: {
       assignments: {
         draft: { model: 'claudebox-sonnet', reasoningEffort: 'high' },
+        fast_draft: { model: 'model-a', reasoningEffort: 'none' },
         commentary: { model: 'model-b', reasoningEffort: 'low' },
         summary: { model: 'model-a', reasoningEffort: 'medium' },
         research: { model: 'claudebox-sonnet', reasoningEffort: 'high' }
@@ -301,9 +304,10 @@ describe('operator console', () => {
     localStorage.setItem(
       RUNTIME_SETTINGS_KEY,
       JSON.stringify({
-        schemaVersion: 2,
+        schemaVersion: 3,
         providers: {
           draft: { model: 'claudebox-opus', reasoningEffort: 'high' },
+          fast_draft: { model: 'model-b', reasoningEffort: 'minimal' },
           commentary: { model: 'model-b', reasoningEffort: 'low' },
           summary: { model: 'model-a', reasoningEffort: 'medium' },
           research: { model: 'claudebox-sonnet', reasoningEffort: 'high' }
@@ -326,9 +330,10 @@ describe('operator console', () => {
     expect(localStorage.getItem(RUNTIME_SETTINGS_KEY)).toBeNull();
     expect(socket.sent.map((value) => JSON.parse(value))).toContainEqual({
       type: 'runtime_settings',
-      schema_version: 2,
+      schema_version: 3,
       providers: {
         draft: { model: 'claudebox-sonnet', reasoning_effort: 'high' },
+        fast_draft: { model: 'model-a', reasoning_effort: 'none' },
         commentary: { model: 'model-b', reasoning_effort: 'low' },
         summary: { model: 'model-a', reasoning_effort: 'medium' },
         research: { model: 'claudebox-sonnet', reasoning_effort: 'high' }
@@ -369,6 +374,7 @@ describe('operator console', () => {
         type: 'runtime_settings',
         providers: expect.objectContaining({
           draft: { model: 'claudebox-opus', reasoning_effort: 'minimal' },
+          fast_draft: { model: 'model-a', reasoning_effort: 'none' },
           research: { model: 'claudebox-sonnet', reasoning_effort: 'high' }
         })
       })

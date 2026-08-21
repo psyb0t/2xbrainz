@@ -3,6 +3,23 @@
 All notable changes per release. Versions follow
 [semantic versioning](https://semver.org).
 
+## v3.3.0 — 2026-08-21
+
+- Add a second reply lane. A fast, no-thinking model drafts an instant reply
+  suggestion in about a second while the considered Reply model keeps thinking,
+  so a first draft appears without waiting for the slower answer. Both lanes run
+  on the same finished turn and share supersede, cancellation, and the
+  local-speech suppression that blocks a reply while you are still talking.
+- Default the fast lane to `groq-gpt-oss-120b` with reasoning off. Make the
+  considered Reply lane think, defaulting it to `cerebras-glm-4.7` at medium
+  reasoning instead of no reasoning.
+- Add a Fast reply model picker and its own live feed panel to the web console.
+  Migrate saved browser settings from schema 2 to schema 3 by back-filling the
+  new lane with its default model and reasoning.
+- Add a GitHub sponsors funding link.
+- Move CI checks to the shared code-workflow and grant it `security-events`
+  write access.
+
 ## v3.2.0 — 2026-08-10
 
 - Add automatic/manual provider dispatch. Manual mode keeps ASR live, exposes

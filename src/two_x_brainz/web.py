@@ -119,6 +119,7 @@ class _ProviderAssignmentsMessage(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     draft: _ProviderAssignmentMessage
+    fast_draft: _ProviderAssignmentMessage
     commentary: _ProviderAssignmentMessage
     summary: _ProviderAssignmentMessage
     research: _ProviderAssignmentMessage
@@ -128,7 +129,7 @@ class _RuntimeSettingsMessage(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     type: Literal["runtime_settings"]
-    schema_version: Literal[2]
+    schema_version: Literal[3]
     providers: _ProviderAssignmentsMessage
     talkies_model: str = Field(min_length=1, max_length=MAX_AIGATE_MODEL_ID_CHARACTERS)
     session_brief: str = Field(max_length=MAX_SESSION_BRIEF_CHARACTERS)
@@ -148,7 +149,9 @@ class _ClientDebugMessage(BaseModel):
         "snapshot_rejected",
         "provider_feed_rendered",
     ]
-    output_kind: Literal["draft", "commentary", "summary", "research"] | None = None
+    output_kind: (
+        Literal["draft", "fast_draft", "commentary", "summary", "research"] | None
+    ) = None
     activity_count: int | None = Field(default=None, ge=0, le=10_000)
     item_count: int | None = Field(default=None, ge=0, le=1_000)
     text_characters: int | None = Field(default=None, ge=0, le=1_000_000)
@@ -234,6 +237,7 @@ class WebSnapshot:
     notice: str
     conversation: str
     reply: str
+    fast_reply: str
     coach: str
     story: str
     requires_audio_setup: bool
@@ -270,6 +274,7 @@ class WebSnapshot:
             "notice": self.notice,
             "conversation": self.conversation,
             "reply": self.reply,
+            "fastReply": self.fast_reply,
             "coach": self.coach,
             "story": self.story,
             "requiresAudioSetup": self.requires_audio_setup,
@@ -483,6 +488,7 @@ class WebConsole:
             notice=self.state.notice_text().plain,
             conversation=self.state.conversation_text().plain,
             reply=self.state.reply_text().plain,
+            fast_reply=self.state.fast_reply_text().plain,
             coach=self.state.coach_text().plain,
             story=self.state.story_text().plain,
             requires_audio_setup=self.state.requires_audio_setup,
@@ -836,6 +842,7 @@ class WebConsole:
             return
         selection = ProviderSelection(
             draft=_provider_assignment(assignments[ProviderFlow.DRAFT]),
+            fast_draft=_provider_assignment(assignments[ProviderFlow.FAST_DRAFT]),
             commentary=_provider_assignment(assignments[ProviderFlow.COMMENTARY]),
             summary=_provider_assignment(assignments[ProviderFlow.SUMMARY]),
             research=_provider_assignment(assignments[ProviderFlow.RESEARCH]),

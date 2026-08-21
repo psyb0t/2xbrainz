@@ -1,14 +1,14 @@
 import type { ProviderAssignment, ProviderOutputKind, WebSnapshot } from './contracts';
 
-export const RUNTIME_SETTINGS_KEY = '2xbrainz.web.settings.v2';
-export const RUNTIME_SETTINGS_SCHEMA_VERSION = 2;
-const LEGACY_RUNTIME_SETTINGS_KEY = '2xbrainz.web.settings.v1';
+export const RUNTIME_SETTINGS_KEY = '2xbrainz.web.settings.v3';
+export const RUNTIME_SETTINGS_SCHEMA_VERSION = 3;
+const LEGACY_RUNTIME_SETTINGS_KEY = '2xbrainz.web.settings.v2';
 export const MAX_SESSION_BRIEF_CHARACTERS = 4_000;
 const REASONING_EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high']);
 const CLAUDEBOX_REASONING_EFFORTS = new Set(['low', 'medium', 'high']);
 
 export interface BrowserRuntimeSettings {
-  schemaVersion: 2;
+  schemaVersion: 3;
   providers: Record<ProviderOutputKind, ProviderAssignment>;
   talkiesModel: string;
   sessionBrief: string;
@@ -84,6 +84,12 @@ export function applicableRuntimeSettings(
       draft: availableAssignment(
         saved.providers.draft,
         defaults.providers.draft,
+        availableModels,
+        REASONING_EFFORTS
+      ),
+      fast_draft: availableAssignment(
+        saved.providers.fast_draft,
+        defaults.providers.fast_draft,
         availableModels,
         REASONING_EFFORTS
       ),
@@ -164,11 +170,15 @@ function parseRuntimeSettings(value: unknown): BrowserRuntimeSettings | null {
 }
 
 function migrateLegacyRuntimeSettings(value: unknown): unknown {
+  return migrateRuntimeSettingsV2ToV3(migrateRuntimeSettingsV1ToV2(value));
+}
+
+function migrateRuntimeSettingsV1ToV2(value: unknown): unknown {
   if (!isRecord(value) || value.schemaVersion !== 1 || !isRecord(value.providers)) return value;
   if (!isAssignment(value.providers.draft)) return value;
   return {
     ...value,
-    schemaVersion: RUNTIME_SETTINGS_SCHEMA_VERSION,
+    schemaVersion: 2,
     autoDispatchEnabled: true,
     providers: {
       ...value.providers,
@@ -177,10 +187,26 @@ function migrateLegacyRuntimeSettings(value: unknown): unknown {
   };
 }
 
+function migrateRuntimeSettingsV2ToV3(value: unknown): unknown {
+  if (!isRecord(value) || value.schemaVersion !== 2 || !isRecord(value.providers)) return value;
+  if (!isAssignment(value.providers.draft)) return value;
+  return {
+    ...value,
+    schemaVersion: RUNTIME_SETTINGS_SCHEMA_VERSION,
+    providers: {
+      ...value.providers,
+      fast_draft: { model: 'groq-gpt-oss-120b', reasoningEffort: 'none' }
+    }
+  };
+}
+
 function isProviderAssignments(value: unknown): boolean {
   if (!isRecord(value)) return false;
-  if (Object.keys(value).sort().join(',') !== 'commentary,draft,research,summary') return false;
-  return ['draft', 'commentary', 'summary', 'research'].every((flow) => isAssignment(value[flow]));
+  if (Object.keys(value).sort().join(',') !== 'commentary,draft,fast_draft,research,summary')
+    return false;
+  return ['draft', 'fast_draft', 'commentary', 'summary', 'research'].every((flow) =>
+    isAssignment(value[flow])
+  );
 }
 
 function isAssignment(value: unknown): value is ProviderAssignment {

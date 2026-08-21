@@ -33,7 +33,7 @@
   const RECONNECT_DELAY_MS = 1_500;
   const FOLLOW_DISTANCE_PX = 72;
   const KEYBOARD_RESIZE_STEP = 2;
-  type GuidancePanel = 'reply' | 'coach' | 'story' | 'research';
+  type GuidancePanel = 'reply' | 'replyFast' | 'coach' | 'story' | 'research';
   type SettingsTab = 'context' | 'models' | 'audio';
   const PROVIDER_FLOWS: ReadonlyArray<{
     kind: ProviderOutputKind;
@@ -41,6 +41,7 @@
     description: string;
   }> = [
     { kind: 'draft', label: 'Reply', description: 'Say this next' },
+    { kind: 'fast_draft', label: 'Fast reply', description: 'Instant draft, no thinking' },
     { kind: 'commentary', label: 'Coach', description: 'Private signal' },
     { kind: 'summary', label: 'Story', description: 'Working memory' },
     { kind: 'research', label: 'Research', description: 'Agentic background investigation' }
@@ -66,6 +67,7 @@
   let modelOptions: HTMLElement;
   let modelFilterInput: HTMLInputElement;
   let replyPanel: HTMLElement;
+  let replyFastPanel: HTMLElement;
   let coachPanel: HTMLElement;
   let storyPanel: HTMLElement;
   let researchPanel: HTMLElement;
@@ -385,6 +387,7 @@
 
   function guidancePanelElement(panel: GuidancePanel): HTMLElement {
     if (panel === 'reply') return replyPanel;
+    if (panel === 'replyFast') return replyFastPanel;
     if (panel === 'coach') return coachPanel;
     if (panel === 'story') return storyPanel;
     return researchPanel;
@@ -392,6 +395,7 @@
 
   function guidancePanelWeight(panel: GuidancePanel): number {
     if (panel === 'reply') return preferences.replyHeightPercent;
+    if (panel === 'replyFast') return preferences.replyFastHeightPercent;
     if (panel === 'coach') return preferences.coachHeightPercent;
     if (panel === 'story') return preferences.storyHeightPercent;
     return preferences.researchHeightPercent;
@@ -414,6 +418,7 @@
     weight: number
   ): LayoutPreferences {
     if (panel === 'reply') return { ...value, replyHeightPercent: weight };
+    if (panel === 'replyFast') return { ...value, replyFastHeightPercent: weight };
     if (panel === 'coach') return { ...value, coachHeightPercent: weight };
     if (panel === 'story') return { ...value, storyHeightPercent: weight };
     return { ...value, researchHeightPercent: weight };
@@ -597,12 +602,47 @@
             onDebug={sendDebug}
           />{/if}
       </article>
-      {#if !preferences.replyCollapsed && !preferences.coachCollapsed}
+      {#if !preferences.replyCollapsed && !preferences.replyFastCollapsed}
         <button
           class="splitter guidance-splitter"
-          aria-label="Resize reply and private coaching"
-          onpointerdown={(event) => beginGuidanceResize(event, 'reply', 'coach')}
-          onkeydown={(event) => resizeGuidanceWithKeyboard(event, 'reply', 'coach')}
+          aria-label="Resize reply and fast reply"
+          onpointerdown={(event) => beginGuidanceResize(event, 'reply', 'replyFast')}
+          onkeydown={(event) => resizeGuidanceWithKeyboard(event, 'reply', 'replyFast')}
+        ></button>
+      {/if}
+
+      <article
+        class:collapsed={preferences.replyFastCollapsed}
+        class="panel guidance-card reply-fast-card"
+        style={`--panel-weight:${preferences.replyFastHeightPercent}`}
+        bind:this={replyFastPanel}
+      >
+        <div class="panel-heading compact">
+          <div>
+            <span class="eyebrow">Instant draft, no thinking</span>
+            <h2>Fast reply</h2>
+          </div>
+          <button
+            class="collapse-button"
+            aria-expanded={!preferences.replyFastCollapsed}
+            onclick={() => setPreference('replyFastCollapsed', !preferences.replyFastCollapsed)}
+            >{preferences.replyFastCollapsed ? 'Expand' : 'Collapse'}</button
+          >
+        </div>
+        {#if !preferences.replyFastCollapsed}<ProviderFeed
+            kind="fast_draft"
+            activity={snapshot.provider.activity}
+            activeModel={snapshot.provider.assignments.fast_draft.model}
+            fallbackOutput={snapshot.fastReply}
+            onDebug={sendDebug}
+          />{/if}
+      </article>
+      {#if !preferences.replyFastCollapsed && !preferences.coachCollapsed}
+        <button
+          class="splitter guidance-splitter"
+          aria-label="Resize fast reply and private coaching"
+          onpointerdown={(event) => beginGuidanceResize(event, 'replyFast', 'coach')}
+          onkeydown={(event) => resizeGuidanceWithKeyboard(event, 'replyFast', 'coach')}
         ></button>
       {/if}
 

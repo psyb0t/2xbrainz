@@ -776,6 +776,12 @@ button:disabled {
 .reply-card {
   border-color: rgba(98, 221, 200, 0.28);
 }
+.reply-fast-card {
+  border-color: rgba(126, 231, 135, 0.28);
+}
+.reply-fast-card .eyebrow {
+  color: #7ee787;
+}
 .coach-card {
   border-color: rgba(243, 198, 111, 0.24);
 }
